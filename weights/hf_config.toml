@@ -1,0 +1,117 @@
+[control]
+version = 4
+online = false
+
+state_file = '/path/to/training/checkpoints/mortal.pth'
+best_state_file = '/path/to/training/checkpoints/best.pth'
+tensorboard_dir = '/path/to/training/logs'
+
+device = 'cuda:0'
+enable_cudnn_benchmark = true
+enable_amp = true
+enable_compile = false
+
+batch_size = 1024
+opt_step_every = 1
+
+save_every = 2000
+test_every = 100000
+submit_every = 200
+
+[test_play]
+games = 100
+log_dir = '/path/to/training/test_play'
+
+[dataset]
+globs = ['/path/to/dataset/4p_hanchan/**/*.json.gz']
+file_index = '/path/to/training/file_index.pth'
+file_batch_size = 100
+reserve_ratio = 0.0
+num_workers = 6
+player_names_files = []
+num_epochs = 10
+enable_augmentation = true
+augmented_first = false
+
+[env]
+gamma = 1
+pts = [6.0, 4.0, 2.0, 0.0]
+
+[resnet]
+conv_channels = 192
+num_blocks = 40
+
+[cql]
+min_q_weight = 3
+
+[aux]
+next_rank_weight = 0.2
+
+[freeze_bn]
+mortal = false
+
+[optim]
+eps = 1e-8
+betas = [0.9, 0.999]
+weight_decay = 0.01
+max_grad_norm = 1.0
+
+[optim.scheduler]
+peak = 3e-4
+final = 1e-5
+warm_up_steps = 2000
+max_steps = 2750000
+
+[baseline.train]
+device = 'cuda:0'
+enable_compile = false
+state_file = '/path/to/training/checkpoints/baseline.pth'
+
+[baseline.test]
+device = 'cuda:0'
+enable_compile = false
+state_file = '/path/to/training/checkpoints/baseline.pth'
+
+[online]
+history_window = 50
+enable_compile = false
+
+[online.remote]
+host = '127.0.0.1'
+port = 5000
+
+[online.server]
+buffer_dir = '/path/to/training/buffer'
+drain_dir = '/path/to/training/drain'
+sample_reuse_rate = 0
+sample_reuse_threshold = 0
+capacity = 1600
+force_sequential = false
+
+[grp]
+state_file = '/path/to/training/checkpoints/grp.pth'
+
+[grp.network]
+hidden_size = 64
+num_layers = 2
+
+[grp.control]
+device = 'cuda:0'
+enable_cudnn_benchmark = true
+tensorboard_dir = '/path/to/training/grp_logs'
+batch_size = 256
+save_every = 1000
+val_steps = 200
+
+[grp.dataset]
+train_globs = [
+    '/path/to/dataset/4p_hanchan/**/*.json.gz',
+]
+val_globs = [
+    '/path/to/dataset/4p_tonpuu/**/*.json.gz',
+]
+file_index = '/path/to/training/grp_file_index.pth'
+file_batch_size = 50
+
+[grp.optim]
+lr = 1e-5

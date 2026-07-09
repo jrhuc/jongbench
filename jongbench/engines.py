@@ -1,0 +1,379 @@
+from __future__ import annotations
+
+import copy
+import json
+import random
+import threading
+import time
+from abc import ABC, abstractmethod
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any
+
+from . import actions, prompts, providers
+
+
+DecisionSink = list[dict[str, Any]] | Callable[[dict[str, Any]], None]
+
+
+def sanitize_events(events: list[dict[str, Any]], player_id: int) -> list[dict[str, Any]]:
+    sanitized = copy.deepcopy(events)
+    for event in sanitized:
+        if event.get("type") == "start_kyoku":
+            tehais = event.get("tehais")
+            if isinstance(tehais, list):
+                for seat, hand in enumerate(tehais):
+                    if seat != player_id:
+                        tehais[seat] = ["?"] * 13
+        elif event.get("type") == "tsumo" and event.get("actor") != player_id:
+            if "pai" in event:
+                event["pai"] = "?"
+    return sanitized
+
+
+class BaseEngine(ABC):
+    engine_type = "mjai-log"
+
+    def __init__(
+        self,
+        name: str,
+        spectator: Any | None = None,
+        concurrency: int = 4,
+    ) -> None:
+        self.name = name
+        self.spectator = spectator
+        self.concurrency = max(1, int(concurrency))
+        self.player_ids: list[int] | None = None
+
+    def set_player_ids(self, player_ids: list[int]) -> None:
+        self.player_ids = [int(player_id) for player_id in player_ids]
+
+    def react_batch(self, game_states: list[Any]) -> list[str]:
+        if self.player_ids is None:
+            raise RuntimeError("player_ids not set")
+
+        reactions: list[dict[str, Any] | None] = [None] * len(game_states)
+        jobs: list[tuple[int, int, Any, list[dict[str, Any]], list[actions.MenuItem]]] = []
+
+        for index, game_state in enumerate(game_states):
+            game_index = int(game_state.game_index)
+            player_id = self.player_ids[game_index]
+            raw_events = json.loads(game_state.events_json)
+            if self.spectator is not None:
+                self.spectator.publish(game_index, player_id, raw_events)
+
+            events = sanitize_events(raw_events, player_id)
+            menu = actions.build_menu(game_state.state)
+            if not menu:
+                reactions[index] = {"type": "none"}
+            elif len(menu) == 1:
+                reactions[index] = menu[0]["event"]
+            else:
+                jobs.append((index, player_id, game_state.state, events, menu))
+
+        if jobs:
+            if self.concurrency == 1 or len(jobs) == 1:
+                for index, player_id, state, events, menu in jobs:
+                    reactions[index] = self.decide(player_id, state, events, menu)
+            else:
+                with ThreadPoolExecutor(max_workers=self.concurrency) as executor:
+                    futures = [
+                        executor.submit(self.decide, player_id, state, events, menu)
+                        for _, player_id, state, events, menu in jobs
+                    ]
+                    for (index, _, _, _, _), future in zip(jobs, futures, strict=True):
+                        reactions[index] = future.result()
+
+        encoded: list[str] = []
+        for reaction in reactions:
+            if reaction is None:
+                raise RuntimeError("missing reaction")
+            encoded.append(json.dumps(reaction, separators=(",", ":")))
+        return encoded
+
+    def start_game(self, game_idx: int) -> None:
+        pass
+
+    def end_kyoku(self, game_idx: int) -> None:
+        pass
+
+    def end_game(self, game_idx: int, scores: list[int]) -> None:
+        pass
+
+    @abstractmethod
+    def decide(
+        self,
+        player_id: int,
+        state: Any,
+        events: list[dict[str, Any]],
+        menu: list[actions.MenuItem],
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+
+class RandomEngine(BaseEngine):
+    def __init__(
+        self,
+        name: str,
+        seed: int = 0,
+        spectator: Any | None = None,
+        concurrency: int = 4,
+        **_: Any,
+    ) -> None:
+        super().__init__(name, spectator=spectator, concurrency=concurrency)
+        self._random = random.Random(seed)
+        self._random_lock = threading.Lock()
+
+    def decide(
+        self,
+        player_id: int,
+        state: Any,
+        events: list[dict[str, Any]],
+        menu: list[actions.MenuItem],
+    ) -> dict[str, Any]:
+        del player_id, state, events
+        for item in menu:
+            if item.get("kind") == "hora":
+                return item["event"]
+
+        weights = [6 if item.get("kind") == "none" else 1 for item in menu]
+        with self._random_lock:
+            return self._random.choices(menu, weights=weights, k=1)[0]["event"]
+
+
+class LLMEngine(BaseEngine):
+    def __init__(
+        self,
+        name: str,
+        spec_str: str,
+        api_key: str | None = None,
+        decision_log: DecisionSink | None = None,
+        temperature: float = 0.6,
+        max_tokens: int = 1200,
+        spectator: Any | None = None,
+        concurrency: int = 4,
+    ) -> None:
+        super().__init__(name, spectator=spectator, concurrency=concurrency)
+        self.spec = providers.parse_spec(spec_str)
+        self.provider = providers.make_provider(self.spec, api_key=api_key)
+        self.decision_log: DecisionSink = [] if decision_log is None else decision_log
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.totals = {
+            "calls": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "fallbacks": 0,
+            "retries": 0,
+        }
+        self._log_lock = threading.Lock()
+
+    def decide(
+        self,
+        player_id: int,
+        state: Any,
+        events: list[dict[str, Any]],
+        menu: list[actions.MenuItem],
+    ) -> dict[str, Any]:
+        started = time.perf_counter()
+        labels = [str(item["label"]) for item in menu]
+        prompt_events = _prompt_safe_events(events)
+        prompt = prompts.build_user_prompt(player_id, state, prompt_events, menu)
+        raw_response = ""
+        retries = 0
+        calls = 0
+        usage_total = {"input_tokens": 0, "output_tokens": 0}
+        fallback: str | None = None
+        choice: int | None = None
+
+        def complete_once(user_prompt: str) -> tuple[str, dict[str, int]]:
+            nonlocal calls
+            calls += 1
+            text, usage = self.provider.complete(
+                prompts.SYSTEM,
+                user_prompt,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+            )
+            return text or "", _normalize_usage(usage)
+
+        try:
+            text, usage = complete_once(prompt)
+            raw_response = text
+            _add_usage(usage_total, usage)
+        except Exception:
+            retries = 1
+            try:
+                text, usage = complete_once(prompt)
+                raw_response = text
+                _add_usage(usage_total, usage)
+                choice = prompts.extract_choice(raw_response, len(menu))
+            except ValueError as exc:
+                fallback = f"invalid_choice:{exc}"
+            except Exception as exc:
+                fallback = f"provider_error:{type(exc).__name__}"
+        else:
+            try:
+                choice = prompts.extract_choice(raw_response, len(menu))
+            except ValueError as exc:
+                retries = 1
+                retry_prompt = prompts.build_user_prompt(
+                    player_id,
+                    state,
+                    prompt_events,
+                    menu,
+                    error_feedback=str(exc),
+                )
+                try:
+                    text, usage = complete_once(retry_prompt)
+                    raw_response = text
+                    _add_usage(usage_total, usage)
+                    choice = prompts.extract_choice(raw_response, len(menu))
+                except ValueError as retry_exc:
+                    fallback = f"invalid_choice:{retry_exc}"
+                except Exception as retry_exc:
+                    fallback = f"provider_error:{type(retry_exc).__name__}"
+
+        if choice is None:
+            choice = _fallback_choice(menu)
+            if fallback is None:
+                fallback = "invalid_choice"
+
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        record = {
+            "ts": time.time(),
+            "player_id": player_id,
+            "kyoku_events_len": len(events),
+            "menu": labels,
+            "choice": choice,
+            "fallback": fallback,
+            "raw_response": raw_response[:4000],
+            "usage": usage_total,
+            "latency_ms": latency_ms,
+            "retries": retries,
+        }
+        self._record_decision(record, calls, usage_total, fallback is not None, retries)
+        return menu[choice]["event"]
+
+    def _record_decision(
+        self,
+        record: dict[str, Any],
+        calls: int,
+        usage: dict[str, int],
+        did_fallback: bool,
+        retries: int,
+    ) -> None:
+        with self._log_lock:
+            self.totals["calls"] += calls
+            self.totals["input_tokens"] += usage["input_tokens"]
+            self.totals["output_tokens"] += usage["output_tokens"]
+            self.totals["fallbacks"] += int(did_fallback)
+            self.totals["retries"] += retries
+            if callable(self.decision_log):
+                self.decision_log(record)
+            else:
+                self.decision_log.append(record)
+
+
+def make_engine(name: str, spec_str: str, **kwargs: Any) -> BaseEngine:
+    spec = providers.parse_spec(spec_str)
+    if spec.provider == "human":
+        human_io = kwargs.get("human_io")
+        if human_io is None:
+            raise ValueError("human seat requires human_io")
+        return HumanEngine(name, human_io, spectator=kwargs.get("spectator"))
+    if spec.provider == "random":
+        return RandomEngine(name, **kwargs)
+    return LLMEngine(name, spec_str, **kwargs)
+
+
+def _normalize_usage(usage: dict[str, Any] | None) -> dict[str, int]:
+    usage = usage or {}
+    return {
+        "input_tokens": int(usage.get("input_tokens", 0) or 0),
+        "output_tokens": int(usage.get("output_tokens", 0) or 0),
+    }
+
+
+def _add_usage(total: dict[str, int], usage: dict[str, int]) -> None:
+    total["input_tokens"] += usage["input_tokens"]
+    total["output_tokens"] += usage["output_tokens"]
+
+
+def _fallback_choice(menu: list[actions.MenuItem]) -> int:
+    for idx, item in enumerate(menu):
+        event = item.get("event", {})
+        if (
+            item.get("kind") == "discard"
+            and event.get("type") == "dahai"
+            and event.get("tsumogiri")
+        ):
+            return idx
+    for idx, item in enumerate(menu):
+        if item.get("kind") == "none" or item.get("event", {}).get("type") == "none":
+            return idx
+    return 0
+
+
+def _prompt_safe_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    safe_events = copy.deepcopy(events)
+    for event in safe_events:
+        if event.get("type") == "tsumo" and event.get("pai") == "?":
+            event.pop("pai", None)
+    return safe_events
+
+
+class HumanIO(ABC):
+    @abstractmethod
+    def ask(
+        self,
+        player_id: int,
+        state: Any,
+        events: list[dict[str, Any]],
+        menu: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+
+class TerminalHumanIO(HumanIO):
+    def ask(
+        self,
+        player_id: int,
+        state: Any,
+        events: list[dict[str, Any]],
+        menu: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        print("-" * 80)
+        print(prompts.render_state(player_id, state, events))
+        print("")
+        print(prompts.render_menu(menu))
+        while True:
+            raw = input("your choice> ")
+            try:
+                choice = int(raw)
+            except ValueError:
+                print("enter a number")
+                continue
+            if 0 <= choice < len(menu):
+                return menu[choice]["event"]
+            print(f"choose 0-{len(menu) - 1}")
+
+
+class HumanEngine(BaseEngine):
+    def __init__(
+        self,
+        name: str,
+        io: HumanIO,
+        spectator: Any | None = None,
+    ) -> None:
+        super().__init__(name, spectator=spectator, concurrency=1)
+        self.io = io
+
+    def decide(
+        self,
+        player_id: int,
+        state: Any,
+        events: list[dict[str, Any]],
+        menu: list[actions.MenuItem],
+    ) -> dict[str, Any]:
+        return self.io.ask(player_id, state, events, menu)

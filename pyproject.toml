@@ -1,0 +1,27 @@
+[project]
+name = "jongbench"
+version = "0.1.0"
+description = "Benchmark LLMs playing riichi mahjong, graded by the Mortal deep-RL model"
+requires-python = ">=3.12"
+license = { text = "AGPL-3.0-or-later" }
+dependencies = [
+    "torch>=2.4",
+    "numpy>=1.26",
+    "anthropic>=0.40",
+    "openai>=1.50",
+    "google-genai>=1.0",
+    "rich>=13.7",
+]
+
+[project.scripts]
+jongbench = "jongbench.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["jongbench"]
+
+[tool.setuptools.package-data]
+jongbench = ["*.so", "*.html"]

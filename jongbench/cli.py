@@ -1,0 +1,578 @@
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+import threading
+from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from . import arena, evaluate, providers, report
+from .arena import GameSummary
+from .engines import RandomEngine, TerminalHumanIO, make_engine
+from .spectator import Spectator, TableState, TerminalRenderer
+
+
+def _new_run_dir(runs_root: str | Path, label: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", label.strip()).strip("-._")
+    safe = safe or "run"
+    root = Path(runs_root)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    candidate = root / f"{stamp}-{safe}"
+    if not candidate.exists():
+        return candidate
+    suffix = 2
+    while True:
+        candidate = root / f"{stamp}-{safe}-{suffix}"
+        if not candidate.exists():
+            return candidate
+        suffix += 1
+
+
+def _engine_names(specs: Sequence[str]) -> list[str]:
+    counts: dict[str, int] = {}
+    names = []
+    for spec in specs:
+        parsed = providers.parse_spec(spec)
+        base = parsed.display_name
+        counts[base] = counts.get(base, 0) + 1
+        names.append(base if counts[base] == 1 else f"{base}#{counts[base]}")
+    return names
+
+
+def _decision_sink(path: str | Path) -> Callable[[dict[str, Any]], None]:
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    lock = threading.Lock()
+
+    def sink(record: dict[str, Any]) -> None:
+        line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+        with lock:
+            with output.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+
+    return sink
+
+
+def _write_config(
+    run_dir: str | Path,
+    label: str,
+    specs: Sequence[str],
+    names: Sequence[str],
+    games: int,
+    seed_start: tuple[int, int],
+) -> None:
+    run = Path(run_dir)
+    run.mkdir(parents=True, exist_ok=True)
+    data = {
+        "label": label,
+        "created": datetime.now(timezone.utc).isoformat(),
+        "models": list(specs),
+        "names": list(names),
+        "games": int(games),
+        "seed_start": [int(seed_start[0]), int(seed_start[1])],
+    }
+    (run / "config.json").write_text(
+        json.dumps(data, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def _evaluate_run(
+    run_dir: str | Path,
+    weights: str | Path,
+    temperature: float = 0.1,
+    progress: bool = True,
+    summaries: Sequence[GameSummary] | Mapping[tuple[int, int], GameSummary] | None = None,
+) -> None:
+    run = Path(run_dir)
+    log_paths = sorted((run / "logs").glob("*.json.gz"), key=_log_sort_key)
+    if not log_paths:
+        raise ValueError(f"no logs found in {run / 'logs'}")
+
+    summary_by_seed = _summary_by_seed(summaries)
+    mortal = evaluate.load_engine(str(weights))
+    review_dir = run / "review"
+    review_dir.mkdir(parents=True, exist_ok=True)
+
+    for log_path in log_paths:
+        events = evaluate.load_mjai_log(str(log_path))
+        seed = _seed_from_events_or_path(events, log_path)
+        game_summary = summary_by_seed.get(seed) or _reconstruct_summary(events, log_path)
+        reviews = evaluate.review_game(events, mortal, temperature=temperature)
+        players: dict[str, dict[str, Any]] = {}
+
+        for player_id in range(4):
+            player_review = reviews[player_id]
+            players[str(player_id)] = {
+                "name": game_summary.names[player_id],
+                "review": player_review,
+                "aggregates": evaluate.aggregates(player_review),
+            }
+            if progress:
+                rating = float(player_review.get("rating") or 0.0) * 100.0
+                print(
+                    f"review {_seed_label(seed)} P{player_id} "
+                    f"{game_summary.names[player_id]} rating {rating:.2f}"
+                )
+
+        payload = {
+            "seed": [seed[0], seed[1]],
+            "names": list(game_summary.names),
+            "scores": list(game_summary.scores),
+            "placements": dict(game_summary.placements),
+            "players": players,
+        }
+        (review_dir / f"{_seed_label(seed)}.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    specs = list(args.models)
+    if any(_is_human_spec(spec) for spec in specs):
+        raise ValueError("run does not support human seats")
+
+    run_dir = _new_run_dir(args.runs_root, args.label)
+    _prepare_run_dir(run_dir)
+    names = _engine_names(specs)
+    _write_config(run_dir, args.label, specs, names, int(args.games), (int(args.seed), 1))
+
+    engines = [
+        make_engine(
+            name,
+            spec,
+            decision_log=_decision_sink(run_dir / "decisions" / f"{name}.jsonl"),
+            concurrency=int(args.concurrency),
+            temperature=float(args.temperature),
+        )
+        for name, spec in zip(names, specs, strict=True)
+    ]
+    summaries = arena.run_games(
+        engines,
+        int(args.games),
+        seed_start=(int(args.seed), 1),
+        log_dir=str(run_dir / "logs"),
+        disable_progress_bar=False,
+    )
+
+    if args.no_eval:
+        print(f"run: {run_dir}")
+        return 0
+
+    _evaluate_run(run_dir, args.weights, summaries=summaries)
+    report_path = report.write_report(str(run_dir))
+    _print_summary(report.summarize(str(run_dir)))
+    print(f"report: {report_path}")
+    return 0
+
+
+def _cmd_watch(args: argparse.Namespace) -> int:
+    specs = list(args.models)
+    if args.ui == "web":
+        try:
+            from . import webui
+        except ImportError:
+            print("web UI not built yet", file=sys.stderr)
+            return 1
+        return int(
+            webui.run_watch_server(
+                model_specs=specs,
+                seed=(int(args.seed), 1),
+                delay=float(args.delay),
+                runs_root=args.runs_root,
+                weights=args.weights,
+                no_eval=bool(args.no_eval),
+            )
+            or 0
+        )
+
+    run_dir = _new_run_dir(args.runs_root, args.label)
+    _prepare_run_dir(run_dir)
+    names = _engine_names(specs)
+    _write_config(run_dir, args.label, specs, names, 1, (int(args.seed), 1))
+
+    any_human = any(_is_human_spec(spec) for spec in specs)
+    renderer = TerminalRenderer(glyphs=bool(args.glyphs), reveal=not any_human)
+    spectator = Spectator(delay=float(args.delay), on_update=renderer)
+    engines = []
+    for name, spec in zip(names, specs, strict=True):
+        kwargs: dict[str, Any] = {"spectator": spectator}
+        if _is_human_spec(spec):
+            kwargs["human_io"] = TerminalHumanIO()
+        else:
+            kwargs["decision_log"] = _decision_sink(run_dir / "decisions" / f"{name}.jsonl")
+        engines.append(make_engine(name, spec, **kwargs))
+
+    summaries = arena.run_games(
+        engines,
+        1,
+        seed_start=(int(args.seed), 1),
+        log_dir=str(run_dir / "logs"),
+        disable_progress_bar=True,
+    )
+    if summaries:
+        spectator.finish(summaries[0].names, summaries[0].scores)
+        renderer.on_update(spectator.table)
+
+    if args.no_eval:
+        print(f"run: {run_dir}")
+        return 0
+
+    _evaluate_run(run_dir, args.weights, summaries=summaries)
+    report_path = report.write_report(str(run_dir))
+    _print_summary(report.summarize(str(run_dir)))
+    _print_seat_ratings(run_dir)
+    print(f"report: {report_path}")
+    return 0
+
+
+def _cmd_review(args: argparse.Namespace) -> int:
+    run_dir = Path(args.run_dir)
+    if args.force:
+        for path in (run_dir / "review").glob("*.json"):
+            path.unlink()
+    if args.force or _reviews_missing(run_dir):
+        _evaluate_run(run_dir, args.weights)
+    report_path = report.write_report(str(run_dir))
+    _print_summary(report.summarize(str(run_dir)))
+    print(f"report: {report_path}")
+    return 0
+
+
+def _cmd_selfcheck(args: argparse.Namespace) -> int:
+    run_dir = _new_run_dir(args.runs_root, "selfcheck")
+    _prepare_run_dir(run_dir)
+    specs = ["random", "random", "random", "random"]
+    names = _engine_names(specs)
+    _write_config(run_dir, "selfcheck", specs, names, 1, (777, 1))
+    engines = [
+        RandomEngine(name, seed=seed)
+        for name, seed in zip(names, [1, 2, 3, 4], strict=True)
+    ]
+    summaries = arena.run_games(
+        engines,
+        1,
+        seed_start=(777, 1),
+        log_dir=str(run_dir / "logs"),
+        disable_progress_bar=True,
+    )
+    _evaluate_run(run_dir, args.weights, summaries=summaries)
+    report_path = report.write_report(str(run_dir))
+    _print_summary(report.summarize(str(run_dir)))
+    print(f"report: {report_path}")
+    print("SELFCHECK OK")
+    return 0
+
+
+def _cmd_record(args: argparse.Namespace) -> int:
+    run_dir = Path(args.run_dir)
+    log_path = _select_log(run_dir, args.game)
+    events = evaluate.load_mjai_log(str(log_path))
+    seed = _seed_from_events_or_path(events, log_path)
+    review_path = run_dir / "review" / f"{_seed_label(seed)}.json"
+    review_data = _read_json(review_path) if review_path.exists() else None
+
+    table = TableState()
+    frames = []
+    for seq, event in enumerate(events, start=1):
+        table.apply(event)
+        frames.append(
+            {
+                "seq": seq,
+                "event": event,
+                "snapshot": table.snapshot(),
+            }
+        )
+
+    if isinstance(review_data, dict):
+        names = [str(name) for name in review_data.get("names") or []]
+        scores = [int(score) for score in review_data.get("scores") or []]
+        placements = dict(review_data.get("placements") or {})
+    else:
+        summary = _reconstruct_summary(events, log_path)
+        names = summary.names
+        scores = summary.scores
+        placements = summary.placements
+
+    bundle: dict[str, Any] = {
+        "game": _seed_label(seed),
+        "seed": [seed[0], seed[1]],
+        "names": names,
+        "scores": scores,
+        "placements": placements,
+        "frames": frames,
+    }
+    if isinstance(review_data, dict):
+        bundle["review"] = review_data
+
+    out = Path(args.out) if args.out else run_dir / "demo.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        json.dumps(bundle, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    print(f"{len(frames)} frames -> {out}")
+    return 0
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    try:
+        from . import webui
+    except ImportError:
+        print("web UI not built yet", file=sys.stderr)
+        return 1
+    return int(
+        webui.run_server(
+            host=args.host,
+            port=int(args.port),
+            runs_root=args.runs_root,
+            weights=args.weights,
+            demo_path=args.demo,
+        )
+        or 0
+    )
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="jongbench")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    run = subparsers.add_parser("run")
+    run.add_argument("--models", nargs=4, required=True)
+    run.add_argument("--games", type=int, default=4)
+    run.add_argument("--seed", type=int, default=10000)
+    run.add_argument("--label", default="run")
+    run.add_argument("--runs-root", default="runs")
+    run.add_argument("--weights", default="weights/mortal.pth")
+    run.add_argument("--no-eval", action="store_true")
+    run.add_argument("--concurrency", type=int, default=4)
+    run.add_argument("--temperature", type=float, default=0.6)
+    run.set_defaults(func=_cmd_run)
+
+    watch = subparsers.add_parser("watch")
+    watch.add_argument("--models", nargs=4, required=True)
+    watch.add_argument("--seed", type=int, default=10000)
+    watch.add_argument("--label", default="watch")
+    watch.add_argument("--runs-root", default="runs")
+    watch.add_argument("--weights", default="weights/mortal.pth")
+    watch.add_argument("--no-eval", action="store_true")
+    watch.add_argument("--delay", type=float, default=0.4)
+    watch.add_argument("--glyphs", action="store_true")
+    watch.add_argument("--ui", choices=["term", "web"], default="term")
+    watch.set_defaults(func=_cmd_watch)
+
+    review_cmd = subparsers.add_parser("review")
+    review_cmd.add_argument("run_dir")
+    review_cmd.add_argument("--weights", default="weights/mortal.pth")
+    review_cmd.add_argument("--force", action="store_true")
+    review_cmd.set_defaults(func=_cmd_review)
+
+    selfcheck = subparsers.add_parser("selfcheck")
+    selfcheck.add_argument("--runs-root", default="runs")
+    selfcheck.add_argument("--weights", default="weights/mortal.pth")
+    selfcheck.add_argument("--keep", action="store_true")
+    selfcheck.set_defaults(func=_cmd_selfcheck)
+
+    record = subparsers.add_parser("record")
+    record.add_argument("run_dir")
+    record.add_argument("--game")
+    record.add_argument("--out")
+    record.set_defaults(func=_cmd_record)
+
+    serve = subparsers.add_parser("serve")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8642)
+    serve.add_argument("--runs-root", default="runs")
+    serve.add_argument("--weights", default="weights/mortal.pth")
+    serve.add_argument("--demo")
+    serve.set_defaults(func=_cmd_serve)
+
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return int(args.func(args))
+    except KeyboardInterrupt:
+        print("interrupted", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+def _prepare_run_dir(run_dir: Path) -> None:
+    for name in ("logs", "decisions", "review"):
+        (run_dir / name).mkdir(parents=True, exist_ok=True)
+
+
+def _is_human_spec(spec: str) -> bool:
+    return providers.parse_spec(spec).provider == "human"
+
+
+def _summary_by_seed(
+    summaries: Sequence[GameSummary] | Mapping[tuple[int, int], GameSummary] | None,
+) -> dict[tuple[int, int], GameSummary]:
+    if summaries is None:
+        return {}
+    if isinstance(summaries, Mapping):
+        return {tuple(key): value for key, value in summaries.items()}
+    return {tuple(summary.seed): summary for summary in summaries}
+
+
+def _reconstruct_summary(events: list[dict[str, Any]], path: Path) -> GameSummary:
+    seed = _seed_from_events_or_path(events, path)
+    start_game = next((event for event in events if event.get("type") == "start_game"), {})
+    names = [str(name) for name in start_game.get("names") or []]
+    if len(names) != 4:
+        names = [f"P{seat}" for seat in range(4)]
+
+    last_scores = [25000, 25000, 25000, 25000]
+    last_start_index = -1
+    for index, event in enumerate(events):
+        if event.get("type") != "start_kyoku":
+            continue
+        scores = event.get("scores")
+        if isinstance(scores, list) and len(scores) == 4:
+            last_scores = [int(score) for score in scores]
+            last_start_index = index
+
+    scores = list(last_scores)
+    for event in events[last_start_index + 1 :]:
+        if event.get("type") not in {"hora", "ryukyoku"}:
+            continue
+        deltas = event.get("deltas")
+        if isinstance(deltas, list) and len(deltas) == 4:
+            scores = [
+                score + int(delta)
+                for score, delta in zip(scores, deltas, strict=True)
+            ]
+
+    return GameSummary(seed=seed, names=names, scores=scores, placements=_placements(names, scores))
+
+
+def _placements(names: Sequence[str], scores: Sequence[int]) -> dict[str, int]:
+    order = sorted(range(4), key=lambda seat: (-int(scores[seat]), seat))
+    return {str(names[seat]): rank + 1 for rank, seat in enumerate(order)}
+
+
+def _reviews_missing(run_dir: Path) -> bool:
+    logs = sorted((run_dir / "logs").glob("*.json.gz"), key=_log_sort_key)
+    if not logs:
+        raise ValueError(f"no logs found in {run_dir / 'logs'}")
+    for log_path in logs:
+        seed = _seed_from_path(log_path)
+        if not (run_dir / "review" / f"{_seed_label(seed)}.json").exists():
+            return True
+    return False
+
+
+def _select_log(run_dir: Path, game: str | None) -> Path:
+    logs = sorted((run_dir / "logs").glob("*.json.gz"), key=_log_sort_key)
+    if not logs:
+        raise ValueError(f"no logs found in {run_dir / 'logs'}")
+    if game is None:
+        return logs[0]
+    target = game[:-8] if game.endswith(".json.gz") else game
+    target = target[:-5] if target.endswith(".json") else target
+    for path in logs:
+        if _seed_label(_seed_from_path(path)) == target:
+            return path
+    raise ValueError(f"game not found: {game}")
+
+
+def _seed_from_events_or_path(
+    events: list[dict[str, Any]],
+    path: Path,
+) -> tuple[int, int]:
+    for event in events:
+        if event.get("type") != "start_game":
+            continue
+        seed = event.get("seed")
+        if isinstance(seed, list | tuple) and len(seed) >= 2:
+            return int(seed[0]), int(seed[1])
+    return _seed_from_path(path)
+
+
+def _seed_from_path(path: Path) -> tuple[int, int]:
+    name = path.name
+    if name.endswith(".json.gz"):
+        stem = name[:-8]
+    elif name.endswith(".json"):
+        stem = name[:-5]
+    else:
+        stem = path.stem
+    parts = stem.split("_")
+    if len(parts) >= 2:
+        return int(parts[0]), int(parts[1])
+    raise ValueError(f"cannot parse seed from {path.name}")
+
+
+def _seed_label(seed: tuple[int, int]) -> str:
+    return f"{int(seed[0])}_{int(seed[1])}"
+
+
+def _log_sort_key(path: Path) -> tuple[int, int, str]:
+    try:
+        seed = _seed_from_path(path)
+    except ValueError:
+        return 0, 0, path.name
+    return seed[0], seed[1], path.name
+
+
+def _print_summary(summary: dict[str, Any]) -> None:
+    engines = list(summary.get("leaderboard") or [])
+    headers = ["engine", "games", "place", "score", "rating", "match", "fallbacks"]
+    rows = []
+    for engine in engines:
+        fallback_rate = engine.get("fallback_rate")
+        if fallback_rate is None:
+            fallbacks = "n/a"
+        else:
+            fallbacks = f"{float(fallback_rate) * 100:.1f}% ({int(engine.get('fallback_count') or 0)})"
+        rows.append(
+            [
+                str(engine.get("name") or ""),
+                str(int(engine.get("games") or 0)),
+                f"{float(engine.get('avg_placement') or 0.0):.2f}",
+                f"{float(engine.get('avg_score') or 0.0):.0f}",
+                f"{float(engine.get('mean_rating') or 0.0) * 100:.2f}",
+                f"{float(engine.get('match_rate') or 0.0) * 100:.1f}%",
+                fallbacks,
+            ]
+        )
+
+    widths = [
+        max(len(headers[index]), *(len(row[index]) for row in rows))
+        if rows
+        else len(headers[index])
+        for index in range(len(headers))
+    ]
+    print("  ".join(header.ljust(widths[index]) for index, header in enumerate(headers)))
+    for row in rows:
+        print("  ".join(cell.ljust(widths[index]) for index, cell in enumerate(row)))
+
+
+def _print_seat_ratings(run_dir: Path) -> None:
+    paths = sorted((run_dir / "review").glob("*.json"), key=_log_sort_key)
+    if not paths:
+        return
+    data = _read_json(paths[0])
+    players = data.get("players") or {}
+    print("seat ratings")
+    for seat in range(4):
+        player = players.get(str(seat)) or players.get(seat) or {}
+        review_data = player.get("review") or {}
+        rating = float(review_data.get("rating") or 0.0) * 100.0
+        print(f"P{seat} {str(player.get('name') or f'P{seat}'):<24} {rating:6.2f}")
+
+
+def _read_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))

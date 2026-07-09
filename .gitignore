@@ -1,0 +1,40 @@
+# Python bytecode and virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+
+# Python packaging, tests, and type-checker caches
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.pytype/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Native libriichi build output and copied extension module
+/libriichi/target/
+/jongbench/libriichi.so
+
+# Downloaded Mortal checkpoints; keep configuration under weights/ versioned
+/weights/*.pth
+/weights/*.pt
+/weights/*.ckpt
+/weights/*.safetensors
+
+# Benchmark output: logs, decisions, reviews, reports, and recordings
+/runs/
+
+# Local credentials and macOS metadata
+.env
+.env.*
+!.env.example
+.DS_Store
