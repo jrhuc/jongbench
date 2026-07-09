@@ -91,9 +91,10 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
   by BaseEngine, so a human UI can only ever show the player's own hand.
   * `TerminalHumanIO`: prints `prompts.render_state` + numbered menu, reads a choice from
     stdin (re-asks on invalid input).
-  * `WebHumanIO`: exposes the pending decision to the web server (`pending() -> {menu,
-    state_text, seat}`), blocks on a threading.Event until `choose(index)` is called by the
-    POST handler. One decision pending at a time; a generation counter guards stale POSTs.
+  * `WebHumanIO`: exposes the pending decision to the web server (`pending() -> {options,
+    state_text, seat}`), where each option has its menu index, action, label, and raw discard
+    tile when applicable. It blocks on a threading.Event until `choose(index)` is called by the
+    POST handler. One decision is pending at a time; a generation counter guards stale POSTs.
 - Seat spec `human` (accepted wherever a model spec is): `make_engine` returns a HumanEngine
   wired to the right HumanIO for the frontend in use. Human games get the same Mortal
   review as models — the human's rating is directly comparable.
@@ -160,10 +161,12 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
 
 ### webui.py (watch/serve mode)
 - Stdlib `http.server.ThreadingHTTPServer`, no framework. Single self-contained HTML page
-  (inline CSS/JS, TEXT tiles — monospace ascii tiles, red fives colored; no image assets).
-  The board is a square: viewer-selected seat at the bottom, other three seats' tile rows
-  rotated 90/180/270 with CSS transforms around the center (discard ponds in the middle,
-  hands/melds on the edges, scores + winds in the corners).
+  (inline CSS/JS, Unicode Mahjong glyphs for presentation; canonical text tile notation remains
+  in the game and analysis layers; no image assets).
+  The board is a square: viewer-selected seat at the bottom, with other hands oriented around the
+  table, discard ponds nearest the center, and a face-down wall ring around the round display.
+  Human players discard by clicking a legal tile directly; compact popups are reserved for
+  chi/pon/ron/tsumo choices, while other non-discard actions remain inline.
 - Endpoints: `GET /` app page; `POST /api/start` {models: [4 specs], keys: {provider: key},
   seed} → starts a game thread, returns run_id (visitor keys are held in RAM for that run
   only, never logged); `GET /api/events/<run_id>` SSE stream of spectator feed (replays

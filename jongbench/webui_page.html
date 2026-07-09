@@ -235,8 +235,8 @@ pre {
   min-width: 0;
   margin: 0 auto;
   display: grid;
-  grid-template-columns: minmax(130px, .78fr) minmax(300px, 1.25fr) minmax(130px, .78fr);
-  grid-template-rows: minmax(130px, .78fr) minmax(300px, 1.25fr) minmax(130px, .78fr);
+  grid-template-columns: minmax(144px, .78fr) minmax(300px, 1.25fr) minmax(144px, .78fr);
+  grid-template-rows: minmax(144px, .78fr) minmax(300px, 1.25fr) minmax(144px, .78fr);
   gap: 8px;
 }
 .board-zone {
@@ -248,15 +248,14 @@ pre {
   overflow: hidden;
 }
 .seat-zone {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
+  --tile-rotation: 0deg;
+  display: grid;
   padding: 8px;
 }
-.seat-zone.bottom { grid-column: 2; grid-row: 3; }
-.seat-zone.top { grid-column: 2; grid-row: 1; }
-.seat-zone.left { grid-column: 1; grid-row: 2; }
-.seat-zone.right { grid-column: 3; grid-row: 2; }
+.seat-zone.bottom { grid-column: 2; grid-row: 3; --tile-rotation: 0deg; }
+.seat-zone.top { grid-column: 2; grid-row: 1; --tile-rotation: 180deg; }
+.seat-zone.left { grid-column: 1; grid-row: 2; --tile-rotation: -90deg; }
+.seat-zone.right { grid-column: 3; grid-row: 2; --tile-rotation: 90deg; }
 .center-zone {
   grid-column: 2;
   grid-row: 2;
@@ -264,9 +263,18 @@ pre {
   place-items: center;
   padding: 10px;
 }
-.seat-zone.top .seat-content { transform: rotate(180deg); }
-.seat-zone.left .tile-line-inner, .seat-zone.left .hand-stack-inner { transform: rotate(-90deg); }
-.seat-zone.right .tile-line-inner, .seat-zone.right .hand-stack-inner { transform: rotate(90deg); }
+.seat-content {
+  min-width: 0;
+  min-height: 0;
+}
+.top .seat-content, .bottom .seat-content {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.bottom .seat-head { margin-top: auto; }
+.top .seat-melds { margin-top: auto; }
 .seat-head {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -306,29 +314,75 @@ pre {
   gap: 3px;
   min-height: 0;
 }
-.discard-row, .hand-row, .meld-row {
+.discard-row, .meld-row {
   display: flex;
   flex-wrap: wrap;
   gap: 3px;
   min-width: 0;
   align-items: center;
 }
+.seat-hand {
+  display: grid;
+  grid-template-columns: repeat(14, minmax(0, 1fr));
+  gap: 2px;
+  min-width: 0;
+  align-items: center;
+}
+.seat-hand .tile {
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  aspect-ratio: .82;
+}
+.top .seat-hand { direction: rtl; }
 .side .seat-content {
   height: 100%;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: 5px;
+  grid-template-columns: auto minmax(20px, .38fr) minmax(74px, 1.15fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 4px;
+}
+.side .seat-head {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+.side .seat-hand, .side .seat-melds, .side .seat-pond {
+  grid-row: 2;
+  min-height: 0;
+}
+.left .seat-hand { grid-column: 1; }
+.left .seat-melds { grid-column: 2; }
+.left .seat-pond { grid-column: 3; }
+.right .seat-pond { grid-column: 1; }
+.right .seat-melds { grid-column: 2; }
+.right .seat-hand { grid-column: 3; }
+.side .seat-hand {
+  width: 34px;
+  height: 100%;
+  grid-template-columns: 1fr;
+  grid-template-rows: repeat(14, minmax(0, 1fr));
+  gap: 1px;
+  justify-self: center;
+}
+.side .seat-hand .tile {
+  width: auto;
+  height: 100%;
+  max-width: 34px;
+  aspect-ratio: 1.35;
+  justify-self: center;
 }
 .side .pond {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+  align-self: center;
   overflow: hidden;
 }
-.side .discard-row, .side .hand-row {
+.side .seat-melds {
   flex-direction: column;
   align-items: center;
-  flex-wrap: nowrap;
+  overflow: hidden;
+}
+.side .seat-melds .discard-row {
+  flex-direction: column;
+  align-items: center;
 }
 .tile {
   display: inline-flex;
@@ -339,9 +393,26 @@ pre {
   border: 1px solid var(--border);
   border-radius: 3px;
   background: var(--surface);
-  font: 700 13px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0;
+  color: var(--ink);
+  direction: ltr;
+  padding: 0;
+}
+button.tile {
+  cursor: pointer;
+}
+button.tile:hover:not(:disabled) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  transform: translateY(-2px);
+}
+button.tile:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.tile-glyph {
+  display: block;
+  font: 25px/1 "Noto Sans Mahjong", "Segoe UI Symbol", "Apple Symbols", sans-serif;
+  transform: rotate(var(--tile-rotation));
 }
 .tile.m { color: var(--man); }
 .tile.p { color: var(--pin); }
@@ -354,6 +425,68 @@ pre {
 }
 .discard-called { opacity: .48; }
 .discard-riichi { outline: 2px solid var(--accent); outline-offset: 1px; }
+.human-controls {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.human-controls button {
+  min-height: 27px;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+.human-hint {
+  align-self: center;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+}
+.wall {
+  width: min(100%, 292px);
+  aspect-ratio: 1;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 34px;
+  grid-template-rows: 34px minmax(0, 1fr) 34px;
+  gap: 2px;
+}
+.wall-side {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-width: 0;
+  min-height: 0;
+  gap: 0;
+}
+.wall-side.top { grid-column: 2; grid-row: 1; }
+.wall-side.right { grid-column: 3; grid-row: 2; flex-direction: column; }
+.wall-side.bottom { grid-column: 2; grid-row: 3; }
+.wall-side.left { grid-column: 1; grid-row: 2; flex-direction: column; }
+.wall-stack {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 28px;
+  flex: 0 1 18px;
+}
+.wall-tile {
+  position: absolute;
+  color: var(--muted);
+  font: 22px/1 "Noto Sans Mahjong", "Segoe UI Symbol", "Apple Symbols", sans-serif;
+}
+.wall-tile:first-child { transform: translate(-2px, -2px); }
+.wall-tile:last-child { transform: translate(2px, 2px); }
+.wall-side.left .wall-stack { transform: rotate(-90deg); }
+.wall-side.right .wall-stack { transform: rotate(90deg); }
+.wall-center {
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+}
 .center-card {
   width: min(100%, 260px);
   display: grid;
@@ -449,41 +582,29 @@ th {
   align-items: center;
   margin-bottom: 12px;
 }
-.bottom-sheet {
+.pending-popup {
   position: fixed;
   left: 50%;
-  bottom: 14px;
+  top: 50%;
   z-index: 10;
-  width: min(960px, calc(100vw - 24px));
-  max-height: min(68vh, 680px);
-  transform: translateX(-50%);
+  width: min(360px, calc(100vw - 24px));
+  max-height: min(60vh, 460px);
+  transform: translate(-50%, -50%);
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(220px, .8fr);
-  gap: 12px;
+  gap: 8px;
   padding: 12px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 12px 40px rgba(0,0,0,.18);
 }
-.bottom-sheet[hidden] { display: none; }
-.pending-state {
-  max-height: calc(min(68vh, 680px) - 28px);
-  overflow: auto;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 10px;
-  background: var(--page);
-}
+.pending-popup[hidden] { display: none; }
 .pending-actions {
   display: grid;
-  align-content: start;
   gap: 7px;
-  overflow: auto;
 }
 .pending-actions button {
   min-height: 40px;
-  text-align: left;
 }
 [hidden] { display: none !important; }
 @media (max-width: 900px) {
@@ -496,25 +617,53 @@ th {
   }
   .board {
     width: 100%;
-    grid-template-columns: minmax(92px, .62fr) minmax(260px, 1.4fr) minmax(92px, .62fr);
-    grid-template-rows: minmax(114px, .7fr) minmax(280px, 1.4fr) minmax(114px, .7fr);
+    grid-template-columns: minmax(82px, .62fr) minmax(230px, 1.4fr) minmax(82px, .62fr);
+    grid-template-rows: minmax(114px, .7fr) minmax(250px, 1.4fr) minmax(114px, .7fr);
     gap: 5px;
   }
+  .seat-zone { padding: 5px; }
   .tile {
     width: 24px;
     height: 29px;
-    font-size: 12px;
   }
-  .center-card { font-size: 12px; }
-  .bottom-sheet {
-    grid-template-columns: 1fr;
-  }
+  .tile-glyph { font-size: 21px; }
+  .side .seat-content { grid-template-columns: auto minmax(14px, .3fr) minmax(54px, 1fr); }
+  .side .seat-hand { width: 28px; }
+  .side .seat-hand .tile { max-width: 28px; }
+  .wall { width: min(100%, 244px); grid-template-columns: 29px minmax(0, 1fr) 29px; grid-template-rows: 29px minmax(0, 1fr) 29px; }
+  .wall-stack { width: 15px; height: 23px; flex-basis: 15px; }
+  .wall-tile { font-size: 18px; }
+  .center-card { font-size: 11px; gap: 5px; }
+  .round-label { font-size: 15px; }
+  .score-mini { padding: 3px; font-size: 10px; }
   .replay-controls {
     grid-template-columns: 1fr 1fr;
   }
   .replay-controls input {
     grid-column: 1 / -1;
   }
+}
+@media (max-width: 580px) {
+  .board {
+    grid-template-columns: minmax(58px, .55fr) minmax(184px, 1.45fr) minmax(58px, .55fr);
+    grid-template-rows: minmax(104px, .68fr) minmax(245px, 1.3fr) minmax(104px, .68fr);
+  }
+  .seat-head { font-size: 10px; gap: 3px; }
+  .chip { min-height: 17px; padding: 1px 4px; font-size: 9px; }
+  .side .seat-content { grid-template-columns: auto minmax(8px, .15fr) minmax(36px, 1fr); gap: 2px; }
+  .side .seat-hand { width: 22px; }
+  .side .seat-hand .tile { max-width: 22px; }
+  .side .tile { width: 17px; height: 14px; }
+  .side .tile-glyph { font-size: 15px; }
+  .discard-row, .meld-row { gap: 1px; }
+  .wall { width: min(100%, 205px); grid-template-columns: 24px minmax(0, 1fr) 24px; grid-template-rows: 24px minmax(0, 1fr) 24px; }
+  .wall-stack { width: 12px; height: 19px; flex-basis: 12px; }
+  .wall-tile { font-size: 15px; }
+  .dora-row .tile { width: 20px; height: 24px; }
+  .dora-row .tile-glyph { font-size: 17px; }
+  .score-cross { gap: 2px; }
+  .score-mini { padding: 2px; font-size: 8px; }
+  .pending-popup { top: 42%; }
 }
 </style>
 </head>
@@ -529,13 +678,22 @@ th {
   </div>
   <section id="app"></section>
 </main>
-<section id="pending-sheet" class="bottom-sheet" hidden></section>
+<section id="pending-sheet" class="pending-popup" hidden></section>
 <script>
 const app = document.getElementById("app");
 const pendingSheet = document.getElementById("pending-sheet");
 const seatNames = ["East", "South", "West", "North"];
 const providers = ["anthropic", "openai", "google", "xai", "deepseek", "compat", "random", "human"];
 const defaultModels = {anthropic: "claude-sonnet-4-5", openai: "gpt-4.1", google: "gemini-2.5-pro", xai: "grok-4", deepseek: "deepseek-chat", compat: ""};
+const mahjongGlyphs = {
+  E: "\u{1F000}", S: "\u{1F001}", W: "\u{1F002}", N: "\u{1F003}",
+  C: "\u{1F004}", F: "\u{1F005}", P: "\u{1F006}",
+};
+for (let number = 1; number <= 9; number++) {
+  mahjongGlyphs[`${number}m`] = String.fromCodePoint(0x1F006 + number);
+  mahjongGlyphs[`${number}s`] = String.fromCodePoint(0x1F00F + number);
+  mahjongGlyphs[`${number}p`] = String.fromCodePoint(0x1F018 + number);
+}
 let startSeats = Array.from({length: 4}, () => ({provider: "random", model: "", baseUrl: ""}));
 let live = null;
 let replay = null;
@@ -573,6 +731,21 @@ function fmtTile(tile) {
   return text;
 }
 
+function rawTile(tile) {
+  const text = String(tile || "?");
+  if (text === "0m") return "5mr";
+  if (text === "0p") return "5pr";
+  if (text === "0s") return "5sr";
+  return text;
+}
+
+function tileGlyph(tile) {
+  const raw = rawTile(tile);
+  if (raw === "?") return "\u{1F02B}";
+  const base = raw.endsWith("r") ? raw.slice(0, -1) : raw;
+  return mahjongGlyphs[base] || "\u{1F02B}";
+}
+
 function tileClass(tile) {
   const text = fmtTile(tile);
   if (text === "?") return "back";
@@ -582,9 +755,22 @@ function tileClass(tile) {
   return "honor";
 }
 
-function tileSpan(tile) {
+function tileSpan(tile, options) {
+  const config = options || {};
   const shown = fmtTile(tile);
-  return el("span", {class: `tile ${tileClass(tile)}`, text: shown === "?" ? "▪" : shown});
+  const interactive = typeof config.onclick === "function";
+  const label = shown === "?" ? "face-down tile" : shown;
+  const attrs = {
+    class: `tile ${tileClass(tile)}${interactive ? " tile-choice" : ""}${config.className ? ` ${config.className}` : ""}`,
+    title: label,
+    "aria-label": config.ariaLabel || label,
+  };
+  if (interactive) {
+    attrs.type = "button";
+    attrs.disabled = Boolean(config.disabled);
+    attrs.onclick = config.onclick;
+  }
+  return el(interactive ? "button" : "span", attrs, el("span", {class: "tile-glyph", text: tileGlyph(tile)}));
 }
 
 function tileLine(tiles, className) {
@@ -643,15 +829,15 @@ function renderBoard(snapshot, viewerSeat, names) {
     riichi_accepted: (snapshot.riichi_accepted || [])[seat],
   }));
   const bySeat = new Map(seats.map(seat => [Number(seat.seat), seat]));
-  board.append(renderSeat(bySeat.get(orderedSeat(viewerSeat, 2)), "top"));
-  board.append(renderSeat(bySeat.get(orderedSeat(viewerSeat, 3)), "left side"));
+  board.append(renderSeat(bySeat.get(orderedSeat(viewerSeat, 2)), "top", live && live.pending));
+  board.append(renderSeat(bySeat.get(orderedSeat(viewerSeat, 3)), "left side", live && live.pending));
   board.append(renderCenter(snapshot, viewerSeat, names));
-  board.append(renderSeat(bySeat.get(orderedSeat(viewerSeat, 1)), "right side"));
-  board.append(renderSeat(bySeat.get(orderedSeat(viewerSeat, 0)), "bottom"));
+  board.append(renderSeat(bySeat.get(orderedSeat(viewerSeat, 1)), "right side", live && live.pending));
+  board.append(renderSeat(bySeat.get(orderedSeat(viewerSeat, 0)), "bottom", live && live.pending));
   return board;
 }
 
-function renderSeat(seat, position) {
+function renderSeat(seat, position, pending) {
   const zone = el("div", {class: `board-zone seat-zone ${position}`});
   if (!seat) return zone;
   const content = el("div", {class: "seat-content"});
@@ -661,22 +847,67 @@ function renderSeat(seat, position) {
     el("span", {class: "score", text: String(seat.score ?? 0)})
   );
   if (seat.riichi_declared || seat.riichi_accepted) head.append(el("span", {class: "chip riichi", text: "RIICHI"}));
-  const side = position.includes("side");
-  const hand = el("div", {class: side ? "hand-row hand-stack-inner" : "hand-row"});
-  for (const tile of seat.hand || []) hand.append(tileSpan(tile));
+  const isHuman = position === "bottom" && pending && Number(pending.seat) === Number(seat.seat);
+  const hand = el("div", {class: "seat-hand"});
+  const handTiles = position.includes("right") ? [...(seat.hand || [])].reverse() : (seat.hand || []);
+  for (const tile of handTiles) {
+    const option = isHuman ? discardOptionForTile(pending, tile) : null;
+    hand.append(tileSpan(tile, option ? {
+      ariaLabel: `Discard ${fmtTile(tile)}`,
+      disabled: Boolean(live && live.submitting),
+      onclick: () => choosePending(pending.generation, option.choice),
+    } : undefined));
+  }
+  const pond = discardTiles(seat.discards, position.includes("side"));
+  pond.classList.add("seat-pond");
+  const melds = meldRow(seat.melds);
+  melds.classList.add("seat-melds");
+  const controls = isHuman ? renderHumanControls(pending) : null;
   if (position === "bottom") {
-    content.append(head, discardTiles(seat.discards, false), meldRow(seat.melds), hand);
+    content.append(pond, melds, head);
+    if (controls) content.append(controls);
+    content.append(hand);
   } else if (position === "top") {
-    content.append(head, hand, meldRow(seat.melds), discardTiles(seat.discards, false));
+    content.append(hand, head, melds, pond);
   } else {
-    content.append(head, discardTiles(seat.discards, true), hand, meldRow(seat.melds));
+    content.append(head, hand, melds, pond);
   }
   zone.append(content);
   return zone;
 }
 
+function pendingOptions(pending) {
+  return (pending && pending.options || []).filter(option => option && Number.isInteger(Number(option.choice)));
+}
+
+function discardOptionForTile(pending, tile) {
+  const raw = rawTile(tile);
+  return pendingOptions(pending).find(option => option.action === "discard" && option.tile === raw) || null;
+}
+
+function renderHumanControls(pending) {
+  const controls = el("div", {class: "human-controls"});
+  const options = pendingOptions(pending);
+  if (options.some(option => option.action === "discard")) {
+    controls.append(el("span", {class: "human-hint", text: "Choose a tile to discard"}));
+  }
+  const popupActions = new Set(["chi", "pon", "ron", "tsumo"]);
+  for (const option of options) {
+    if (option.action === "discard" || popupActions.has(option.action)) continue;
+    controls.append(el("button", {
+      type: "button",
+      disabled: Boolean(live && live.submitting),
+      onclick: () => choosePending(pending.generation, option.choice),
+      text: option.label,
+    }));
+  }
+  return controls;
+}
+
 function renderCenter(snapshot, viewerSeat, names) {
   const zone = el("div", {class: "board-zone center-zone"});
+  const wall = renderWall(snapshot.tiles_left);
+  const center = el("div", {class: "wall-center"});
   const card = el("div", {class: "center-card"});
   const round = `${roundName(snapshot.bakaze)} ${snapshot.kyoku || 1} · honba ${snapshot.honba || 0}`;
   card.append(el("div", {class: "round-label", text: round}));
@@ -692,8 +923,30 @@ function renderCenter(snapshot, viewerSeat, names) {
     cross.append(el("div", {class: "score-mini", text: `${name}: ${score}`}));
   }
   card.append(cross);
-  zone.append(card);
+  center.append(card);
+  wall.append(center);
+  zone.append(wall);
   return zone;
+}
+
+function renderWall(tilesLeft) {
+  const wall = el("div", {class: "wall"});
+  const stacks = Math.ceil(Math.max(0, Number(tilesLeft) || 0) / 2);
+  let remaining = stacks;
+  for (const side of ["top", "right", "bottom", "left"]) {
+    const sidesLeft = 4 - ["top", "right", "bottom", "left"].indexOf(side);
+    const count = Math.ceil(remaining / sidesLeft);
+    remaining -= count;
+    const segment = el("div", {class: `wall-side ${side}`});
+    for (let stack = 0; stack < count; stack++) {
+      segment.append(el("span", {class: "wall-stack", "aria-label": "wall tiles"},
+        el("span", {class: "wall-tile", text: "\u{1F02B}"}),
+        el("span", {class: "wall-tile", text: "\u{1F02B}"})
+      ));
+    }
+    wall.append(segment);
+  }
+  return wall;
 }
 
 function roundName(wind) {
@@ -703,9 +956,13 @@ function roundName(wind) {
 function renderTicker(snapshot) {
   const ticker = el("div", {class: "ticker"});
   for (const line of (snapshot && snapshot.ticker || []).slice(-8)) {
-    ticker.append(el("div", {text: line}));
+    ticker.append(el("div", {text: displayTileText(line)}));
   }
   return ticker;
+}
+
+function displayTileText(text) {
+  return String(text || "").replace(/\b(0[mps]|[1-9][mps]|[ESWNPFC])\b/g, match => tileGlyph(match));
 }
 
 function renderStart() {
@@ -734,12 +991,13 @@ function renderSeatRow(seat) {
   const state = startSeats[seat];
   const row = el("div", {class: "seat-row"});
   row.append(el("div", {class: "seat-name", text: seatNames[seat]}));
-  const providerSelect = el("select", {value: state.provider, onchange: event => {
+  const providerSelect = el("select", {onchange: event => {
     state.provider = event.target.value;
     if (!state.model && defaultModels[state.provider]) state.model = defaultModels[state.provider];
     renderStart();
   }});
   for (const provider of providers) providerSelect.append(el("option", {value: provider, text: provider}));
+  providerSelect.value = state.provider;
   row.append(el("label", {}, "Provider", providerSelect));
   const modelInput = el("input", {type: "text", value: state.model || defaultModels[state.provider] || "", placeholder: "model", oninput: event => { state.model = event.target.value; }});
   row.append(el("label", {hidden: state.provider === "random" || state.provider === "human"}, "Model", modelInput));
@@ -813,7 +1071,7 @@ async function showRun(runId) {
   stopLive();
   const shell = el("section", {});
   clear(app, shell);
-  live = {runId, lastSeq: 0, retries: 0, state: null, snapshot: null, viewerSeat: 0, source: null, pendingGeneration: null, stateTimer: null, pendingTimer: null};
+  live = {runId, lastSeq: 0, retries: 0, state: null, snapshot: null, viewerSeat: 0, source: null, pending: null, pendingGeneration: null, pendingError: null, submitting: false, stateTimer: null, pendingTimer: null};
   await refreshState();
   if (!live) return;
   live.viewerSeat = live.state && live.state.human_seat !== null ? live.state.human_seat : 0;
@@ -845,11 +1103,12 @@ function renderLive() {
     el("span", {text: `latest #${state.latest_seq || 0}`})
   ));
   if (state.human_seat === null) {
-    const select = el("select", {class: "viewer-select", value: live.viewerSeat, onchange: event => {
+    const select = el("select", {class: "viewer-select", onchange: event => {
       live.viewerSeat = Number(event.target.value);
       renderLive();
     }});
     for (let seat = 0; seat < 4; seat++) select.append(el("option", {value: seat, text: `view P${seat} ${state.names[seat] || ""}`}));
+    select.value = String(live.viewerSeat);
     head.append(select);
   }
   const children = [head];
@@ -859,6 +1118,8 @@ function renderLive() {
   children.push(renderTicker(live.snapshot));
   if (state.final) children.push(renderFinal(state.final, state.names));
   clear(app, ...children);
+  if (live.pending) renderPending(live.pending);
+  else pendingSheet.hidden = true;
 }
 
 function renderFinal(final, names) {
@@ -906,6 +1167,9 @@ function connectSse() {
 async function pollPending() {
   if (!live || !live.state || live.state.human_seat === null) return;
   if (!["starting", "running"].includes(live.state.status)) {
+    live.pending = null;
+    live.pendingGeneration = null;
+    live.submitting = false;
     pendingSheet.hidden = true;
     return;
   }
@@ -913,37 +1177,84 @@ async function pollPending() {
     const response = await fetch(`/api/pending/${encodeURIComponent(live.runId)}`, {cache: "no-store"});
     const pending = await response.json();
     if (!pending) {
-      pendingSheet.hidden = true;
-      live.pendingGeneration = null;
+      if (live.pending || live.pendingGeneration !== null) {
+        live.pending = null;
+        live.pendingGeneration = null;
+        live.pendingError = null;
+        live.submitting = false;
+        renderLive();
+      }
       return;
     }
-    if (pending.generation !== live.pendingGeneration) renderPending(pending);
+    if (pending.generation !== live.pendingGeneration) {
+      live.pending = pending;
+      live.pendingGeneration = pending.generation;
+      live.pendingError = null;
+      live.submitting = false;
+      renderLive();
+    }
   } catch (_) {
   }
 }
 
 function renderPending(pending) {
-  live.pendingGeneration = pending.generation;
-  const pre = el("pre", {text: pending.state_text || ""});
+  const popupActions = new Set(["chi", "pon", "ron", "tsumo"]);
+  const choices = pendingOptions(pending).filter(option => popupActions.has(option.action));
+  if (!choices.length) {
+    pendingSheet.hidden = true;
+    return;
+  }
   const actions = el("div", {class: "pending-actions"});
-  (pending.menu || []).forEach((label, index) => {
-    actions.append(el("button", {type: "button", onclick: event => choosePending(event.currentTarget, pending.generation, index), text: label}));
-  });
-  clear(pendingSheet, el("div", {class: "pending-state"}, pre), actions);
+  for (const option of choices) {
+    actions.append(el("button", {
+      type: "button",
+      disabled: Boolean(live && live.submitting),
+      onclick: () => choosePending(pending.generation, option.choice),
+      text: option.label,
+    }));
+  }
+  const pass = pendingOptions(pending).find(option => option.action === "pass");
+  if (pass) {
+    actions.append(el("button", {
+      type: "button",
+      disabled: Boolean(live && live.submitting),
+      onclick: () => choosePending(pending.generation, pass.choice),
+      text: "pass",
+    }));
+  }
+  const title = choices.some(option => option.action === "ron" || option.action === "tsumo") ? "Win or continue" : "Call";
+  const children = [el("strong", {text: title})];
+  if (live && live.pendingError) children.push(el("div", {class: "error", text: live.pendingError}));
+  children.push(actions);
+  clear(pendingSheet, ...children);
   pendingSheet.hidden = false;
 }
 
-async function choosePending(button, generation, choice) {
-  for (const item of pendingSheet.querySelectorAll("button")) item.disabled = true;
-  const response = await fetch(`/api/choose/${encodeURIComponent(live.runId)}`, {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    cache: "no-store",
-    body: JSON.stringify({generation, choice}),
-  });
-  const data = await response.json();
-  if (response.ok && data.ok) pendingSheet.hidden = true;
-  else button.disabled = false;
+async function choosePending(generation, choice) {
+  if (!live || live.submitting) return;
+  live.submitting = true;
+  live.pendingError = null;
+  renderLive();
+  try {
+    const response = await fetch(`/api/choose/${encodeURIComponent(live.runId)}`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      cache: "no-store",
+      body: JSON.stringify({generation, choice}),
+    });
+    const data = await response.json();
+    if (response.ok && data.ok) {
+      live.pending = null;
+      live.pendingGeneration = null;
+      pendingSheet.hidden = true;
+      return;
+    }
+    live.pendingError = data.error || "That choice is no longer available.";
+  } catch (exc) {
+    live.pendingError = exc.message || "Could not send that choice.";
+  }
+  live.submitting = false;
+  renderLive();
 }
 
 async function showReview(runId) {
@@ -1040,7 +1351,7 @@ function eventLabel(event) {
 }
 
 function appendFormattedText(parent, text) {
-  const pattern = /([0-9][mps]|[ESWNPFC])/g;
+  const pattern = /(0[mps]|[1-9][mps]|[ESWNPFC])/g;
   let last = 0;
   for (const match of String(text).matchAll(pattern)) {
     if (match.index > last) parent.append(document.createTextNode(String(text).slice(last, match.index)));
@@ -1100,11 +1411,12 @@ function renderReplay() {
   const max = Math.max(0, frames.length - 1);
   replay.index = Math.min(replay.index, max);
   const play = el("button", {type: "button", onclick: toggleReplay, text: replay.playing ? "pause" : "play"});
-  const speed = el("select", {value: replay.speed, onchange: event => {
+  const speed = el("select", {onchange: event => {
     replay.speed = Number(event.target.value);
     if (replay.playing) startReplayTimer();
   }});
   for (const value of [0.5, 1, 2, 4, 8]) speed.append(el("option", {value, text: `${value}×`}));
+  speed.value = String(replay.speed);
   const slider = el("input", {type: "range", min: 0, max, value: replay.index, oninput: event => {
     replay.index = Number(event.target.value);
     replay.playing = false;

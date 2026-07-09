@@ -32,6 +32,11 @@ def sanitize_events(events: list[dict[str, Any]], player_id: int) -> list[dict[s
 
 
 class BaseEngine(ABC):
+    # A human needs to see even the only legal decision so the web and terminal
+    # UIs can keep the choice in the player's hands. Automated engines can
+    # safely skip an otherwise pointless round trip.
+    auto_choose_single_menu = True
+
     engine_type = "mjai-log"
 
     def __init__(
@@ -66,7 +71,7 @@ class BaseEngine(ABC):
             menu = actions.build_menu(game_state.state)
             if not menu:
                 reactions[index] = {"type": "none"}
-            elif len(menu) == 1:
+            elif len(menu) == 1 and self.auto_choose_single_menu:
                 reactions[index] = menu[0]["event"]
             else:
                 jobs.append((index, player_id, game_state.state, events, menu))
@@ -360,6 +365,8 @@ class TerminalHumanIO(HumanIO):
 
 
 class HumanEngine(BaseEngine):
+    auto_choose_single_menu = False
+
     def __init__(
         self,
         name: str,

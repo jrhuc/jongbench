@@ -63,7 +63,10 @@ class WebHumanIO(HumanIO):
     ) -> dict[str, Any]:
         gate = threading.Event()
         state_text = prompts.render_state(player_id, state, _prompt_safe_events(events))
-        labels = [str(item["label"]) for item in menu]
+        options = [
+            _pending_option(index, player_id, item)
+            for index, item in enumerate(menu)
+        ]
         with self._lock:
             self._generation += 1
             generation = self._generation
@@ -74,7 +77,10 @@ class WebHumanIO(HumanIO):
                 "generation": generation,
                 "seat": int(player_id),
                 "state_text": state_text,
-                "menu": labels,
+                # Keep the labels for older clients, but give the web UI the
+                # raw tile and action metadata it needs for direct tile clicks.
+                "menu": [option["label"] for option in options],
+                "options": options,
             }
 
         gate.wait()
@@ -111,7 +117,34 @@ class WebHumanIO(HumanIO):
         return True
 
 
+def _pending_option(index: int, player_id: int, item: dict[str, Any]) -> dict[str, Any]:
+    """Expose just enough menu metadata for the browser to render a legal choice."""
+    event = item.get("event")
+    if not isinstance(event, dict):
+        event = {}
+    event_type = str(event.get("type") or item.get("kind") or "none")
+    if event_type == "dahai":
+        action = "discard"
+    elif event_type == "hora":
+        action = "tsumo" if event.get("target") == player_id else "ron"
+    elif event_type == "none":
+        action = "pass"
+    else:
+        action = event_type
+
+    option = {
+        "choice": int(index),
+        "action": action,
+        "label": str(item.get("label", action)),
+    }
+    if action == "discard" and event.get("pai") is not None:
+        option["tile"] = str(event["pai"])
+    return option
+
+
 class _FallbackHumanEngine(BaseEngine):
+    auto_choose_single_menu = False
+
     def __init__(
         self,
         name: str,

@@ -21,6 +21,23 @@ HOST = "127.0.0.1"
 PORT = 0
 
 
+def test_pending_option_metadata() -> None:
+    discard = webui._pending_option(
+        3,
+        2,
+        {"label": "discard 0m (red)", "event": {"type": "dahai", "pai": "5mr"}},
+    )
+    assert discard == {
+        "choice": 3,
+        "action": "discard",
+        "label": "discard 0m (red)",
+        "tile": "5mr",
+    }
+    assert webui._pending_option(0, 2, {"label": "tsumo (win)", "event": {"type": "hora", "target": 2}})["action"] == "tsumo"
+    assert webui._pending_option(1, 2, {"label": "ron (win)", "event": {"type": "hora", "target": 1}})["action"] == "ron"
+    assert webui._pending_option(2, 2, {"label": "pass", "event": {"type": "none"}})["action"] == "pass"
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory(prefix="jongbench-webui-") as tempdir:
         thread = threading.Thread(
@@ -86,6 +103,12 @@ def main() -> None:
             if pending:
                 assert isinstance(pending.get("state_text"), str)
                 assert pending["state_text"].strip()
+                assert isinstance(pending.get("options"), list)
+                assert pending["options"]
+                for option in pending["options"]:
+                    assert isinstance(option.get("choice"), int)
+                    assert isinstance(option.get("action"), str)
+                    assert isinstance(option.get("label"), str)
                 if not mask_checked and answered >= 1:
                     sample = _collect_frames(human_id, 0, 3, 10)
                     mask_checked = _assert_masked_frame(sample)
@@ -207,4 +230,5 @@ def _assert_masked_frame(frames: list[dict[str, Any]]) -> bool:
 
 
 if __name__ == "__main__":
+    test_pending_option_metadata()
     main()

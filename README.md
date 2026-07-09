@@ -20,7 +20,7 @@ API keys via env: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`.
 ## Usage
 
 ```console
-# end-to-end smoke test, no API keys needed
+# test, no API keys needed
 $ jongbench selfcheck
 
 # benchmark: N games, summary + HTML report
