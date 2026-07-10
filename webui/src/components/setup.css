@@ -7,17 +7,19 @@
 .setup-hero { text-align: center; margin-bottom: 40px; }
 .setup-kicker { margin: 0; color: var(--jade); font: 600 13px/1.4 var(--mono); letter-spacing: 0.16em; text-transform: uppercase; }
 .setup-form { display: grid; gap: 22px; }
-.setup-section, .tables-section { border: 1px solid var(--line); border-radius: var(--radius); background: linear-gradient(145deg, rgba(20, 36, 32, 0.8), rgba(10, 20, 16, 0.7)); box-shadow: var(--shadow); }
+.setup-section, .tables-section {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #121f1a;
+}
 .setup-section {
   padding: 24px;
   border-top: 3px solid var(--dragon-edge, var(--line));
-  background:
-    linear-gradient(155deg, var(--dragon-wash, transparent), transparent 60%),
-    linear-gradient(145deg, rgba(20, 36, 32, 0.8), rgba(10, 20, 16, 0.7));
+  background: var(--dragon-wash, #121f1a);
 }
-.dragon-hatsu { --dragon: #3fb583; --dragon-edge: rgba(63, 181, 131, 0.85); --dragon-wash: rgba(53, 163, 116, 0.17); }
-.dragon-haku { --dragon: #efe8d6; --dragon-edge: rgba(243, 236, 220, 0.8); --dragon-wash: rgba(243, 236, 220, 0.1); }
-.dragon-chun { --dragon: #d05a4c; --dragon-edge: rgba(199, 74, 61, 0.85); --dragon-wash: rgba(199, 74, 61, 0.15); }
+.dragon-hatsu { --dragon: #3fb583; --dragon-edge: rgba(63, 181, 131, 0.85); --dragon-wash: #152820; }
+.dragon-haku { --dragon: #efe8d6; --dragon-edge: rgba(243, 236, 220, 0.8); --dragon-wash: #1a221c; }
+.dragon-chun { --dragon: #d05a4c; --dragon-edge: rgba(199, 74, 61, 0.85); --dragon-wash: #1c1a18; }
 .dragon-glyph { margin-right: 9px; color: var(--dragon); }
 .section-heading { margin-bottom: 18px; }
 .section-heading h2 { font-size: 24px; }

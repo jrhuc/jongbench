@@ -19,6 +19,9 @@ function parseRoute(): Route {
 
 function App() {
   const [route, setRoute] = useState<Route>(parseRoute);
+  const onStarted = useCallback((runId: string) => {
+    location.hash = `#run=${runId}`;
+  }, []);
 
   useEffect(() => {
     const onHash = () => setRoute(parseRoute());
@@ -39,7 +42,7 @@ function App() {
         )}
       </header>
       {route.view === "setup" ? (
-        <Setup onStarted={(runId) => (location.hash = `#run=${runId}`)} />
+        <Setup onStarted={onStarted} />
       ) : route.view === "replay" ? (
         <Replay />
       ) : (
@@ -67,7 +70,6 @@ function Run({ runId }: { runId: string }) {
     const onStatus = (state: SessionState) => {
       if (cancelled) return;
       setSession(state);
-      if (state.status === "done" || state.status === "evaluating") setShowResults(true);
     };
 
     api
@@ -122,10 +124,21 @@ function Run({ runId }: { runId: string }) {
 
   useEffect(() => {
     if (status !== "done") return;
+    let cancelled = false;
     api
       .fetchReview(runId)
-      .then(setReview)
-      .catch(() => {}); // absent on --no-eval runs
+      .then((value) => {
+        if (cancelled) return;
+        setReview(value);
+        setShowResults(true);
+      })
+      .catch(() => {
+        // Absent on --no-eval runs — still open standings once the game is done.
+        if (!cancelled) setShowResults(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [runId, status]);
 
   const onChoose = useCallback(
@@ -174,7 +187,7 @@ function Run({ runId }: { runId: string }) {
         log={log}
         onChoose={onChoose}
         onAbort={onAbort}
-        onResults={session.final || review ? () => setShowResults(true) : undefined}
+        onResults={status === "done" || (status === "error" && session.final !== null) ? () => setShowResults(true) : undefined}
       />
       {showResults && (
         <Results

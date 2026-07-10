@@ -6,6 +6,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -17,7 +19,10 @@ NAMES = ["modelA", "modelB", "modelC", "modelD"]
 
 
 def test_packaged_webui_contains_report_sprite_fallback() -> None:
-    page = (ROOT / "jongbench" / "webui_page.html").read_text(encoding="utf-8")
+    page_path = ROOT / "jongbench" / "webui_page.html"
+    if not page_path.exists():
+        pytest.skip("webui_page.html not built; run `cd webui && bun run build`")
+    page = page_path.read_text(encoding="utf-8")
     match = _WEBUI_SPRITE_RE.search(page)
     assert match is not None
     assert 'id="pai-1m"' in match.group(1)

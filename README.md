@@ -44,8 +44,8 @@ $ jongbench serve --host 0.0.0.0 --port 8642
 $ jongbench review runs/<stamp>/
 ```
 
-The web UI is a TypeScript app in `webui/`; the built page is committed at
-`jongbench/webui_page.html`, so running it needs no JS toolchain.
+The web UI is a TypeScript app in `webui/`. Build it once with
+`cd webui && bun install && bun run build`, which emits `jongbench/webui_page.html`.
 
 State hints are enabled by default. They add rule-derived shanten, waits, furiten, and
 discard-result structure without exposing hidden tiles, EV, safety, or a recommended move.

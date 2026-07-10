@@ -206,7 +206,7 @@ export function Table({ snapshot, lastEvent, session, pending, log, onChoose, on
       <div class="table-controls">
         <span class={`table-status table-status-${replay ? "replay" : session.status}`}>
           <i />
-          {replay ? "replay" : session.status}
+          {replay ? "replay" : session.status === "evaluating" ? "reviewing" : session.status}
         </span>
         {onResults && <button class="table-results" onClick={onResults}>Results</button>}
         <button

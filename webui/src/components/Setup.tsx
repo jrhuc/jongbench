@@ -32,14 +32,10 @@ function createdTime(created: number): string {
 export function Setup({ onStarted }: { onStarted(runId: string): void }) {
   const [seats, setSeats] = useState<SeatDraft[]>(DEFAULT_SEATS);
   const [keys, setKeys] = useState<Record<string, string>>({});
-  const [sessions, setSessions] = useState<SessionListItem[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasDemo, setHasDemo] = useState(false);
   const [stateHints, setStateHints] = useState(true);
-
-  const active = sessions.filter((item) => item.status === "starting" || item.status === "running" || item.status === "evaluating");
-  const finished = sessions.filter((item) => item.status === "done" && item.final !== null);
 
   const selectedProviders = useMemo(
     () => Array.from(new Set(seats.map((seat) => seat.providerId))).map((id) => providerOf(id)),
@@ -55,21 +51,6 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
 
   useEffect(() => {
     api.demoAvailable().then(setHasDemo);
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    const refresh = () => {
-      api.listSessions().then((items) => {
-        if (!cancelled) setSessions(items);
-      }).catch(() => {});
-    };
-    refresh();
-    const timer = window.setInterval(refresh, 3000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
   }, []);
 
   const updateSeat = (index: number, providerId: string) => {
@@ -219,6 +200,44 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
         </div>
       </form>
 
+      <SessionTables />
+
+      {error && (
+        <div class="toast toast-error" role="alert">
+          <span class="toast-text">{error}</span>
+          <button type="button" class="toast-dismiss" aria-label="Dismiss" onClick={() => setError(null)}>×</button>
+        </div>
+      )}
+    </main>
+  );
+}
+
+/** Owns its own fetch so form keystrokes never re-render the tables list. */
+function SessionTables() {
+  const [sessions, setSessions] = useState<SessionListItem[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      api.listSessions().then((items) => {
+        if (!cancelled) setSessions(items);
+      }).catch(() => {});
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const active = sessions.filter((item) => item.status === "starting" || item.status === "running" || item.status === "evaluating");
+  const finished = sessions.filter((item) => item.status === "done" && item.final !== null);
+
+  if (active.length === 0 && finished.length === 0) return null;
+
+  return (
+    <>
       {active.length > 0 && (
         <section class="tables-section">
           <div class="section-heading">
@@ -264,13 +283,7 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
           </div>
         </section>
       )}
-      {error && (
-        <div class="toast toast-error" role="alert">
-          <span class="toast-text">{error}</span>
-          <button type="button" class="toast-dismiss" aria-label="Dismiss" onClick={() => setError(null)}>×</button>
-        </div>
-      )}
-    </main>
+    </>
   );
 }
 

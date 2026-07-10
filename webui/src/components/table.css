@@ -92,7 +92,6 @@
   font-family: var(--mono);
   font-size: 11px;
   line-height: 1;
-  backdrop-filter: blur(3px);
 }
 .seat-plate-0 { left: 1.6%; bottom: 1.6%; }
 .seat-plate-1 { right: 1.6%; bottom: 1.6%; }
@@ -191,7 +190,9 @@
 .table-controls { position: absolute; z-index: 5; top: 12px; right: 14px; display: flex; align-items: center; gap: 7px; }
 .table-status { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; color: var(--muted); background: rgba(10, 20, 16, 0.75); border: 1px solid var(--line); border-radius: 999px; font: 10px var(--mono); text-transform: uppercase; letter-spacing: 0.07em; }
 .table-status i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
-.table-status-running i, .table-status-evaluating i { background: var(--jade); box-shadow: 0 0 8px var(--jade); animation: table-dot 1.2s ease-in-out infinite; }
+.table-status-running i { background: var(--jade); box-shadow: 0 0 8px var(--jade); animation: table-dot 1.2s ease-in-out infinite; }
+.table-status-evaluating { color: #e6c27a; border-color: rgba(212, 168, 75, 0.55); }
+.table-status-evaluating i { background: var(--gold); box-shadow: 0 0 8px var(--gold); animation: table-dot 1.2s ease-in-out infinite; }
 .table-status-error { color: #e7a49b; border-color: rgba(199, 74, 61, 0.62); }
 .table-status-error i { background: var(--crimson); box-shadow: 0 0 8px var(--crimson); }
 .table-leave, .table-results { padding: 5px 10px; font-size: 11px; }

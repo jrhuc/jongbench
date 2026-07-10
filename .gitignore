@@ -33,8 +33,9 @@ htmlcov/
 # Benchmark output: logs, decisions, reviews, reports, and recordings
 /runs/
 
-# Web UI toolchain
+# Web UI toolchain and build output (`cd webui && bun install && bun run build`)
 webui/node_modules/
+/jongbench/webui_page.html
 
 # Local credentials
 .env

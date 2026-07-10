@@ -81,7 +81,6 @@ export function Results({ session, review, onClose, onNewGame }: { session: Sess
         <header class="results-header">
           <p class="results-kicker">Hanchan complete</p>
           <h1 id="results-title">Game over</h1>
-          {session.status === "evaluating" && <p class="mortal-reviewing"><span />Mortal is reviewing the game…</p>}
         </header>
 
         {selectedPlayer ? <DecisionLog key={selectedSeat} player={selectedPlayer} onBack={() => setSelectedSeat(null)} /> : <>

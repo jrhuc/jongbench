@@ -1289,7 +1289,12 @@ def _session_state(
 
 
 def _page_bytes() -> bytes:
-    return (Path(__file__).parent / "webui_page.html").read_bytes()
+    page = Path(__file__).parent / "webui_page.html"
+    if not page.exists():
+        raise FileNotFoundError(
+            "jongbench/webui_page.html is missing; build it with `cd webui && bun install && bun run build`"
+        )
+    return page.read_bytes()
 
 
 def _demo_bytes(state: _ServerState) -> bytes:
