@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 import * as api from "../api";
-import { formatEvent } from "../log";
+import { formatEvent, MAX_VISIBLE_LOG_ENTRIES } from "../log";
 import type { DemoBundle, SessionState } from "../types";
 import { Table } from "./Table";
 import { Results } from "./Results";
@@ -22,6 +22,16 @@ export function Replay() {
 
   const frames = bundle?.frames ?? [];
   const atEnd = index >= frames.length - 1;
+  const formattedEvents = useMemo(
+    () => bundle?.frames.map((item) => formatEvent(item.event, bundle.names)) ?? [],
+    [bundle],
+  );
+  const log = useMemo(
+    () => formattedEvents
+      .slice(Math.max(0, index + 1 - MAX_VISIBLE_LOG_ENTRIES), index + 1)
+      .filter((line): line is string => line !== null),
+    [formattedEvents, index],
+  );
 
   useEffect(() => {
     if (!playing || frames.length === 0) return;
@@ -65,10 +75,6 @@ export function Replay() {
   }
 
   const frame = frames[Math.min(index, frames.length - 1)];
-  const log = frames
-    .slice(0, index + 1)
-    .map((item) => formatEvent(item.event, bundle.names))
-    .filter((line): line is string => line !== null);
   return (
     <main class="run-main replay-main">
       <Table

@@ -45,6 +45,12 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
     () => Array.from(new Set(seats.map((seat) => seat.providerId))).map((id) => providerOf(id)),
     [seats],
   );
+  const missingKeyProviders = selectedProviders.filter(
+    (provider) => provider.keyName !== null && !keys[provider.keyName]?.trim(),
+  );
+  const missingKeysMessage = missingKeyProviders.length === 0
+    ? null
+    : `Enter an API key for ${missingKeyProviders.map((provider) => provider.label).join(", ")}.`;
   const humanSeat = seats.findIndex((seat) => seat.providerId === "human");
 
   useEffect(() => {
@@ -81,12 +87,16 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
 
   const start = (event: Event) => {
     event.preventDefault();
-    setSubmitting(true);
     setError(null);
+    if (missingKeysMessage) {
+      setError(missingKeysMessage);
+      return;
+    }
+    setSubmitting(true);
     const requestKeys = Object.fromEntries(
       selectedProviders
-        .filter((provider) => provider.keyName !== null && keys[provider.keyName] !== undefined && keys[provider.keyName] !== "")
-        .map((provider) => [provider.keyName!, keys[provider.keyName!]!]),
+        .filter((provider): provider is ProviderInfo & { keyName: string } => provider.keyName !== null)
+        .map((provider) => [provider.keyName, keys[provider.keyName]!.trim()]),
     );
     const models = seats.map((seat) => {
       const provider = providerOf(seat.providerId);
@@ -163,16 +173,18 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
           <section class="setup-section keys-panel dragon-haku">
             <div class="section-heading">
               <h2><span class="dragon-glyph">白</span>Keys</h2>
-              <p>Keys are held in memory for this game only and never logged.</p>
+              <p>Enter a key for every selected model provider. Keys are held in memory for this game only and never logged.</p>
             </div>
             <div class="keys-grid">
-              {selectedProviders.filter((provider): provider is ProviderInfo & { keyName: string; keyEnv: string } => provider.keyName !== null && provider.keyEnv !== null).map((provider) => (
+              {selectedProviders.filter((provider): provider is ProviderInfo & { keyName: string } => provider.keyName !== null).map((provider) => (
                 <label class="key-field" key={provider.id}>
                   <span><ProviderIcon provider={provider} /> {provider.label} API key</span>
                   <input
                     type="password"
                     value={keys[provider.keyName] ?? ""}
-                    placeholder={`uses ${provider.keyEnv} from the server env if empty`}
+                    placeholder="Required"
+                    required
+                    aria-invalid={!keys[provider.keyName]?.trim()}
                     onInput={(event) => setKeys((current) => ({ ...current, [provider.keyName]: event.currentTarget.value }))}
                   />
                 </label>
@@ -200,9 +212,10 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
         </section>
 
         <div class="deal-row">
-          <button class="primary deal-button" type="submit" disabled={submitting}>
+          <button class="primary deal-button" type="submit" disabled={submitting || missingKeysMessage !== null}>
             {submitting ? "Checking keys…" : "Deal"}
           </button>
+          {missingKeysMessage && <p class="deal-error" role="status">{missingKeysMessage}</p>}
         </div>
       </form>
 

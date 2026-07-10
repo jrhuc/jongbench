@@ -40,8 +40,9 @@
 .prompt-toggle span { display: grid; gap: 4px; }
 .prompt-toggle b { color: var(--ivory); font-size: 14px; }
 .prompt-toggle small { color: var(--muted); font-size: 12px; line-height: 1.5; }
-.deal-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 14px; margin: 3px 0 14px; }
+.deal-row { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; margin: 3px 0 14px; }
 .deal-button { min-width: 180px; padding: 10px 24px; font-size: 16px; }
+.deal-error { margin: 0; color: #e7a49b; font-size: 12px; text-align: center; }
 .tables-section { margin-top: 23px; padding: 22px 24px; }
 .tables-section .section-heading { margin-bottom: 12px; }
 .session-list { border-top: 1px solid var(--line); }

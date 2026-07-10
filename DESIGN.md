@@ -126,9 +126,10 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
 - `Provider.complete(system, user, *, max_tokens=1200, temperature=0.6) -> (text, usage_dict)`
   using official SDKs (`anthropic`, `openai`, `google-genai`), SDK retries enabled,
   60s timeout. Fail with a clear message when a key is missing.
-- Keys come from env by default but every provider accepts an explicit `api_key`
-  override (`make_provider(spec, api_key=None)`) — the web UI passes visitor-supplied
-  keys this way; they live only in that game's memory and are never logged or persisted.
+- CLI providers read keys from env by default and accept an explicit `api_key` override
+  (`make_provider(spec, api_key=None)`). The shared web UI requires visitor-supplied keys
+  and never falls back to the server process environment; keys live only in that game's
+  memory and are never logged or persisted.
 
 ### arena.py
 - `run_games(engines, games, seed=(N,key), log_dir) -> list[GameSummary]` wrapping
@@ -164,7 +165,8 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
   (sorted), melds, discard rows, riichi state, last action, event ticker). Shared by the
   terminal renderer, the web UI, and the replay recorder. Also emits a serializable
   event feed: `{seq, event, table_snapshot?}` for SSE/replay. Enriched `hora` events carry
-  base points, fu/han or yakuman count, and the scoring engine's yaku breakdown.
+  base points, han with fu when relevant below the limit-hand threshold, or yakuman count,
+  and the scoring engine's yaku breakdown.
 - Terminal renderer: draws the table as a SQUARE board — self seat at the bottom, opponents
   on right/top/left; top row horizontal, left/right discards as vertical tile stacks
   (one tile per line); ascii tiles with suit colors, aka in red; `--glyphs` for Unicode
@@ -180,23 +182,30 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
   around the table, discard ponds nearest the center, and a face-down wall ring around the round
   display. Human players discard by clicking a legal tile directly; non-discard actions
   (chi/pon/kan/riichi/ron/tsumo/pass) appear as an action bar above the hand.
-- Aborting: `POST /api/abort/<run_id>` marks the session `aborted`, unblocks a waiting
-  WebHumanIO, and sets the session's cancel_event, which every engine checks at the top of
-  react_batch (raising engines.GameAborted). Aborted sessions free the concurrency slot
-  immediately, so leaving a game always allows starting a new one.
+- Aborting: `POST /api/abort/<run_id>` marks the session `aborted`, atomically unblocks a
+  waiting WebHumanIO, and sets the session's cancel_event, which every engine checks around
+  react_batch (raising engines.GameAborted). The slot remains occupied until the worker has
+  actually exited, so an in-flight synchronous provider request cannot overlap a replacement
+  game. The aborted session is then removed.
 - Endpoints: `GET /` app page; `POST /api/start` {models: [4 specs], keys: {provider: key},
-  seed} → starts a game thread, returns run_id (visitor keys are held in RAM for that run
-  only, never logged); `GET /api/events/<run_id>` SSE stream of spectator feed (replays
+  seed} → starts a game thread, returns run_id (every non-random/human provider requires
+  a visitor key, held in RAM for that run only and never logged; arbitrary `compat:` URLs are
+  rejected by the shared server); `GET /api/events/<run_id>` SSE stream of spectator feed (replays
   the backlog on connect, so reconnect/late-join works); `GET /api/state/<run_id>` snapshot;
   `GET /api/review/<run_id>` review JSON once evaluation finishes; `GET /api/demo` a
   recorded bundle (see replay below). Front-end has Live and Replay modes — Replay steps
   through a recorded feed client-side with a speed slider, needing no keys.
+- Runtime retention is bounded to 256 immutable frames per session and the newest four
+  completed/error sessions for at most 30 minutes. Aborted sessions are removed after their
+  worker exits. SSE backlog reads copy only frame references because published frames are immutable.
 - `jongbench watch --ui web` starts the server for a local one-game run (auto-opens
   browser); `jongbench serve --host 0.0.0.0 --port N` runs it as a shareable app where
-  visitors bring their own keys.
+  visitors bring their own keys. Internet-facing deployments must put the built-in HTTP
+  server behind an HTTPS reverse proxy so those visitor-supplied keys are encrypted in transit.
 - Replay: `jongbench record <run_dir>` packs the spectator feed + review of one game into
   `demo.json`; `serve --demo <path>` exposes it at `/api/demo` and the UI's `#replay` route
-  steps through it client-side (play/pause/step/slider/speed), needing no keys.
+  steps through it client-side (play/pause/step/slider/speed), needing no keys. Event labels
+  are formatted once and the visible live/replay log is capped at 200 entries.
 
 ### report.py
 - `write_report(run_dir)`: single self-contained `report.html` (inline CSS/JS, embedded

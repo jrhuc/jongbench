@@ -94,8 +94,9 @@ export function streamEvents(
     onFrame(JSON.parse((event as MessageEvent).data) as Frame);
   });
   source.addEventListener("status", (event) => {
-    onStatus(JSON.parse((event as MessageEvent).data) as SessionState);
-    source.close();
+    const state = JSON.parse((event as MessageEvent).data) as SessionState;
+    onStatus(state);
+    if (state.status === "done" || state.status === "error" || state.status === "aborted") source.close();
   });
   return { close: () => source.close() };
 }

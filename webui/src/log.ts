@@ -1,5 +1,7 @@
 import type { MjaiEvent } from "./types";
 
+export const MAX_VISIBLE_LOG_ENTRIES = 200;
+
 const KYOKU_WINDS: Record<string, string> = { E: "East", S: "South", W: "West", N: "North" };
 const CALL_NAMES: Record<string, string> = { chi: "chi", pon: "pon", daiminkan: "kan", ankan: "ankan", kakan: "kakan" };
 

@@ -3,7 +3,6 @@ export interface ProviderInfo {
   label: string;
   color: string;
   keyName: string | null;
-  keyEnv: string | null;
   placeholder: string;
 }
 
@@ -13,7 +12,6 @@ export const PROVIDERS: ProviderInfo[] = [
     label: "Anthropic",
     color: "#d97757",
     keyName: "anthropic",
-    keyEnv: "ANTHROPIC_API_KEY",
     placeholder: "claude-sonnet-5",
   },
   {
@@ -21,7 +19,6 @@ export const PROVIDERS: ProviderInfo[] = [
     label: "OpenAI",
     color: "#74aa9c",
     keyName: "openai",
-    keyEnv: "OPENAI_API_KEY",
     placeholder: "gpt-5.2",
   },
   {
@@ -29,7 +26,6 @@ export const PROVIDERS: ProviderInfo[] = [
     label: "Google",
     color: "#4285f4",
     keyName: "google",
-    keyEnv: "GEMINI_API_KEY",
     placeholder: "gemini-3-pro",
   },
   {
@@ -37,7 +33,6 @@ export const PROVIDERS: ProviderInfo[] = [
     label: "xAI",
     color: "#b8bcc4",
     keyName: "xai",
-    keyEnv: "XAI_API_KEY",
     placeholder: "grok-4",
   },
   {
@@ -45,7 +40,6 @@ export const PROVIDERS: ProviderInfo[] = [
     label: "DeepSeek",
     color: "#536dfe",
     keyName: "deepseek",
-    keyEnv: "DEEPSEEK_API_KEY",
     placeholder: "deepseek-chat",
   },
   {
@@ -53,7 +47,6 @@ export const PROVIDERS: ProviderInfo[] = [
     label: "Random",
     color: "#8d97a5",
     keyName: null,
-    keyEnv: null,
     placeholder: "",
   },
   {
@@ -61,7 +54,6 @@ export const PROVIDERS: ProviderInfo[] = [
     label: "Human",
     color: "#d4a94e",
     keyName: null,
-    keyEnv: null,
     placeholder: "",
   },
 ];

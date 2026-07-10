@@ -2,7 +2,7 @@ import { render } from "preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import "./theme.css";
 import * as api from "./api";
-import { formatEvent } from "./log";
+import { formatEvent, MAX_VISIBLE_LOG_ENTRIES } from "./log";
 import type { Frame, MjaiEvent, Pending, Review, SessionState, Snapshot } from "./types";
 import { Replay } from "./components/Replay";
 import { Setup } from "./components/Setup";
@@ -84,7 +84,7 @@ function Run({ runId }: { runId: string }) {
             setSnapshot(frame.snapshot);
             setLastEvent(frame.event);
             const line = formatEvent(frame.event, frame.snapshot.names);
-            if (line) setLog((current) => [...current, line]);
+            if (line) setLog((current) => [...current, line].slice(-MAX_VISIBLE_LOG_ENTRIES));
           },
           onStatus,
         );

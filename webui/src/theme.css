@@ -200,13 +200,23 @@ input::placeholder { color: #5c6e63; }
 .tile-dim { filter: brightness(0.62) saturate(0.8); }
 .tile-aka svg { filter: drop-shadow(0 0 3px rgba(199, 74, 61, 0.55)); }
 
-.tile-click { cursor: pointer; transition: transform 100ms ease-out, box-shadow 100ms; }
-.tile-click:hover {
+.tile.tile-click {
+  padding: 0;
+  border: 0;
+  cursor: pointer;
+  transition: transform 100ms ease-out, box-shadow 100ms;
+}
+.tile.tile-click:hover {
+  background: linear-gradient(165deg, #fdf8ec 0%, #efe6d0 70%, #ddd0b4 100%);
   transform: translateY(calc(var(--tw) * -0.18));
   box-shadow:
     0 calc(var(--tw) * 0.08) 0 #b9a67f,
     0 calc(var(--tw) * 0.3) calc(var(--tw) * 0.3) rgba(0, 0, 0, 0.55),
     0 0 calc(var(--tw) * 0.35) rgba(53, 163, 116, 0.5);
+}
+.tile.tile-click:focus-visible {
+  outline: 3px solid var(--gold);
+  outline-offset: 3px;
 }
 @keyframes tile-drop {
   from { transform: translateY(-6px) scale(1.06); opacity: 0.4; }

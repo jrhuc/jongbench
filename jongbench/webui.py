@@ -40,7 +40,11 @@ except ImportError:
 
 
 _ACTIVE_STATUSES = {"starting", "running", "evaluating"}
+_TERMINAL_STATUSES = {"done", "error", "aborted"}
 _BODY_LIMIT = 64 * 1024
+_MAX_SESSION_FRAMES = 256
+_MAX_RETAINED_FINISHED_SESSIONS = 4
+_FINISHED_SESSION_TTL = 30 * 60.0
 _DRAW_TICKER_RE = re.compile(r"^P([0-3]) drew .+$")
 _LAST_SERVER_LOCK = threading.Lock()
 _LAST_SERVER_URL: str | None = None
@@ -82,6 +86,10 @@ class WebHumanIO(HumanIO):
             for index, item in enumerate(menu)
         ]
         with self._lock:
+            # Rendering is deliberately outside the lock, so cancellation must
+            # be checked again while atomically registering the waiter.
+            if self._cancelled:
+                raise GameAborted("game aborted")
             self._generation += 1
             generation = self._generation
             self._event = gate
@@ -203,42 +211,73 @@ class GameSession:
         self.names = list(names)
         self.human_seat = human_seat
         self.human_io = human_io
-        self.frames: list[dict[str, Any]] = []
+        self.frames: deque[dict[str, Any]] = deque(maxlen=_MAX_SESSION_FRAMES)
         self.frames_lock = threading.Lock()
         self.final: dict[str, Any] | None = None
         self.review: dict[str, Any] | None = None
         self.run_dir = run_dir
         self.state_hints = bool(state_hints)
         self._status_lock = threading.Lock()
+        self._status_version = 1
+        self._status_history: list[tuple[int, str, str | None]] = [
+            (self._status_version, self.status, self.error)
+        ]
+        self.finished_at: float | None = None
         self.cancel_event = threading.Event()
         self._game_done = threading.Event()
         self._poller_done = threading.Event()
+        self._worker_done = threading.Event()
         self.game_thread: threading.Thread | None = None
         self.poller_thread: threading.Thread | None = None
 
-    def set_status(self, status: str) -> None:
+    def _record_status_locked(self) -> None:
+        self._status_version += 1
+        self._status_history.append((self._status_version, self.status, self.error))
+        if self.status in _TERMINAL_STATUSES and self.finished_at is None:
+            self.finished_at = time.time()
+
+    def set_status(self, status: str) -> bool:
         with self._status_lock:
-            if self.status != "aborted":
-                self.status = status
+            if self.status in _TERMINAL_STATUSES or self.status == status:
+                return False
+            self.status = status
+            self._record_status_locked()
+            return True
 
     def abort(self) -> bool:
         with self._status_lock:
             if self.status not in _ACTIVE_STATUSES:
                 return False
             self.status = "aborted"
+            self._record_status_locked()
         self.cancel_event.set()
         self.human_io.cancel()
         return True
 
     def set_error(self, message: str) -> None:
         with self._status_lock:
-            if self.status != "aborted":
-                self.error = message
-                self.status = "error"
+            if self.status in _TERMINAL_STATUSES:
+                return
+            self.error = message
+            self.status = "error"
+            self._record_status_locked()
 
     def status_snapshot(self) -> tuple[str, str | None]:
         with self._status_lock:
             return self.status, self.error
+
+    def status_transitions_after(
+        self, version: int
+    ) -> list[tuple[int, str, str | None]]:
+        with self._status_lock:
+            return [item for item in self._status_history if item[0] > version]
+
+    def latest_status_transition(self) -> tuple[int, str, str | None]:
+        with self._status_lock:
+            return self._status_history[-1]
+
+    def occupies_slot(self) -> bool:
+        return not self._worker_done.is_set()
 
     def latest_seq(self) -> int:
         with self.frames_lock:
@@ -246,7 +285,9 @@ class GameSession:
 
     def frames_after(self, seq: int) -> list[dict[str, Any]]:
         with self.frames_lock:
-            return [copy.deepcopy(frame) for frame in self.frames if int(frame["seq"]) > seq]
+            # Frames are immutable after publication. Copy the small container,
+            # not every large table snapshot in the SSE backlog.
+            return [frame for frame in self.frames if int(frame["seq"]) > seq]
 
 
 class _DecisionLogSink:
@@ -286,10 +327,11 @@ class _ServerState:
 
     def reserve_start(self) -> bool:
         with self.lock:
+            self._prune_sessions_locked(time.time())
             active = sum(
                 1
                 for session in self.sessions.values()
-                if session.status_snapshot()[0] in _ACTIVE_STATUSES
+                if session.occupies_slot()
             )
             if active + self._reserved >= self.max_concurrent_games:
                 return False
@@ -300,6 +342,14 @@ class _ServerState:
         with self.lock:
             self._reserved = max(0, self._reserved - 1)
             self.sessions[session.id] = session
+            self._prune_sessions_locked(time.time())
+        thread = threading.Thread(
+            target=self._after_worker_exit,
+            args=(session,),
+            daemon=True,
+            name=f"jongbench-web-cleanup-{session.id}",
+        )
+        thread.start()
 
     def release_reserved(self) -> None:
         with self.lock:
@@ -307,6 +357,7 @@ class _ServerState:
 
     def get_session(self, run_id: str) -> GameSession | None:
         with self.lock:
+            self._prune_sessions_locked(time.time())
             return self.sessions.get(run_id)
 
     def remove_session(self, run_id: str) -> None:
@@ -315,7 +366,42 @@ class _ServerState:
 
     def list_sessions(self) -> list[GameSession]:
         with self.lock:
+            self._prune_sessions_locked(time.time())
             return sorted(self.sessions.values(), key=lambda session: session.created)
+
+    def _after_worker_exit(self, session: GameSession) -> None:
+        session._worker_done.wait()
+        with self.lock:
+            if self.sessions.get(session.id) is not session:
+                return
+            if session.status_snapshot()[0] == "aborted":
+                self.sessions.pop(session.id, None)
+            else:
+                self._prune_sessions_locked(time.time())
+
+    def _prune_sessions_locked(self, now: float) -> None:
+        finished = [
+            session
+            for session in self.sessions.values()
+            if session.status_snapshot()[0] in {"done", "error"}
+            and not session.occupies_slot()
+        ]
+        expired = {
+            session.id
+            for session in finished
+            if session.finished_at is not None
+            and session.finished_at <= now - _FINISHED_SESSION_TTL
+        }
+        retained = sorted(
+            (session for session in finished if session.id not in expired),
+            key=lambda session: session.finished_at or session.created,
+            reverse=True,
+        )
+        expired.update(
+            session.id for session in retained[_MAX_RETAINED_FINISHED_SESSIONS:]
+        )
+        for run_id in expired:
+            self.sessions.pop(run_id, None)
 
     def allow_start(self, ip: str) -> bool:
         now = time.time()
@@ -430,13 +516,13 @@ def _preflight_engines(engines: list[Any]) -> None:
     """One tiny completion per distinct provider/model so a missing or invalid
     API key fails the start request instead of silently degrading every
     decision to the fallback action."""
-    checks: dict[tuple[str, str], Any] = {}
+    checks: dict[tuple[str, str, str | None], Any] = {}
     for engine in engines:
         provider = getattr(engine, "provider", None)
         spec = getattr(engine, "spec", None)
         if provider is None or spec is None:
             continue
-        checks.setdefault((spec.provider, spec.model), engine)
+        checks.setdefault((spec.provider, spec.model, spec.base_url), engine)
     if not checks:
         return
 
@@ -609,11 +695,6 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                 parsed = urlparse(self.path)
                 if parsed.path == "/api/start":
                     payload = self._read_json_body()
-                    if not state.reserve_start():
-                        raise _HTTPError(HTTPStatus.CONFLICT, "too many games are already running")
-                    reserved = True
-                    if not state.allow_start(self.client_address[0]):
-                        raise _HTTPError(HTTPStatus.TOO_MANY_REQUESTS, "too many starts from this IP")
                     models = payload.get("models")
                     if not isinstance(models, list) or len(models) != 4 or not all(isinstance(item, str) for item in models):
                         raise _HTTPError(HTTPStatus.BAD_REQUEST, "models must be a list of 4 spec strings")
@@ -624,6 +705,10 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                     if not isinstance(keys, dict):
                         raise _HTTPError(HTTPStatus.BAD_REQUEST, "keys must be an object")
                     clean_keys = {str(k): str(v) for k, v in keys.items() if isinstance(v, str)}
+                    try:
+                        _validate_web_start_credentials(models, clean_keys)
+                    except ValueError as exc:
+                        raise _HTTPError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
                     seed = payload.get("seed")
                     if seed is not None and (
                         not isinstance(seed, int) or isinstance(seed, bool)
@@ -635,6 +720,11 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                     state_hints = payload.get("state_hints", True)
                     if not isinstance(state_hints, bool):
                         raise _HTTPError(HTTPStatus.BAD_REQUEST, "state_hints must be a boolean")
+                    if not state.reserve_start():
+                        raise _HTTPError(HTTPStatus.CONFLICT, "too many games are already running")
+                    reserved = True
+                    if not state.allow_start(self.client_address[0]):
+                        raise _HTTPError(HTTPStatus.TOO_MANY_REQUESTS, "too many starts from this IP")
                     try:
                         session = start_game_session(
                             models,
@@ -663,8 +753,6 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                 elif parsed.path.startswith("/api/abort/"):
                     session = self._session_from_path(parsed.path, "/api/abort/")
                     ok = session.abort()
-                    if ok:
-                        state.remove_session(session.id)
                     self._send_json(HTTPStatus.OK, {"ok": ok})
                 elif parsed.path.startswith("/api/choose/"):
                     session = self._session_from_path(parsed.path, "/api/choose/")
@@ -735,14 +823,46 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
             self.send_header("Connection", "keep-alive")
             self.end_headers()
             last_ping = time.monotonic()
+            status_version, initial_status, initial_error = (
+                session.latest_status_transition()
+            )
             try:
+                # An active late joiner needs the current status before frames,
+                # not historical statuses that would regress the UI. A terminal
+                # late joiner receives its retained frames before the terminal
+                # status closes the stream.
+                if initial_status not in _TERMINAL_STATUSES:
+                    self._write_sse(
+                        "status",
+                        _session_state(
+                            session, status=initial_status, error=initial_error
+                        ),
+                    )
                 while True:
                     for frame in session.frames_after(since):
                         since = max(since, int(frame["seq"]))
                         self._write_sse("frame", frame)
-                    status, error = session.status_snapshot()
-                    if status in {"done", "error", "aborted"}:
-                        self._write_sse("status", _session_state(session))
+                    if initial_status in _TERMINAL_STATUSES:
+                        self._write_sse(
+                            "status",
+                            _session_state(
+                                session,
+                                status=initial_status,
+                                error=initial_error,
+                            ),
+                        )
+                        return
+                    terminal = False
+                    for version, status, error in session.status_transitions_after(
+                        status_version
+                    ):
+                        status_version = version
+                        self._write_sse(
+                            "status",
+                            _session_state(session, status=status, error=error),
+                        )
+                        terminal = status in _TERMINAL_STATUSES
+                    if terminal:
                         return
                     now = time.monotonic()
                     if now - last_ping >= 15.0:
@@ -801,20 +921,33 @@ def _run_game_thread(
         spectator.finish(summary.names, summary.scores)
         session._game_done.set()
         session._poller_done.wait(timeout=10.0)
+        if session.cancel_event.is_set() or session.status_snapshot()[0] in {
+            "error",
+            "aborted",
+        }:
+            return
         if no_eval:
             session.set_status("done")
             return
         session.set_status("evaluating")
-        session.review = _evaluate_run(run_dir, summary, weights)
+        session.review = _evaluate_run(
+            run_dir,
+            summary,
+            weights,
+            cancel_event=session.cancel_event,
+        )
         session.set_status("done")
     except GameAborted:
-        session._game_done.set()
+        pass
     except Exception as exc:
-        session._game_done.set()
         if session.cancel_event.is_set():
             return
         _write_run_error(run_dir, "game", exc)
         session.set_error(str(exc))
+    finally:
+        session._game_done.set()
+        session._poller_done.wait(timeout=10.0)
+        session._worker_done.set()
 
 
 def _poll_spectator(
@@ -917,15 +1050,32 @@ def _mask_snapshot(snapshot: dict[str, Any], human_seat: int) -> dict[str, Any]:
     return masked
 
 
-def _evaluate_run(run_dir: Path, summary: arena.GameSummary, weights: str) -> dict[str, Any]:
+def _evaluate_run(
+    run_dir: Path,
+    summary: arena.GameSummary,
+    weights: str,
+    *,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, Any]:
     from . import evaluate, report
 
+    def check_cancelled() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise GameAborted("game aborted")
+
+    check_cancelled()
     logs = sorted((run_dir / "logs").glob("*.json.gz")) + sorted((run_dir / "logs").glob("*.json"))
     if not logs:
         raise RuntimeError("no mjai log was written")
     events = evaluate.load_mjai_log(str(logs[0]))
+    check_cancelled()
     mortal = evaluate.load_engine(weights)
-    reviews = evaluate.review_game(events, mortal)
+    check_cancelled()
+    reviews: dict[int, dict[str, Any]] = {}
+    for seat in range(4):
+        check_cancelled()
+        reviews[seat] = evaluate.review_player(events, seat, mortal)
+        check_cancelled()
     players: dict[str, Any] = {}
     for seat in range(4):
         review = reviews[seat]
@@ -934,6 +1084,7 @@ def _evaluate_run(run_dir: Path, summary: arena.GameSummary, weights: str) -> di
             "review": review,
             "aggregates": evaluate.aggregates(review),
         }
+    check_cancelled()
     data = {
         "seed": [int(summary.seed[0]), int(summary.seed[1])],
         "names": list(summary.names),
@@ -998,6 +1149,31 @@ def _parse_spec(spec_str: str) -> providers.ProviderSpec:
         except ValueError:
             return providers.ProviderSpec(provider="human", model="human")
     return providers.parse_spec(spec_str)
+
+
+def _validate_web_start_credentials(
+    model_specs: list[str], keys: dict[str, str]
+) -> None:
+    """Keep shared HTTP starts on fixed provider endpoints and visitor keys.
+
+    Direct CLI/watch starts intentionally retain environment-key and custom
+    compatibility-endpoint support.
+    """
+    parsed = [_parse_spec(spec) for spec in model_specs]
+    if any(spec.provider == "compat" for spec in parsed):
+        raise ValueError("compat provider URLs are not allowed in the web UI")
+    missing = sorted(
+        {
+            spec.provider
+            for spec in parsed
+            if spec.provider not in {"human", "random"}
+            and not keys.get(spec.provider, "").strip()
+        }
+    )
+    if missing:
+        raise ValueError(
+            "request-supplied API key required for: " + ", ".join(missing)
+        )
 
 
 def _human_seat_from_specs(model_specs: list[str]) -> int | None:
@@ -1093,8 +1269,15 @@ def _session_list_item(session: GameSession) -> dict[str, Any]:
     }
 
 
-def _session_state(session: GameSession) -> dict[str, Any]:
-    status, error = session.status_snapshot()
+def _session_state(
+    session: GameSession,
+    *,
+    status: str | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    if status is None:
+        status, current_error = session.status_snapshot()
+        error = current_error
     return {
         "status": status,
         "error": error,

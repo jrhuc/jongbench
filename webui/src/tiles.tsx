@@ -36,19 +36,31 @@ export function TileView({ tile, size = "m", rotated, dimmed, onClick }: TilePro
   if (dimmed) classes.push("tile-dim");
   if (isRed(tile)) classes.push("tile-aka");
   if (onClick) classes.push("tile-click");
-  return (
-    <span
-      class={classes.join(" ")}
-      role={onClick ? "button" : undefined}
-      onClick={onClick}
-      title={back ? undefined : tile}
-    >
+  const contents = (
+    <>
       {!back && (
         <svg viewBox="0 0 320 446" aria-label={tile}>
           <use href={`#pai-${tile.toLowerCase()}`} />
         </svg>
       )}
+    </>
+  );
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        class={classes.join(" ")}
+        onClick={onClick}
+        title={tile}
+        aria-label={`Discard ${tile}`}
+      >
+        {contents}
+      </button>
+    );
+  }
+  return (
+    <span class={classes.join(" ")} title={back ? undefined : tile}>
+      {contents}
     </span>
   );
 }
-

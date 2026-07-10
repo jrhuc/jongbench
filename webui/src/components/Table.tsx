@@ -1,4 +1,5 @@
 import { useState } from "preact/hooks";
+import { MAX_VISIBLE_LOG_ENTRIES } from "../log";
 import { ProviderIcon, providerOfName } from "../providers";
 import { sortTiles, TileView } from "../tiles";
 import type { Discard, Meld, MjaiEvent, Pending, PendingOption, SeatState, SessionState, Snapshot, Tile } from "../types";
@@ -225,8 +226,8 @@ export function Table({ snapshot, lastEvent, session, pending, log, onChoose, on
         <div class="drawer-panel">
           {pending?.state_text && <pre class="drawer-state">{pending.state_text}</pre>}
           <div class="drawer-ticker">
-            {[...log].reverse().map((entry, index) => (
-              <div key={log.length - index}>{entry}</div>
+            {log.slice(-MAX_VISIBLE_LOG_ENTRIES).reverse().map((entry, index) => (
+              <div key={`${log.length - index}-${entry}`}>{entry}</div>
             ))}
           </div>
         </div>
