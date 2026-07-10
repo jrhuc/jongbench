@@ -6,7 +6,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import jongbench
 import libriichi
 
-from jongbench.prompts import build_user_prompt, extract_choice
+from jongbench.prompts import (
+    _melds_by_player,
+    _scores_and_kyotaku,
+    build_user_prompt,
+    extract_choice,
+)
 
 
 def assert_raises(fn, exc_type):
@@ -17,7 +22,7 @@ def assert_raises(fn, exc_type):
     raise AssertionError(f"expected {exc_type.__name__}")
 
 
-def main():
+def test_prompt_contract():
     st = libriichi.state.PlayerState(0)
     events = [
         {
@@ -113,8 +118,35 @@ def main():
     assert extract_choice('{"choice": 0}\n', 3) == 0
     assert_raises(lambda: extract_choice("garbage", 3), ValueError)
     assert_raises(lambda: extract_choice('{"choice": 9}', 3), ValueError)
+
+    scores, kyotaku = _scores_and_kyotaku(
+        events[0],
+        [*events, {"type": "reach_accepted", "actor": 2}],
+    )
+    assert scores == [25000, 25000, 24000, 25000]
+    assert kyotaku == 1
+
+    melds = _melds_by_player(
+        [
+            {
+                "type": "pon",
+                "actor": 1,
+                "target": 0,
+                "pai": "5m",
+                "consumed": ["5mr", "5m"],
+            },
+            {
+                "type": "kakan",
+                "actor": 1,
+                "pai": "5m",
+                "consumed": ["5mr", "5m", "5m"],
+            },
+        ]
+    )
+    assert len(melds[1]) == 1
+    assert melds[1][0].startswith("kakan ")
     print("OK")
 
 
 if __name__ == "__main__":
-    main()
+    test_prompt_contract()

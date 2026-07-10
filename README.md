@@ -40,8 +40,7 @@ $ jongbench review runs/<stamp>/
 ```
 
 The web UI is a TypeScript app in `webui/`; the built page is committed at
-`jongbench/webui_page.html`, so running it needs no JS toolchain. To hack on it:
-`cd webui && bun install && bun run dev`.
+`jongbench/webui_page.html`, so running it needs no JS toolchain.
 
 Model specs: `anthropic:<model>`, `openai:<model>`, `google:<model>`,
 `compat:<base_url>:<model>` (any OpenAI-compatible endpoint), `random` (baseline).

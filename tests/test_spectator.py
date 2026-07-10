@@ -13,7 +13,12 @@ if str(ROOT) not in sys.path:
 
 import jongbench  # noqa: F401
 import libriichi
-from jongbench.spectator import Spectator, TableState, render_table
+from jongbench.spectator import (
+    Spectator,
+    TableState,
+    _visible_ticker_line,
+    render_table,
+)
 
 
 class TsumogiriEngine:
@@ -58,7 +63,65 @@ class TsumogiriEngine:
         pass
 
 
-def main() -> None:
+def test_riichi_stick_updates() -> None:
+    table = TableState()
+    table.apply(
+        {
+            "type": "start_kyoku",
+            "bakaze": "E",
+            "kyoku": 1,
+            "honba": 0,
+            "kyotaku": 1,
+            "oya": 0,
+            "dora_marker": "1m",
+            "scores": [24000, 25000, 25000, 25000],
+            "tehais": [[], [], [], []],
+        }
+    )
+    table.apply({"type": "reach_accepted", "actor": 2})
+    assert table.scores == [24000, 25000, 24000, 25000]
+    assert table.kyotaku == 2
+    table.apply(
+        {
+            "type": "hora",
+            "actor": 0,
+            "target": 1,
+            "deltas": [2000, 0, 0, 0],
+        }
+    )
+    assert table.kyotaku == 0
+
+    table = TableState()
+    table.apply(
+        {
+            "type": "start_kyoku",
+            "bakaze": "E",
+            "kyoku": 1,
+            "honba": 0,
+            "kyotaku": 1,
+            "oya": 0,
+            "scores": [25000, 24000, 25000, 25000],
+            "tehais": [[], [], [], []],
+        }
+    )
+    table.apply({"type": "end_game"})
+    assert table.scores == [26000, 24000, 25000, 25000]
+    assert table.kyotaku == 0
+
+
+def test_terminal_pov_hides_opponents() -> None:
+    table = TableState()
+    table.names = ["zero", "one", "two", "three"]
+    table.hands = [["1m"], ["2m"], ["3m"], ["4m"]]
+    rendered = render_table(table, reveal=False, pov=2)
+    assert rendered.rstrip().endswith("P2 two")
+    assert "3m" in rendered
+    assert "1m" not in rendered
+    assert _visible_ticker_line("P1 drew 5pr", False, 2) == "P1 drew a tile"
+    assert _visible_ticker_line("P2 drew 5pr", False, 2) == "P2 drew 5pr"
+
+
+def test_spectator_reconstruction() -> None:
     events = _generate_log()
     assert events
 
@@ -161,4 +224,4 @@ def _split_kyokus(events: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
 
 
 if __name__ == "__main__":
-    main()
+    test_spectator_reconstruction()

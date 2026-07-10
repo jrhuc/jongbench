@@ -22,7 +22,7 @@ htmlcov/
 
 # Native libriichi build output and extension module
 /libriichi/target/
-/jongbench/libriichi.so
+/jongbench/libriichi*.so
 
 # Downloaded Mortal checkpoints; keep configuration under weights/ versioned
 /weights/*.pth

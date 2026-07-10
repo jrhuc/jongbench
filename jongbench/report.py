@@ -7,10 +7,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .artifacts import decision_filename
+
 
 _TILE_VIEWBOX = "0 0 320 446"
 _VIEWBOX_RE = re.compile(r'\bviewBox\s*=\s*["\']([^"\']+)["\']')
 _XML_RE = re.compile(r"^\s*<\?xml[^>]*>\s*", re.IGNORECASE)
+_WEBUI_SPRITE_RE = re.compile(
+    r'<div\s+id=["\']sprite["\']\s+hidden>(.*?)</div>',
+    re.DOTALL,
+)
 
 
 def summarize(run_dir: str) -> dict[str, Any]:
@@ -269,7 +275,16 @@ def _normal_aggregates(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _decision_stats(decisions_dir: Path, name: str) -> dict[str, Any]:
-    path = decisions_dir / f"{name}.jsonl"
+    path = decisions_dir / decision_filename(name)
+    if not path.exists():
+        legacy = decisions_dir / f"{name}.jsonl"
+        try:
+            legacy.resolve().relative_to(decisions_dir.resolve())
+        except ValueError:
+            pass
+        else:
+            if legacy.exists():
+                path = legacy
     if not path.exists():
         return {
             "decision_records": 0,
@@ -335,7 +350,15 @@ def _load_pai_sprite() -> str:
     path = root / "assets" / "pai.svg"
     if not path.exists():
         path = Path.cwd() / "assets" / "pai.svg"
-    return _XML_RE.sub("", path.read_text(encoding="utf-8")).strip()
+    if path.exists():
+        return _XML_RE.sub("", path.read_text(encoding="utf-8")).strip()
+
+    page = Path(__file__).with_name("webui_page.html")
+    if page.exists():
+        match = _WEBUI_SPRITE_RE.search(page.read_text(encoding="utf-8"))
+        if match is not None:
+            return match.group(1).strip()
+    raise FileNotFoundError("could not find the mahjong tile sprite")
 
 
 def _sprite_view_box(sprite: str) -> str:

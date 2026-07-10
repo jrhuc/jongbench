@@ -196,6 +196,15 @@ def test_full_game_no_hidden_leak() -> None:
             assert hidden_seq not in prompt, (call["player_id"], seat, hidden_seq)
 
 
+def test_random_engine_is_reproducible_across_batched_games() -> None:
+    def play() -> list[Any]:
+        engines = [RandomEngine(f"random-{seat}", seed=100 + seat) for seat in range(4)]
+        arena = libriichi.arena.FourEngines(disable_progress_bar=True)
+        return arena.py_4p(engines, (8181, 4), 4)
+
+    assert play() == play()
+
+
 def _start_kyoku(events: list[dict[str, Any]]) -> dict[str, Any]:
     for event in events:
         if event.get("type") == "start_kyoku":
@@ -219,6 +228,7 @@ def _start_key(events: list[dict[str, Any]]) -> tuple[Any, ...]:
 def main() -> None:
     test_sanitize_events()
     test_full_game_no_hidden_leak()
+    test_random_engine_is_reproducible_across_batched_games()
     print("OK")
 
 

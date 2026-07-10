@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 import threading
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from . import arena, evaluate, providers, report
+from .artifacts import decision_filename
 from .arena import GameSummary
 from .engines import RandomEngine, TerminalHumanIO, make_engine
 from .spectator import Spectator, TableState, TerminalRenderer
@@ -146,7 +148,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         make_engine(
             name,
             spec,
-            decision_log=_decision_sink(run_dir / "decisions" / f"{name}.jsonl"),
+            decision_log=_decision_sink(
+                run_dir / "decisions" / decision_filename(name)
+            ),
             concurrency=int(args.concurrency),
             temperature=float(args.temperature),
         )
@@ -179,33 +183,42 @@ def _cmd_watch(args: argparse.Namespace) -> int:
         except ImportError:
             print("web UI not built yet", file=sys.stderr)
             return 1
-        return int(
-            webui.run_watch_server(
-                model_specs=specs,
-                seed=(int(args.seed), 1),
-                delay=float(args.delay),
-                runs_root=args.runs_root,
-                weights=args.weights,
-                no_eval=bool(args.no_eval),
-            )
-            or 0
+        run_dir = webui.run_watch_server(
+            model_specs=specs,
+            seed=(int(args.seed), 1),
+            delay=float(args.delay),
+            runs_root=args.runs_root,
+            weights=args.weights,
+            no_eval=bool(args.no_eval),
         )
+        print(f"run: {run_dir}")
+        return 0
+
+    human_seats = [seat for seat, spec in enumerate(specs) if _is_human_spec(spec)]
+    if len(human_seats) > 1:
+        raise ValueError("watch supports at most one human seat")
+    human_seat = human_seats[0] if human_seats else 0
 
     run_dir = _new_run_dir(args.runs_root, args.label)
     _prepare_run_dir(run_dir)
     names = _engine_names(specs)
     _write_config(run_dir, args.label, specs, names, 1, (int(args.seed), 1))
 
-    any_human = any(_is_human_spec(spec) for spec in specs)
-    renderer = TerminalRenderer(glyphs=bool(args.glyphs), reveal=not any_human)
-    spectator = Spectator(delay=float(args.delay), on_update=renderer)
+    renderer = TerminalRenderer(
+        glyphs=bool(args.glyphs),
+        reveal=not human_seats,
+        pov=human_seat,
+    )
+    spectator = Spectator(delay=float(args.delay), on_update=renderer, names=names)
     engines = []
     for name, spec in zip(names, specs, strict=True):
         kwargs: dict[str, Any] = {"spectator": spectator}
         if _is_human_spec(spec):
             kwargs["human_io"] = TerminalHumanIO()
         else:
-            kwargs["decision_log"] = _decision_sink(run_dir / "decisions" / f"{name}.jsonl")
+            kwargs["decision_log"] = _decision_sink(
+                run_dir / "decisions" / decision_filename(name)
+            )
         engines.append(make_engine(name, spec, **kwargs))
 
     summaries = arena.run_games(
@@ -344,24 +357,24 @@ def _build_parser() -> argparse.ArgumentParser:
 
     run = subparsers.add_parser("run")
     run.add_argument("--models", nargs=4, required=True)
-    run.add_argument("--games", type=int, default=4)
-    run.add_argument("--seed", type=int, default=10000)
+    run.add_argument("--games", type=_positive_int, default=4)
+    run.add_argument("--seed", type=_u64, default=10000)
     run.add_argument("--label", default="run")
     run.add_argument("--runs-root", default="runs")
     run.add_argument("--weights", default="weights/mortal.pth")
     run.add_argument("--no-eval", action="store_true")
-    run.add_argument("--concurrency", type=int, default=4)
-    run.add_argument("--temperature", type=float, default=0.6)
+    run.add_argument("--concurrency", type=_positive_int, default=4)
+    run.add_argument("--temperature", type=_temperature, default=0.6)
     run.set_defaults(func=_cmd_run)
 
     watch = subparsers.add_parser("watch")
     watch.add_argument("--models", nargs=4, required=True)
-    watch.add_argument("--seed", type=int, default=10000)
+    watch.add_argument("--seed", type=_u64, default=10000)
     watch.add_argument("--label", default="watch")
     watch.add_argument("--runs-root", default="runs")
     watch.add_argument("--weights", default="weights/mortal.pth")
     watch.add_argument("--no-eval", action="store_true")
-    watch.add_argument("--delay", type=float, default=0.4)
+    watch.add_argument("--delay", type=_nonnegative_float, default=0.4)
     watch.add_argument("--glyphs", action="store_true")
     watch.add_argument("--ui", choices=["term", "web"], default="term")
     watch.set_defaults(func=_cmd_watch)
@@ -375,7 +388,7 @@ def _build_parser() -> argparse.ArgumentParser:
     selfcheck = subparsers.add_parser("selfcheck")
     selfcheck.add_argument("--runs-root", default="runs")
     selfcheck.add_argument("--weights", default="weights/mortal.pth")
-    selfcheck.add_argument("--keep", action="store_true")
+    selfcheck.add_argument("--keep", action="store_true", help=argparse.SUPPRESS)
     selfcheck.set_defaults(func=_cmd_selfcheck)
 
     record = subparsers.add_parser("record")
@@ -446,7 +459,13 @@ def _reconstruct_summary(events: list[dict[str, Any]], path: Path) -> GameSummar
 
     scores = list(last_scores)
     for event in events[last_start_index + 1 :]:
-        if event.get("type") not in {"hora", "ryukyoku"}:
+        event_type = event.get("type")
+        if event_type == "reach_accepted":
+            actor = event.get("actor")
+            if isinstance(actor, int) and 0 <= actor < 4:
+                scores[actor] -= 1000
+            continue
+        if event_type not in {"hora", "ryukyoku"}:
             continue
         deltas = event.get("deltas")
         if isinstance(deltas, list) and len(deltas) == 4:
@@ -454,6 +473,12 @@ def _reconstruct_summary(events: list[dict[str, Any]], path: Path) -> GameSummar
                 score + int(delta)
                 for score, delta in zip(scores, deltas, strict=True)
             ]
+
+    if any(event.get("type") == "end_game" for event in events):
+        outstanding_kyotaku = 100000 - sum(scores)
+        if outstanding_kyotaku > 0:
+            leader = min(range(4), key=lambda seat: (-scores[seat], seat))
+            scores[leader] += outstanding_kyotaku
 
     return GameSummary(seed=seed, names=names, scores=scores, placements=_placements(names, scores))
 
@@ -576,3 +601,31 @@ def _print_seat_ratings(run_dir: Path) -> None:
 
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
+def _u64(value: str) -> int:
+    parsed = int(value)
+    if not 0 <= parsed <= 2**64 - 1:
+        raise argparse.ArgumentTypeError("must be between 0 and 2^64 - 1")
+    return parsed
+
+
+def _nonnegative_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError("must be a finite non-negative number")
+    return parsed
+
+
+def _temperature(value: str) -> float:
+    parsed = _nonnegative_float(value)
+    if parsed > 2:
+        raise argparse.ArgumentTypeError("must be between 0 and 2")
+    return parsed

@@ -59,7 +59,7 @@ class TsumogiriEngine:
         pass
 
 
-def main() -> None:
+def test_mortal_review() -> None:
     started = time.perf_counter()
     with tempfile.TemporaryDirectory() as tempdir:
         arena = libriichi.arena.FourEngines(
@@ -98,4 +98,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    test_mortal_review()

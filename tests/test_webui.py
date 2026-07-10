@@ -37,8 +37,16 @@ def test_pending_option_metadata() -> None:
     assert webui._pending_option(1, 2, {"label": "ron (win)", "event": {"type": "hora", "target": 1}})["action"] == "ron"
     assert webui._pending_option(2, 2, {"label": "pass", "event": {"type": "none"}})["action"] == "pass"
 
+    for invalid in (True, -1, 2**64, [1.5, 2], [True, 2]):
+        try:
+            webui._normalize_seed(invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"accepted invalid seed: {invalid!r}")
 
-def main() -> None:
+
+def test_web_server_workflow() -> None:
     with tempfile.TemporaryDirectory(prefix="jongbench-webui-") as tempdir:
         thread = threading.Thread(
             target=webui.run_server,
@@ -259,6 +267,19 @@ def _collect_frames(run_id: str, since: int, min_frames: int, timeout: float) ->
 
 
 def _assert_masked_frame(frames: list[dict[str, Any]]) -> bool:
+    start_event_masked = False
+    for frame in frames:
+        event = frame.get("event") or {}
+        if event.get("type") == "start_kyoku":
+            hands = event.get("tehais") or []
+            assert len(hands) == 4
+            assert any(tile != "?" for tile in hands[0])
+            for hand in hands[1:]:
+                assert hand and all(tile == "?" for tile in hand), hand
+            start_event_masked = True
+        if event.get("type") == "tsumo" and event.get("actor") != 0:
+            assert "pai" not in event, event
+
     for frame in frames:
         snapshot = frame.get("snapshot") or {}
         seats = snapshot.get("seats") or []
@@ -271,10 +292,13 @@ def _assert_masked_frame(frames: list[dict[str, Any]]) -> bool:
         assert any(tile != "?" for tile in seat0), seat0
         for hand in opponents:
             assert all(tile == "?" for tile in hand), hand
-        return True
+        for line in snapshot.get("ticker") or []:
+            if line.startswith(("P1 drew ", "P2 drew ", "P3 drew ")):
+                assert line.endswith("drew a tile"), line
+        return start_event_masked
     return False
 
 
 if __name__ == "__main__":
     test_pending_option_metadata()
-    main()
+    test_web_server_workflow()

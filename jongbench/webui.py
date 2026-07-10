@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import copy
 from collections import defaultdict, deque
-from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-import os
 from pathlib import Path
 import re
 import secrets
@@ -19,7 +17,8 @@ from urllib.parse import parse_qs, urlparse
 import webbrowser
 
 from . import arena, prompts, providers
-from .engines import BaseEngine, GameAborted, make_engine
+from .artifacts import decision_filename
+from .engines import BaseEngine, GameAborted, make_engine, sanitize_events
 from .spectator import Spectator, TableState
 
 try:
@@ -41,6 +40,7 @@ except ImportError:
 
 _ACTIVE_STATUSES = {"starting", "running", "evaluating"}
 _BODY_LIMIT = 64 * 1024
+_DRAW_TICKER_RE = re.compile(r"^P([0-3]) drew .+$")
 _LAST_SERVER_LOCK = threading.Lock()
 _LAST_SERVER_URL: str | None = None
 _LAST_SERVER_PORT: int | None = None
@@ -367,12 +367,9 @@ def start_game_session(
     run_id = secrets.token_hex(4)
     names = _engine_names(parsed)
     run_dir = _make_run_dir(Path(runs_root), label, run_id)
-    (run_dir / "logs").mkdir(parents=True, exist_ok=True)
-    (run_dir / "decisions").mkdir(parents=True, exist_ok=True)
-    (run_dir / "review").mkdir(parents=True, exist_ok=True)
 
     human_io = WebHumanIO()
-    spectator = Spectator(delay=delay)
+    spectator = Spectator(delay=delay, names=names)
     engines = [
         _make_engine_for_session(
             name=names[seat],
@@ -388,6 +385,8 @@ def start_game_session(
         for seat in range(4)
     ]
     _preflight_engines(engines)
+    for directory in ("logs", "decisions", "review"):
+        (run_dir / directory).mkdir(parents=True, exist_ok=True)
 
     session = GameSession(
         run_id=run_id,
@@ -512,11 +511,15 @@ def run_watch_server(
             no_eval=no_eval,
             delay=delay,
         )
-        state.sessions[session.id] = session
+        with state.lock:
+            state.sessions[session.id] = session
         if open_browser:
             webbrowser.open(f"{url}#run={session.id}")
         while session.status_snapshot()[0] not in {"done", "error", "aborted"}:
             time.sleep(0.2)
+        status, error = session.status_snapshot()
+        if status == "error":
+            raise RuntimeError(error or "web watch failed")
         return session.run_dir
     finally:
         httpd.shutdown()
@@ -612,7 +615,9 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                         raise _HTTPError(HTTPStatus.BAD_REQUEST, "keys must be an object")
                     clean_keys = {str(k): str(v) for k, v in keys.items() if isinstance(v, str)}
                     seed = payload.get("seed")
-                    if seed is not None and not isinstance(seed, int):
+                    if seed is not None and (
+                        not isinstance(seed, int) or isinstance(seed, bool)
+                    ):
                         raise _HTTPError(HTTPStatus.BAD_REQUEST, "seed must be an integer or null")
                     label = payload.get("label")
                     if label is not None and not isinstance(label, str):
@@ -680,6 +685,8 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError as exc:
                 raise _HTTPError(HTTPStatus.BAD_REQUEST, "invalid Content-Length") from exc
+            if length < 0:
+                raise _HTTPError(HTTPStatus.BAD_REQUEST, "invalid Content-Length")
             if length > _BODY_LIMIT:
                 raise _HTTPError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request body is too large")
             raw = self.rfile.read(length)
@@ -797,6 +804,7 @@ def _run_game_thread(
 
 def _poll_spectator(session: GameSession, spectator: Spectator) -> None:
     table = TableState()
+    table.names = list(session.names)
     seq = 0
     try:
         while True:
@@ -810,9 +818,17 @@ def _poll_spectator(session: GameSession, spectator: Spectator) -> None:
                     else:
                         table.apply(event)
                     snapshot = table.snapshot()
+                    public_event = event
                     if session.human_seat is not None:
                         snapshot = _mask_snapshot(snapshot, session.human_seat)
-                    frame = {"seq": seq, "event": event, "snapshot": snapshot}
+                        public_event = _prompt_safe_events(
+                            sanitize_events([event], session.human_seat)
+                        )[0]
+                    frame = {
+                        "seq": seq,
+                        "event": public_event,
+                        "snapshot": snapshot,
+                    }
                     with session.frames_lock:
                         session.frames.append(frame)
                 continue
@@ -826,6 +842,14 @@ def _poll_spectator(session: GameSession, spectator: Spectator) -> None:
 
 def _mask_snapshot(snapshot: dict[str, Any], human_seat: int) -> dict[str, Any]:
     masked = copy.deepcopy(snapshot)
+    ticker = masked.get("ticker")
+    if isinstance(ticker, list):
+        for index, line in enumerate(ticker):
+            if not isinstance(line, str):
+                continue
+            match = _DRAW_TICKER_RE.fullmatch(line)
+            if match is not None and int(match.group(1)) != human_seat:
+                ticker[index] = f"P{match.group(1)} drew a tile"
     hands = masked.get("hands")
     if isinstance(hands, list):
         for seat, hand in enumerate(hands):
@@ -898,7 +922,9 @@ def _make_engine_for_session(
         kwargs["seed"] = seed[0] + seat * 1009 + seed[1] * 97
     else:
         kwargs["api_key"] = keys.get(spec.provider) or None
-        kwargs["decision_log"] = _DecisionLogSink(decisions_dir / f"{name}.jsonl")
+        kwargs["decision_log"] = _DecisionLogSink(
+            decisions_dir / decision_filename(name)
+        )
     return make_engine(name, spec_str, **kwargs)
 
 
@@ -929,11 +955,19 @@ def _human_seat_from_specs(model_specs: list[str]) -> int | None:
 def _normalize_seed(seed: int | tuple[int, int] | list[int] | None) -> tuple[int, int]:
     if seed is None:
         return secrets.randbelow(900_000_000) + 1, 1
+    if isinstance(seed, bool):
+        raise ValueError("seed must be an int, [int, int], or null")
     if isinstance(seed, int):
-        return int(seed), 1
-    if isinstance(seed, (tuple, list)) and len(seed) == 2:
-        return int(seed[0]), int(seed[1])
-    raise ValueError("seed must be an int, [int, int], or null")
+        result = (int(seed), 1)
+    elif isinstance(seed, (tuple, list)) and len(seed) == 2:
+        if any(not isinstance(value, int) or isinstance(value, bool) for value in seed):
+            raise ValueError("seed must be an int, [int, int], or null")
+        result = (seed[0], seed[1])
+    else:
+        raise ValueError("seed must be an int, [int, int], or null")
+    if any(value < 0 or value > 2**64 - 1 for value in result):
+        raise ValueError("seed values must be between 0 and 2^64 - 1")
+    return result
 
 
 def _engine_names(parsed: list[providers.ProviderSpec]) -> list[str]:
@@ -955,7 +989,8 @@ def _safe_name(value: str) -> str:
 
 def _make_run_dir(root: Path, label: str | None, run_id: str) -> Path:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    slug = _safe_name(label or "")
+    raw_label = (label or "").strip()
+    slug = _safe_name(raw_label) if raw_label else ""
     name = f"{stamp}-{slug}-{run_id}" if slug else f"{stamp}-{run_id}"
     path = root / name
     suffix = 2

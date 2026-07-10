@@ -26,7 +26,7 @@ model specs ──> engines (LLM adapters, mjai-log protocol)
 ```
 libriichi/                 vendored from Mortal, + src/arena/four_engines.rs (4 distinct engines, seat rotation)
 jongbench/                 python package
-  libriichi.so             built cdylib (cargo build --release --lib, PYO3_PYTHON=.venv python)
+  libriichi native module  built from libriichi/ by setuptools-rust during installation
   mortal_model.py          vendored Mortal/mortal/model.py   (Brain, DQN, GRP)
   mortal_engine.py         vendored Mortal/mortal/engine.py  (MortalEngine)
   tiles.py  actions.py  engines.py  providers.py  prompts.py
@@ -212,6 +212,7 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
 
 ## Testing
 - `selfcheck` is the end-to-end gate (arena → eval → report) with no network.
+- `python -m pytest` discovers the complete Python unit and integration suite.
 - `tests/test_actions.py`: run N seeded random games with an engine that asserts, at every
   decision point, every menu item passes `validate_reaction` and the menu is non-empty.
 - `tests/test_evaluate.py`: review a tsumogiri game; assert rating in (0,1), entries present,

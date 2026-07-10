@@ -96,6 +96,9 @@ class BaseEngine(ABC):
                     for (index, _, _, _, _), future in zip(jobs, futures, strict=True):
                         reactions[index] = future.result()
 
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise GameAborted("game aborted")
+
         encoded: list[str] = []
         for reaction in reactions:
             if reaction is None:
@@ -132,7 +135,8 @@ class RandomEngine(BaseEngine):
         concurrency: int = 4,
         **_: Any,
     ) -> None:
-        super().__init__(name, spectator=spectator, concurrency=concurrency)
+        del concurrency
+        super().__init__(name, spectator=spectator, concurrency=1)
         self._random = random.Random(seed)
         self._random_lock = threading.Lock()
 

@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 try:
-    from jongbench.tiles import fmt_hand, fmt_tile, tiles_from_counts
+    from jongbench.tiles import deaka, fmt_hand, fmt_tile, tiles_from_counts
 except ImportError:
     _BASE_TILES = [
         *(f"{n}m" for n in range(1, 10)),
@@ -26,6 +26,8 @@ except ImportError:
         if tile in _RED_FIVES:
             return tile[0] + tile[1]
         return tile
+
+    deaka = _deaka
 
     def _tile_key(tile: str) -> tuple[int, int]:
         base = _deaka(tile)
@@ -101,9 +103,8 @@ def render_state(player_id: int, state: Any, events: list[dict[str, Any]]) -> st
     bakaze = start.get("bakaze", "?")
     kyoku = int(start.get("kyoku", 0))
     honba = int(start.get("honba", 0))
-    kyotaku = int(start.get("kyotaku", 0))
     oya = int(start.get("oya", 0))
-    scores = list(start.get("scores", [0, 0, 0, 0]))
+    scores, kyotaku = _scores_and_kyotaku(start, events)
 
     lines = [
         f"Round: {kyoku_label(bakaze, kyoku, honba)}, kyotaku {kyotaku}, dealer P{oya}",
@@ -236,7 +237,7 @@ def _dora_indicators(events: list[dict[str, Any]]) -> str:
 
 
 def _melds_by_player(events: list[dict[str, Any]]) -> list[list[str]]:
-    melds: list[list[str]] = [[] for _ in range(4)]
+    raw_melds: list[list[dict[str, Any]]] = [[] for _ in range(4)]
     for ev in events:
         event_type = ev.get("type")
         actor = ev.get("actor")
@@ -244,17 +245,65 @@ def _melds_by_player(events: list[dict[str, Any]]) -> list[list[str]]:
             continue
         seat = int(actor)
         if event_type in {"chi", "pon", "daiminkan"}:
-            tiles = [*ev.get("consumed", []), ev.get("pai")]
-            label = event_type
-            melds[seat].append(
-                f"{label} {_format_tiles(tiles)} (from P{ev.get('target')})"
-            )
+            raw_melds[seat].append(ev)
         elif event_type == "kakan":
-            tiles = [*ev.get("consumed", []), ev.get("pai")]
-            melds[seat].append(f"kakan {_format_tiles(tiles)}")
+            base = deaka(str(ev.get("pai", "")))
+            pon_index = next(
+                (
+                    index
+                    for index in range(len(raw_melds[seat]) - 1, -1, -1)
+                    if raw_melds[seat][index].get("type") == "pon"
+                    and all(
+                        deaka(str(tile)) == base
+                        for tile in [
+                            *raw_melds[seat][index].get("consumed", []),
+                            raw_melds[seat][index].get("pai"),
+                        ]
+                        if tile is not None
+                    )
+                ),
+                None,
+            )
+            if pon_index is None:
+                raw_melds[seat].append(ev)
+            else:
+                raw_melds[seat][pon_index] = ev
         elif event_type == "ankan":
-            melds[seat].append(f"ankan {_format_tiles(ev.get('consumed', []))}")
+            raw_melds[seat].append(ev)
+
+    melds: list[list[str]] = [[] for _ in range(4)]
+    for seat, seat_melds in enumerate(raw_melds):
+        for ev in seat_melds:
+            event_type = str(ev.get("type"))
+            if event_type in {"chi", "pon", "daiminkan"}:
+                tiles = [*ev.get("consumed", []), ev.get("pai")]
+                melds[seat].append(
+                    f"{event_type} {_format_tiles(tiles)} (from P{ev.get('target')})"
+                )
+            elif event_type == "kakan":
+                tiles = [*ev.get("consumed", []), ev.get("pai")]
+                melds[seat].append(f"kakan {_format_tiles(tiles)}")
+            elif event_type == "ankan":
+                melds[seat].append(
+                    f"ankan {_format_tiles(ev.get('consumed', []))}"
+                )
     return melds
+
+
+def _scores_and_kyotaku(
+    start: dict[str, Any],
+    events: list[dict[str, Any]],
+) -> tuple[list[int], int]:
+    scores = [int(score) for score in start.get("scores", [0, 0, 0, 0])]
+    kyotaku = int(start.get("kyotaku", 0))
+    for event in events:
+        if event.get("type") != "reach_accepted":
+            continue
+        actor = event.get("actor")
+        if isinstance(actor, int) and 0 <= actor < len(scores):
+            scores[actor] -= 1000
+            kyotaku += 1
+    return scores, kyotaku
 
 
 def _discards_and_riichi(

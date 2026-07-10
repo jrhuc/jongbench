@@ -65,6 +65,7 @@ impl MjaiLogBatchAgent {
             return Ok(());
         }
 
+        let expected_reactions = self.game_states.len();
         let raw_reactions: Vec<String> = Python::with_gil(|py| {
             let game_states = mem::take(&mut self.game_states);
             self.engine
@@ -74,6 +75,12 @@ impl MjaiLogBatchAgent {
                 .extract()
                 .context("failed to extract to Rust type")
         })?;
+        ensure!(
+            raw_reactions.len() == expected_reactions,
+            "react_batch returned {} reactions for {} game states",
+            raw_reactions.len(),
+            expected_reactions,
+        );
         self.reactions.clear();
         for s in raw_reactions {
             let ev = json::from_str(&s)?;
