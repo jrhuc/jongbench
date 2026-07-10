@@ -37,8 +37,8 @@ webui/                     web UI source: Preact + TypeScript (strict), built wi
   src/                     main.tsx api.ts types.ts tiles.tsx providers.tsx theme.css components/
 assets/pai.svg             tile sprite sheet (from mjai-reviewer)
 weights/mortal.pth         gitignored, from https://huggingface.co/VoidShine/mortal-298k
-runs/<stamp>/              per-run artifacts: config.json, logs/*.json.gz, decisions/*.jsonl,
-                           review/*.json, report.html
+runs/<stamp>/              per-run artifacts: config.json, logs/*.json.gz, logs/partial.jsonl,
+                           decisions/*.jsonl, review/*.json, report.html, optional error.json
 ```
 
 ## mjai cheat sheet
@@ -82,11 +82,14 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
   when reacting). For testing/baselines; deterministic given seed.
 - `LLMEngine(spec, name)`: builds menu; if menu is single-item, auto-picks (no API call);
   else prompts the model (prompts.py), expects `{"choice": <int>}` (tolerate reasoning text
-  around the JSON — extract last JSON object). Invalid → one retry with the error appended.
+  around one unambiguous JSON choice). Invalid or conflicting choices → one retry with the
+  error appended.
   Final fallback: tsumogiri/none. Records every decision to a .jsonl sink:
   `{game_seed, kyoku, honba, player_id, menu, choice, fallback, raw_response, usage, latency_ms}`.
-- Engines never see Mortal, shanten helpers, or EV tables — the LLM plays unassisted.
-  Prompt state is built only from public info + own hand (see prompts.py).
+- Engines never see Mortal, EV tables, hidden tiles, safety rankings, or a recommended move.
+  State hints are enabled by default and provide rule-derived shanten, waits, furiten, and
+  discard-result structure from the player's own state. `--no-state-hints` disables them for
+  raw-reasoning comparisons.
 - The arena's `events_json` is GOD-VIEW; `sanitize_events(events, player_id)` masks other
   seats' `tehais` and drawn tiles, and every engine sanitizes before `decide()`. Raw events
   go only to the spectator (which legitimately renders the full table).
@@ -107,12 +110,13 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
 
 ### prompts.py
 - `SYSTEM`: concise riichi rules reminder + "you are playing a benchmark game" + strict
-  output contract (JSON `{"choice": N}` as the LAST line; brief reasoning allowed above).
-- `render_state(player_id, state, events) -> str`: compact text block built from PlayerState
+  output contract (exactly one JSON `{"choice": N}` object and no prose).
+- `render_state(player_id, state, events, state_hints=...) -> str`: text block built from PlayerState
   getters + parsed kyoku events: round/honba/kyotaku, seat winds, scores, dora indicators,
-  own hand (sorted, aka marked) + drawn tile, own melds, per-player discard rows (riichi tile
-  marked with `*`), riichi declarations, tiles left, shanten is NOT shown (no coaching).
-- `render_menu(menu) -> str`: numbered options with human labels.
+  own hand as separately counted tiles (`5p(red)`, never numeric `0p`) + drawn tile, own melds,
+  per-player discard rows (riichi tile marked with `*`), riichi declarations, and tiles left.
+- Optional state hints show current structure and simulate each legal discard to report resulting
+  shanten, waits, and furiten. `render_menu` keeps raw mode labels free of these annotations.
 
 ### providers.py
 - `parse_spec(s)`: `anthropic:<model>`, `openai:<model>`, `google:<model>`,
@@ -154,10 +158,13 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
 - `Spectator`: subscribed by engines; each `decide()` first publishes that seat's newly seen
   events (diff by index per kyoku). Public events are deduped (they appear in all 4 POVs);
   own-draw events supply the hidden info, so merging 4 POVs reconstructs the full table.
+  The arena also publishes the final log slice at `end_kyoku`, so terminal `hora`, `ryukyoku`,
+  and `end_kyoku` events are not lost when no further player decision is needed.
 - `TableState`: the merged model (scores, round/honba, dora indicators, per-seat hand
   (sorted), melds, discard rows, riichi state, last action, event ticker). Shared by the
   terminal renderer, the web UI, and the replay recorder. Also emits a serializable
-  event feed: `{seq, event, table_snapshot?}` for SSE/replay.
+  event feed: `{seq, event, table_snapshot?}` for SSE/replay. Enriched `hora` events carry
+  base points, fu/han or yakuman count, and the scoring engine's yaku breakdown.
 - Terminal renderer: draws the table as a SQUARE board — self seat at the bottom, opponents
   on right/top/left; top row horizontal, left/right discards as vertical tile stacks
   (one tile per line); ascii tiles with suit colors, aka in red; `--glyphs` for Unicode
@@ -201,9 +208,9 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
   probability bars; mistakes highlighted by prob-loss; strong/weak aggregates dropdown.
 
 ### cli.py  (`python -m jongbench`, script `jongbench`)
-- `run    --models A B C D --games N [--seed S] [--label X] [--no-eval] [--concurrency K]`
+- `run    --models A B C D --games N [--seed S] [--label X] [--no-eval] [--concurrency K] [--no-state-hints]`
   (`human` not allowed in batch runs)
-- `watch  --models A B C D [--seed S] [--delay MS] [--glyphs] [--ui term|web]`
+- `watch  --models A B C D [--seed S] [--delay MS] [--glyphs] [--ui term|web] [--no-state-hints]`
   (games=1 + spectator + report; any seat may be `human` — the UI then switches to that
   seat's POV and prompts for choices; terminal uses TerminalHumanIO, web uses WebHumanIO)
 - `review <run_dir | log.json.gz> [--out FILE]`  (re-evaluate + regenerate report)

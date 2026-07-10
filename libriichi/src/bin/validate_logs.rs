@@ -191,6 +191,7 @@ fn process_path(path: &Path) -> Result<()> {
                 target,
                 ura_markers,
                 deltas,
+                ..
             } => {
                 let is_ron = actor != target;
                 if is_ron {

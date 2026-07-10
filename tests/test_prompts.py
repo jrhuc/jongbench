@@ -110,14 +110,42 @@ def test_prompt_contract():
         {"label": "Discard E", "event": {"type": "dahai", "actor": 0, "pai": "E", "tsumogiri": False}, "kind": "discard"},
     ]
 
-    p = build_user_prompt(0, st, events, menu)
-    assert "0p" in p or "5pr" in p
+    raw_prompt = build_user_prompt(0, st, events, menu, state_hints=False)
+    assert "Engine-derived state hints" not in raw_prompt
+    assert "[after:" not in raw_prompt
+
+    p = build_user_prompt(0, st, events, menu, state_hints=True)
+    assert "5p(red)" in p
+    assert "0p" not in p
+    assert "Your concealed hand (14 tiles; 0 completed melds)" in p
+    assert "Engine-derived state hints" in p
+    assert "[after:" in p
     assert "Dora" in p
     assert "{\"choice\"" in p or "choice" in p
+    assert "5p(red)" in build_user_prompt(
+        0,
+        st,
+        events,
+        [
+            {
+                "label": "chi 3p with 4p 0p",
+                "event": {"type": "none"},
+                "kind": "chi",
+            }
+        ],
+    )
+    shanten, waits, furiten = st.reaction_summary(json.dumps(menu[0]["event"]))
+    assert isinstance(shanten, int)
+    assert len(waits) == 34
+    assert isinstance(furiten, bool)
     assert extract_choice('I think...\n{"choice": 2}', 3) == 2
     assert extract_choice('{"choice": 0}\n', 3) == 0
     assert_raises(lambda: extract_choice("garbage", 3), ValueError)
     assert_raises(lambda: extract_choice('{"choice": 9}', 3), ValueError)
+    assert_raises(
+        lambda: extract_choice('{"choice": 1}\n{"choice": 2}', 3),
+        ValueError,
+    )
 
     scores, kyotaku = _scores_and_kyotaku(
         events[0],

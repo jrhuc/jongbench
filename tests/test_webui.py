@@ -45,6 +45,39 @@ def test_pending_option_metadata() -> None:
         else:
             raise AssertionError(f"accepted invalid seed: {invalid!r}")
 
+    try:
+        webui.start_game_session(
+            ["random"] * 4,
+            {},
+            1,
+            None,
+            None,
+            runs_root="/tmp/unused-jongbench-test",
+            weights="unused",
+            no_eval=True,
+            delay=0,
+            state_hints="yes",  # type: ignore[arg-type]
+        )
+    except ValueError as exc:
+        assert "state_hints" in str(exc)
+    else:
+        raise AssertionError("accepted non-boolean state_hints")
+
+
+def test_error_diagnostic_file() -> None:
+    with tempfile.TemporaryDirectory(prefix="jongbench-error-") as tempdir:
+        try:
+            raise RuntimeError("deliberate failure")
+        except RuntimeError as exc:
+            webui._write_run_error(Path(tempdir), "test", exc)
+        payload = json.loads(
+            (Path(tempdir) / "error.json").read_text(encoding="utf-8")
+        )
+        assert payload["stage"] == "test"
+        assert payload["type"] == "RuntimeError"
+        assert payload["message"] == "deliberate failure"
+        assert "RuntimeError: deliberate failure" in payload["traceback"]
+
 
 def test_web_server_workflow() -> None:
     with tempfile.TemporaryDirectory(prefix="jongbench-webui-") as tempdir:
@@ -72,7 +105,12 @@ def test_web_server_workflow() -> None:
         run = _request_json(
             "POST",
             "/api/start",
-            {"models": ["random", "random", "random", "random"], "keys": {}, "seed": 4242},
+            {
+                "models": ["random", "random", "random", "random"],
+                "keys": {},
+                "seed": 4242,
+                "state_hints": False,
+            },
         )
         run_id = run["run_id"]
         state = _wait_done(run_id, 180)
@@ -87,6 +125,18 @@ def test_web_server_workflow() -> None:
             assert isinstance(snapshot, dict)
             assert "seats" in snapshot or "hands" in snapshot
 
+        first_run = next(path for path in Path(tempdir).iterdir() if path.is_dir())
+        config = json.loads((first_run / "config.json").read_text(encoding="utf-8"))
+        assert config["state_hints"] is False
+        partial_path = first_run / "logs" / "partial.jsonl"
+        partial_events = [
+            json.loads(line)
+            for line in partial_path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert partial_events[0]["type"] == "start_game"
+        assert any(event.get("type") == "start_kyoku" for event in partial_events)
+        assert partial_events[-1]["type"] == "end_game"
+
         human = _request_json(
             "POST",
             "/api/start",
@@ -95,6 +145,7 @@ def test_web_server_workflow() -> None:
                 "keys": {},
                 "seed": 555,
                 "human_seat": 0,
+                "state_hints": True,
             },
         )
         human_id = human["run_id"]
@@ -301,4 +352,5 @@ def _assert_masked_frame(frames: list[dict[str, Any]]) -> bool:
 
 if __name__ == "__main__":
     test_pending_option_metadata()
+    test_error_diagnostic_file()
     test_web_server_workflow()

@@ -87,9 +87,15 @@ def test_riichi_stick_updates() -> None:
             "actor": 0,
             "target": 1,
             "deltas": [2000, 0, 0, 0],
+            "points": 8000,
+            "yaku": [["riichi", 1], ["ippatsu", 1], ["pinfu", 1], ["dora", 1]],
         }
     )
     assert table.kyotaku == 0
+    assert list(table.ticker)[-2:] == [
+        "P0 calls ron on P1 for 8,000 points",
+        "Yaku: riichi, ippatsu, pinfu, 1 dora",
+    ]
 
     table = TableState()
     table.apply(

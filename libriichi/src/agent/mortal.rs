@@ -555,6 +555,11 @@ impl BatchAgent for MortalBatchAgent {
                     target: cans.target_actor,
                     deltas: None,
                     ura_markers: None,
+                    points: None,
+                    fu: None,
+                    han: None,
+                    yakuman: None,
+                    yaku: None,
                 }
             }
 

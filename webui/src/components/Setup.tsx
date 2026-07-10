@@ -36,6 +36,7 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasDemo, setHasDemo] = useState(false);
+  const [stateHints, setStateHints] = useState(true);
 
   const active = sessions.filter((item) => item.status === "starting" || item.status === "running" || item.status === "evaluating");
   const finished = sessions.filter((item) => item.status === "done" && item.final !== null);
@@ -97,6 +98,7 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
       seed: null,
       human_seat: humanSeat === -1 ? null : humanSeat,
       label: null,
+      state_hints: stateHints,
     }).then(({ run_id }) => onStarted(run_id)).catch((exc: Error) => {
       setError(exc.message);
       setSubmitting(false);
@@ -106,16 +108,14 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
   return (
     <main class="setup-main">
       <section class="setup-hero">
-        <p class="setup-kicker">Riichi mahjong model benchmark</p>
-        <h1>jongbench</h1>
-        <p class="setup-subtitle">four models, one hanchan, graded by Mortal</p>
+        <h1 class="setup-kicker">Riichi mahjong model benchmark</h1>
         {hasDemo && <a class="setup-demo" href="#replay">watch a recorded game →</a>}
       </section>
 
       <form class="setup-form" onSubmit={start}>
-        <section class="setup-section">
+        <section class="setup-section dragon-hatsu">
           <div class="section-heading">
-            <h2>Choose the table</h2>
+            <h2><span class="dragon-glyph">發</span>Choose the table</h2>
             <p>Seat four players and let the tiles decide.</p>
           </div>
           <div class="seat-grid">
@@ -160,9 +160,9 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
         </section>
 
         {selectedProviders.some((provider) => provider.keyName !== null) && (
-          <section class="setup-section keys-panel">
+          <section class="setup-section keys-panel dragon-haku">
             <div class="section-heading">
-              <h2>Keys</h2>
+              <h2><span class="dragon-glyph">白</span>Keys</h2>
               <p>Keys are held in memory for this game only and never logged.</p>
             </div>
             <div class="keys-grid">
@@ -180,6 +180,24 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
             </div>
           </section>
         )}
+
+        <section class="setup-section prompt-panel dragon-chun">
+          <div class="section-heading">
+            <h2><span class="dragon-glyph">中</span>Prompt assistance</h2>
+            <p>Choose whether models receive rule-derived structure alongside the visible table.</p>
+          </div>
+          <label class="prompt-toggle">
+            <input
+              type="checkbox"
+              checked={stateHints}
+              onInput={(event) => setStateHints(event.currentTarget.checked)}
+            />
+            <span>
+              <b>Show state hints</b>
+              <small>Includes shanten, tenpai waits, furiten, and each discard's resulting structure. No EV, safety, or recommended move is supplied.</small>
+            </span>
+          </label>
+        </section>
 
         <div class="deal-row">
           <button class="primary deal-button" type="submit" disabled={submitting}>

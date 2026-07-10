@@ -24,6 +24,7 @@ export interface StartRequest {
   seed: number | null;
   human_seat: number | null;
   label: string | null;
+  state_hints: boolean;
 }
 
 export interface StartResponse {

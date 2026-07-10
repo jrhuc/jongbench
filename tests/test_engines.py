@@ -170,6 +170,21 @@ def test_full_game_no_hidden_leak() -> None:
                 assert event.get("pai") == "?"
 
     assert len(fake.calls) >= 10, len(fake.calls)
+    finalized_logs = [
+        raw_events
+        for _, _, raw_events in spectator.records
+        if raw_events and raw_events[-1].get("type") == "end_kyoku"
+    ]
+    assert finalized_logs
+    hora_events = [
+        event
+        for raw_events in finalized_logs
+        for event in raw_events
+        if event.get("type") == "hora"
+    ]
+    assert hora_events
+    assert all(isinstance(event.get("points"), int) for event in hora_events)
+    assert all(event.get("yaku") for event in hora_events)
     total_records = sum(len(log) for log in decision_logs)
     assert total_records == len(fake.calls), (total_records, len(fake.calls))
     for engine, log in ((engines[0], decision_logs[0]), (engines[2], decision_logs[1])):
@@ -179,6 +194,12 @@ def test_full_game_no_hidden_leak() -> None:
         assert engine.totals["fallbacks"] == 0
         assert engine.totals["retries"] == 0
         assert all(record["usage"] == {"input_tokens": 10, "output_tokens": 5} for record in log)
+        assert all(record["prompt_version"] == 2 for record in log)
+        assert all(record["state_hints"] is True for record in log)
+        assert all(
+            record["choice_label"] == record["menu"][record["choice"]]
+            for record in log
+        )
 
     raw_by_key = {
         (player_id, _start_key(raw_events), len(raw_events)): raw_events
@@ -189,6 +210,7 @@ def test_full_game_no_hidden_leak() -> None:
         raw_events = raw_by_key[key]
         start = _start_kyoku(raw_events)
         prompt = call["prompt"]
+        assert "Engine-derived state hints" in prompt
         for seat, hand in enumerate(start["tehais"]):
             if seat == call["player_id"]:
                 continue

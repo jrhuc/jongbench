@@ -4,13 +4,21 @@
   padding: 68px 0 56px;
 }
 
-.setup-hero { text-align: center; margin-bottom: 48px; }
-.setup-kicker { margin: 0 0 7px; color: var(--jade); font: 11px/1.2 var(--mono); letter-spacing: 0.13em; text-transform: uppercase; }
-.setup-hero h1 { font-size: clamp(52px, 10vw, 82px); letter-spacing: -0.055em; line-height: 0.92; }
-.setup-subtitle { margin: 14px 0 0; color: var(--muted); font-size: 17px; }
+.setup-hero { text-align: center; margin-bottom: 40px; }
+.setup-kicker { margin: 0; color: var(--jade); font: 600 13px/1.4 var(--mono); letter-spacing: 0.16em; text-transform: uppercase; }
 .setup-form { display: grid; gap: 22px; }
 .setup-section, .tables-section { border: 1px solid var(--line); border-radius: var(--radius); background: linear-gradient(145deg, rgba(20, 36, 32, 0.8), rgba(10, 20, 16, 0.7)); box-shadow: var(--shadow); }
-.setup-section { padding: 24px; }
+.setup-section {
+  padding: 24px;
+  border-top: 3px solid var(--dragon-edge, var(--line));
+  background:
+    linear-gradient(155deg, var(--dragon-wash, transparent), transparent 60%),
+    linear-gradient(145deg, rgba(20, 36, 32, 0.8), rgba(10, 20, 16, 0.7));
+}
+.dragon-hatsu { --dragon: #3fb583; --dragon-edge: rgba(63, 181, 131, 0.85); --dragon-wash: rgba(53, 163, 116, 0.17); }
+.dragon-haku { --dragon: #efe8d6; --dragon-edge: rgba(243, 236, 220, 0.8); --dragon-wash: rgba(243, 236, 220, 0.1); }
+.dragon-chun { --dragon: #d05a4c; --dragon-edge: rgba(199, 74, 61, 0.85); --dragon-wash: rgba(199, 74, 61, 0.15); }
+.dragon-glyph { margin-right: 9px; color: var(--dragon); }
 .section-heading { margin-bottom: 18px; }
 .section-heading h2 { font-size: 24px; }
 .section-heading p { margin: 3px 0 0; color: var(--muted); font-size: 13px; }
@@ -26,6 +34,12 @@
 .keys-panel { padding-bottom: 22px; }
 .keys-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
 .key-field > span { display: flex; align-items: center; gap: 6px; }
+.prompt-panel { padding-bottom: 22px; }
+.prompt-toggle { display: flex; align-items: flex-start; gap: 12px; padding: 14px 15px; border: 1px solid var(--line); border-radius: 8px; background: rgba(8, 19, 15, 0.38); cursor: pointer; }
+.prompt-toggle input { margin-top: 3px; accent-color: var(--jade); }
+.prompt-toggle span { display: grid; gap: 4px; }
+.prompt-toggle b { color: var(--ivory); font-size: 14px; }
+.prompt-toggle small { color: var(--muted); font-size: 12px; line-height: 1.5; }
 .deal-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 14px; margin: 3px 0 14px; }
 .deal-button { min-width: 180px; padding: 10px 24px; font-size: 16px; }
 .tables-section { margin-top: 23px; padding: 22px 24px; }

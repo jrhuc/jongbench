@@ -27,6 +27,8 @@ def test_cli_workflow() -> None:
         run_dir = run_dirs[0]
 
         assert (run_dir / "config.json").exists()
+        config = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+        assert config["state_hints"] is False
         logs = sorted((run_dir / "logs").glob("*.json.gz"))
         assert len(logs) == 1
         review_files = sorted((run_dir / "review").glob("*.json"))
@@ -66,7 +68,10 @@ def test_cli_workflow() -> None:
 
 
 def test_web_watch_success_exit_code() -> None:
-    with patch("jongbench.webui.run_watch_server", return_value="/tmp/jongbench-run"):
+    with patch(
+        "jongbench.webui.run_watch_server",
+        return_value="/tmp/jongbench-run",
+    ) as run_watch:
         code = cli.main(
             [
                 "watch",
@@ -80,6 +85,20 @@ def test_web_watch_success_exit_code() -> None:
             ]
         )
     assert code == 0
+    assert run_watch.call_args.kwargs["state_hints"] is True
+
+    parsed = cli._build_parser().parse_args(
+        [
+            "run",
+            "--models",
+            "random",
+            "random",
+            "random",
+            "random",
+            "--no-state-hints",
+        ]
+    )
+    assert parsed.state_hints is False
 
 
 def test_reconstruct_summary_accounts_for_riichi_sticks() -> None:

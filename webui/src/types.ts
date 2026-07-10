@@ -54,6 +54,10 @@ export interface MjaiEvent {
   tsumogiri?: boolean;
   deltas?: number[];
   ura_markers?: Tile[];
+  points?: number;
+  fu?: number;
+  han?: number;
+  yakuman?: number;
   yaku?: [string, number][];
   [key: string]: unknown;
 }

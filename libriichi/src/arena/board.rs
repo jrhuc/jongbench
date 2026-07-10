@@ -380,14 +380,14 @@ impl BoardState {
         // indicators.
         let ura_indicators =
             self.board.ura_indicators[..5 - self.board.dora_indicators.len()].to_vec();
-        let points = reactions
+        let hora_infos = reactions
             .iter()
             .map(|ev| match ev.event {
                 Event::Hora { actor, .. } => {
                     self.can_renchan |= actor == self.oya;
-                    let point =
-                        self.player_states[actor as usize].agari_points(is_ron, &ura_indicators);
-                    Some(point).transpose()
+                    let info =
+                        self.player_states[actor as usize].agari_info(is_ron, &ura_indicators);
+                    Some(info).transpose()
                 }
                 _ => Ok(None),
             })
@@ -395,14 +395,15 @@ impl BoardState {
 
         if is_ron {
             // Multi-ron will be handled
-            points
+            hora_infos
                 .into_iter()
                 .enumerate()
                 .cycle()
                 .skip(single_target as usize + 1)
                 .take(3)
-                .filter_map(|(actor, v)| v.map(|point| (actor, point)))
-                .for_each(|(actor, point)| {
+                .filter_map(|(actor, value)| value.map(|info| (actor, info)))
+                .for_each(|(actor, info)| {
+                    let point = info.point;
                     let mut deltas = [0; 4];
                     if let Some(pao_target) = self.paos[actor] {
                         // As per [Tenhou's rule](https://tenhou.net/man/#RULE):
@@ -431,6 +432,11 @@ impl BoardState {
                         target: single_target,
                         deltas: Some(deltas),
                         ura_markers: Some(ura_markers),
+                        points: Some(point.ron),
+                        fu: info.fu,
+                        han: info.han,
+                        yakuman: info.yakuman,
+                        yaku: Some(info.yaku),
                     };
                     self.add_log_no_meta(hora);
                     // No need to broadcast
@@ -438,7 +444,8 @@ impl BoardState {
             return Ok(());
         }
 
-        let point = points[single_actor as usize].unwrap();
+        let info = hora_infos[single_actor as usize].clone().unwrap();
+        let point = info.point;
         let mut deltas = [0; 4];
         if let Some(pao_target) = self.paos[single_actor as usize] {
             // For pao to happen, the agari must have at least 1 yakuman so ron
@@ -465,6 +472,11 @@ impl BoardState {
             target: single_target,
             deltas: Some(deltas),
             ura_markers: Some(ura_markers),
+            points: Some(point.tsumo_total(single_actor == self.oya)),
+            fu: info.fu,
+            han: info.han,
+            yakuman: info.yakuman,
+            yaku: Some(info.yaku),
         };
         self.add_log_no_meta(hora);
         // No need to broadcast

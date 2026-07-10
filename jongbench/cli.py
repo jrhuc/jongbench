@@ -66,6 +66,7 @@ def _write_config(
     names: Sequence[str],
     games: int,
     seed_start: tuple[int, int],
+    state_hints: bool,
 ) -> None:
     run = Path(run_dir)
     run.mkdir(parents=True, exist_ok=True)
@@ -76,6 +77,7 @@ def _write_config(
         "names": list(names),
         "games": int(games),
         "seed_start": [int(seed_start[0]), int(seed_start[1])],
+        "state_hints": bool(state_hints),
     }
     (run / "config.json").write_text(
         json.dumps(data, indent=2, sort_keys=True),
@@ -142,7 +144,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
     run_dir = _new_run_dir(args.runs_root, args.label)
     _prepare_run_dir(run_dir)
     names = _engine_names(specs)
-    _write_config(run_dir, args.label, specs, names, int(args.games), (int(args.seed), 1))
+    _write_config(
+        run_dir,
+        args.label,
+        specs,
+        names,
+        int(args.games),
+        (int(args.seed), 1),
+        bool(args.state_hints),
+    )
 
     engines = [
         make_engine(
@@ -153,6 +163,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             ),
             concurrency=int(args.concurrency),
             temperature=float(args.temperature),
+            state_hints=bool(args.state_hints),
         )
         for name, spec in zip(names, specs, strict=True)
     ]
@@ -190,6 +201,7 @@ def _cmd_watch(args: argparse.Namespace) -> int:
             runs_root=args.runs_root,
             weights=args.weights,
             no_eval=bool(args.no_eval),
+            state_hints=bool(args.state_hints),
         )
         print(f"run: {run_dir}")
         return 0
@@ -202,7 +214,15 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     run_dir = _new_run_dir(args.runs_root, args.label)
     _prepare_run_dir(run_dir)
     names = _engine_names(specs)
-    _write_config(run_dir, args.label, specs, names, 1, (int(args.seed), 1))
+    _write_config(
+        run_dir,
+        args.label,
+        specs,
+        names,
+        1,
+        (int(args.seed), 1),
+        bool(args.state_hints),
+    )
 
     renderer = TerminalRenderer(
         glyphs=bool(args.glyphs),
@@ -212,7 +232,10 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     spectator = Spectator(delay=float(args.delay), on_update=renderer, names=names)
     engines = []
     for name, spec in zip(names, specs, strict=True):
-        kwargs: dict[str, Any] = {"spectator": spectator}
+        kwargs: dict[str, Any] = {
+            "spectator": spectator,
+            "state_hints": bool(args.state_hints),
+        }
         if _is_human_spec(spec):
             kwargs["human_io"] = TerminalHumanIO()
         else:
@@ -262,7 +285,7 @@ def _cmd_selfcheck(args: argparse.Namespace) -> int:
     _prepare_run_dir(run_dir)
     specs = ["random", "random", "random", "random"]
     names = _engine_names(specs)
-    _write_config(run_dir, "selfcheck", specs, names, 1, (777, 1))
+    _write_config(run_dir, "selfcheck", specs, names, 1, (777, 1), False)
     engines = [
         RandomEngine(name, seed=seed)
         for name, seed in zip(names, [1, 2, 3, 4], strict=True)
@@ -365,6 +388,12 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--no-eval", action="store_true")
     run.add_argument("--concurrency", type=_positive_int, default=4)
     run.add_argument("--temperature", type=_temperature, default=0.6)
+    run.add_argument(
+        "--state-hints",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="include engine-derived shanten, waits, and furiten facts in model prompts",
+    )
     run.set_defaults(func=_cmd_run)
 
     watch = subparsers.add_parser("watch")
@@ -377,6 +406,12 @@ def _build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--delay", type=_nonnegative_float, default=0.4)
     watch.add_argument("--glyphs", action="store_true")
     watch.add_argument("--ui", choices=["term", "web"], default="term")
+    watch.add_argument(
+        "--state-hints",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="include engine-derived shanten, waits, and furiten facts in model prompts",
+    )
     watch.set_defaults(func=_cmd_watch)
 
     review_cmd = subparsers.add_parser("review")

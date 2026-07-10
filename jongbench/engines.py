@@ -112,6 +112,12 @@ class BaseEngine(ABC):
     def end_kyoku(self, game_idx: int) -> None:
         pass
 
+    def end_kyoku_with_log(self, game_idx: int, events_json: str) -> None:
+        if self.spectator is not None:
+            events = json.loads(events_json)
+            self.spectator.publish(game_idx, self.player_ids[game_idx], events)
+        self.end_kyoku(game_idx)
+
     def end_game(self, game_idx: int, scores: list[int]) -> None:
         pass
 
@@ -168,6 +174,7 @@ class LLMEngine(BaseEngine):
         max_tokens: int = 1200,
         spectator: Any | None = None,
         concurrency: int = 4,
+        state_hints: bool = True,
     ) -> None:
         super().__init__(name, spectator=spectator, concurrency=concurrency)
         self.spec = providers.parse_spec(spec_str)
@@ -175,6 +182,7 @@ class LLMEngine(BaseEngine):
         self.decision_log: DecisionSink = [] if decision_log is None else decision_log
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.state_hints = bool(state_hints)
         self.totals = {
             "calls": 0,
             "input_tokens": 0,
@@ -194,7 +202,13 @@ class LLMEngine(BaseEngine):
         started = time.perf_counter()
         labels = [str(item["label"]) for item in menu]
         prompt_events = _prompt_safe_events(events)
-        prompt = prompts.build_user_prompt(player_id, state, prompt_events, menu)
+        prompt = prompts.build_user_prompt(
+            player_id,
+            state,
+            prompt_events,
+            menu,
+            state_hints=self.state_hints,
+        )
         raw_response = ""
         retries = 0
         calls = 0
@@ -239,6 +253,7 @@ class LLMEngine(BaseEngine):
                     prompt_events,
                     menu,
                     error_feedback=str(exc),
+                    state_hints=self.state_hints,
                 )
                 try:
                     text, usage = complete_once(retry_prompt)
@@ -262,6 +277,9 @@ class LLMEngine(BaseEngine):
             "kyoku_events_len": len(events),
             "menu": labels,
             "choice": choice,
+            "choice_label": labels[choice],
+            "prompt_version": 2,
+            "state_hints": self.state_hints,
             "fallback": fallback,
             "raw_response": raw_response[:4000],
             "usage": usage_total,

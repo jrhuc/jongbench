@@ -190,9 +190,9 @@ input::placeholder { color: #5c6e63; }
 .tile-l { --tw: 40px; }
 
 .tile-back {
-  background: linear-gradient(165deg, #2b7d59 0%, #1d5c40 65%, #14402d 100%);
+  background: linear-gradient(165deg, #ecb244 0%, #d69a2c 65%, #b57b1e 100%);
   box-shadow:
-    0 calc(var(--tw) * 0.08) 0 #0d2c1f,
+    0 calc(var(--tw) * 0.08) 0 #7c5514,
     0 calc(var(--tw) * 0.14) calc(var(--tw) * 0.18) rgba(0, 0, 0, 0.5);
 }
 

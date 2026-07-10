@@ -12,6 +12,7 @@ import re
 import secrets
 import threading
 import time
+import traceback
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 import webbrowser
@@ -192,6 +193,7 @@ class GameSession:
         human_seat: int | None,
         human_io: WebHumanIO,
         run_dir: str,
+        state_hints: bool,
     ) -> None:
         self.id = run_id
         self.created = created
@@ -206,6 +208,7 @@ class GameSession:
         self.final: dict[str, Any] | None = None
         self.review: dict[str, Any] | None = None
         self.run_dir = run_dir
+        self.state_hints = bool(state_hints)
         self._status_lock = threading.Lock()
         self.cancel_event = threading.Event()
         self._game_done = threading.Event()
@@ -344,6 +347,7 @@ def start_game_session(
     weights: str,
     no_eval: bool,
     delay: float,
+    state_hints: bool = True,
 ) -> GameSession:
     if len(model_specs) != 4:
         raise ValueError("models must contain exactly 4 specs")
@@ -362,6 +366,8 @@ def start_game_session(
             raise ValueError("human_seat must match the human model seat")
     elif human_seat is not None:
         raise ValueError("human_seat was provided but no model spec is human")
+    if not isinstance(state_hints, bool):
+        raise ValueError("state_hints must be a boolean")
 
     seed_tuple = _normalize_seed(seed)
     run_id = secrets.token_hex(4)
@@ -381,6 +387,7 @@ def start_game_session(
             spectator=spectator,
             human_io=human_io,
             decisions_dir=run_dir / "decisions",
+            state_hints=state_hints,
         )
         for seat in range(4)
     ]
@@ -396,6 +403,7 @@ def start_game_session(
         human_seat=human_seat,
         human_io=human_io,
         run_dir=str(run_dir),
+        state_hints=state_hints,
     )
     _write_config(run_dir, session, seed_tuple, label, delay, no_eval)
     for engine in engines:
@@ -403,7 +411,7 @@ def start_game_session(
 
     session.poller_thread = threading.Thread(
         target=_poll_spectator,
-        args=(session, spectator),
+        args=(session, spectator, seed_tuple),
         daemon=True,
         name=f"jongbench-web-poller-{run_id}",
     )
@@ -487,6 +495,7 @@ def run_watch_server(
     runs_root: str = "runs",
     api_keys: dict[str, str] | None = None,
     no_eval: bool = False,
+    state_hints: bool = True,
 ) -> str:
     state = _ServerState(
         runs_root=runs_root,
@@ -510,6 +519,7 @@ def run_watch_server(
             weights=weights,
             no_eval=no_eval,
             delay=delay,
+            state_hints=state_hints,
         )
         with state.lock:
             state.sessions[session.id] = session
@@ -622,6 +632,9 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                     label = payload.get("label")
                     if label is not None and not isinstance(label, str):
                         raise _HTTPError(HTTPStatus.BAD_REQUEST, "label must be a string or null")
+                    state_hints = payload.get("state_hints", True)
+                    if not isinstance(state_hints, bool):
+                        raise _HTTPError(HTTPStatus.BAD_REQUEST, "state_hints must be a boolean")
                     try:
                         session = start_game_session(
                             models,
@@ -633,6 +646,7 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                             weights=state.weights,
                             no_eval=state.no_eval,
                             delay=state.delay,
+                            state_hints=state_hints,
                         )
                     except ValueError as exc:
                         raise _HTTPError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
@@ -799,12 +813,25 @@ def _run_game_thread(
         session._game_done.set()
         if session.cancel_event.is_set():
             return
+        _write_run_error(run_dir, "game", exc)
         session.set_error(str(exc))
 
 
-def _poll_spectator(session: GameSession, spectator: Spectator) -> None:
+def _poll_spectator(
+    session: GameSession,
+    spectator: Spectator,
+    seed: tuple[int, int],
+) -> None:
     table = TableState()
     table.names = list(session.names)
+    partial_log = _DecisionLogSink(Path(session.run_dir) / "logs" / "partial.jsonl")
+    partial_log(
+        {
+            "type": "start_game",
+            "names": list(session.names),
+            "seed": [int(seed[0]), int(seed[1])],
+        }
+    )
     seq = 0
     try:
         while True:
@@ -814,8 +841,10 @@ def _poll_spectator(session: GameSession, spectator: Spectator) -> None:
                     seq = max(seq, int(item["seq"]))
                     event = copy.deepcopy(item["event"])
                     if event.get("type") == "finish":
+                        partial_log({"type": "end_game"})
                         table.finish(event.get("names"), event.get("scores"))
                     else:
+                        partial_log(event)
                         table.apply(event)
                     snapshot = table.snapshot()
                     public_event = event
@@ -836,8 +865,30 @@ def _poll_spectator(session: GameSession, spectator: Spectator) -> None:
                 if not spectator.events_since(seq):
                     return
             time.sleep(0.15)
+    except Exception as exc:
+        _write_run_error(Path(session.run_dir), "spectator", exc)
+        session.cancel_event.set()
+        session.human_io.cancel()
+        session.set_error(str(exc))
     finally:
         session._poller_done.set()
+
+
+def _write_run_error(run_dir: Path, stage: str, exc: Exception) -> None:
+    payload = {
+        "created": datetime.now(timezone.utc).isoformat(),
+        "stage": stage,
+        "type": type(exc).__name__,
+        "message": str(exc),
+        "traceback": traceback.format_exc(),
+    }
+    try:
+        (run_dir / "error.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
 
 
 def _mask_snapshot(snapshot: dict[str, Any], human_seat: int) -> dict[str, Any]:
@@ -910,6 +961,7 @@ def _make_engine_for_session(
     spectator: Spectator,
     human_io: WebHumanIO,
     decisions_dir: Path,
+    state_hints: bool,
 ) -> Any:
     if spec.provider == "human":
         try:
@@ -917,7 +969,10 @@ def _make_engine_for_session(
         except (TypeError, ValueError):
             engine_cls = _NativeHumanEngine or _FallbackHumanEngine
             return engine_cls(name, human_io, spectator=spectator)
-    kwargs: dict[str, Any] = {"spectator": spectator}
+    kwargs: dict[str, Any] = {
+        "spectator": spectator,
+        "state_hints": state_hints,
+    }
     if spec.provider == "random":
         kwargs["seed"] = seed[0] + seat * 1009 + seed[1] * 97
     else:
@@ -1018,6 +1073,7 @@ def _write_config(
         "human_seat": session.human_seat,
         "delay": float(delay),
         "no_eval": bool(no_eval),
+        "state_hints": session.state_hints,
     }
     (run_dir / "config.json").write_text(
         json.dumps(config, ensure_ascii=False, indent=2, sort_keys=True),

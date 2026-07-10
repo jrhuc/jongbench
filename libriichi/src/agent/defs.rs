@@ -68,6 +68,11 @@ pub trait BatchAgent {
         Ok(())
     }
 
+    fn end_kyoku_with_log(&mut self, index: usize, log: &[EventExt]) -> Result<()> {
+        let _ = log;
+        self.end_kyoku(index)
+    }
+
     fn end_game(&mut self, index: usize, game_result: &GameResult) -> Result<()> {
         let _ = index;
         let _ = game_result;

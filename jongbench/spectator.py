@@ -294,14 +294,21 @@ class TableState:
         self.kyotaku = 0
         actor = _actor(event)
         target = _target(event)
+        points = event.get("points")
+        point_text = ""
+        if isinstance(points, int) and not isinstance(points, bool):
+            point_text = f" for {points:,} points"
         if actor is None:
             self._tick("Win")
         elif target == actor:
-            self._tick(f"P{actor} won by tsumo")
+            self._tick(f"P{actor} tsumos{point_text}")
         elif target is not None:
-            self._tick(f"P{actor} won from P{target}")
+            self._tick(f"P{actor} calls ron on P{target}{point_text}")
         else:
-            self._tick(f"P{actor} won")
+            self._tick(f"P{actor} wins{point_text}")
+        yaku_text = _format_yaku(event.get("yaku"))
+        if yaku_text:
+            self._tick(f"Yaku: {yaku_text}")
 
     def _apply_ryukyoku(self, event: dict[str, Any]) -> None:
         deltas = event.get("deltas")
@@ -650,6 +657,20 @@ def _visible_ticker_line(line: str, reveal: bool, pov: int) -> str:
     if match is not None and int(match.group(1)) != pov:
         return f"P{match.group(1)} drew a tile"
     return line
+
+
+def _format_yaku(value: Any) -> str:
+    if not isinstance(value, list):
+        return ""
+    labels: list[str] = []
+    for item in value:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            continue
+        name, han = item
+        if not isinstance(name, str) or not isinstance(han, int) or isinstance(han, bool):
+            continue
+        labels.append(f"{han} dora" if name == "dora" else name)
+    return ", ".join(labels)
 
 
 def _box_line(text: str, inner: int) -> str:

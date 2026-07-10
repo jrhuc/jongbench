@@ -3,6 +3,13 @@ import type { MjaiEvent } from "./types";
 const KYOKU_WINDS: Record<string, string> = { E: "East", S: "South", W: "West", N: "North" };
 const CALL_NAMES: Record<string, string> = { chi: "chi", pon: "pon", daiminkan: "kan", ankan: "ankan", kakan: "kakan" };
 
+function formatYaku(yaku: [string, number][] | undefined): string {
+  if (!yaku) return "";
+  return yaku
+    .map(([name, han]) => name === "dora" ? `${han} dora` : name)
+    .join(", ");
+}
+
 export function formatEvent(event: MjaiEvent, names: string[]): string | null {
   const name = (seat: number | undefined) =>
     seat === undefined ? "?" : names[seat] ?? `P${seat}`;
@@ -30,10 +37,14 @@ export function formatEvent(event: MjaiEvent, names: string[]): string | null {
       return `${name(event.actor)}'s riichi accepted`;
     case "dora":
       return `New dora indicator ${event.dora_marker ?? event.pai ?? ""}`;
-    case "hora":
-      return event.actor === event.target
-        ? `${name(event.actor)} won by tsumo`
-        : `${name(event.actor)} won from ${name(event.target)}`;
+    case "hora": {
+      const points = event.points === undefined ? "" : ` for ${event.points.toLocaleString()} points`;
+      const result = event.actor === event.target
+        ? `${name(event.actor)} tsumos${points}`
+        : `${name(event.actor)} calls ron on ${name(event.target)}${points}`;
+      const yaku = formatYaku(event.yaku);
+      return yaku ? `${result}\nYaku: ${yaku}` : result;
+    }
     case "ryukyoku":
       return "Hand ended in a draw";
     case "end_game":

@@ -26,6 +26,9 @@ $ jongbench selfcheck
 # benchmark: N games, summary + HTML report
 $ jongbench run --models anthropic:claude-sonnet-5 openai:gpt-5.2 google:gemini-3-pro random --games 8
 
+# raw-reasoning mode: omit engine-derived shanten/wait/furiten hints
+$ jongbench run --no-state-hints --models anthropic:claude-sonnet-5 openai:gpt-5.2 google:gemini-3-pro random --games 8
+
 # watch one game live in the terminal
 $ jongbench watch --models anthropic:claude-sonnet-5 openai:gpt-5.2 google:gemini-3-pro random
 
@@ -41,6 +44,13 @@ $ jongbench review runs/<stamp>/
 
 The web UI is a TypeScript app in `webui/`; the built page is committed at
 `jongbench/webui_page.html`, so running it needs no JS toolchain.
+
+State hints are enabled by default. They add rule-derived shanten, waits, furiten, and
+discard-result structure without exposing hidden tiles, EV, safety, or a recommended move.
+Use `--no-state-hints` in the CLI or clear the web setup checkbox for raw reasoning.
+
+Win events in the live log and saved mjai log include ron/tsumo, base hand points,
+fu/han or yakuman count, and the engine-calculated yaku list.
 
 Model specs: `anthropic:<model>`, `openai:<model>`, `google:<model>`,
 `compat:<base_url>:<model>` (any OpenAI-compatible endpoint), `random` (baseline).
