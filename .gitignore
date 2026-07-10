@@ -20,7 +20,7 @@ dist/
 coverage.xml
 htmlcov/
 
-# Native libriichi build output and copied extension module
+# Native libriichi build output and extension module
 /libriichi/target/
 /jongbench/libriichi.so
 
@@ -33,7 +33,10 @@ htmlcov/
 # Benchmark output: logs, decisions, reviews, reports, and recordings
 /runs/
 
-# Local credentials and macOS metadata
+# Web UI toolchain
+webui/node_modules/
+
+# Local credentials
 .env
 .env.*
 !.env.example

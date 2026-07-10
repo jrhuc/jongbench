@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from collections import defaultdict, deque
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,7 +19,7 @@ from urllib.parse import parse_qs, urlparse
 import webbrowser
 
 from . import arena, prompts, providers
-from .engines import BaseEngine, make_engine
+from .engines import BaseEngine, GameAborted, make_engine
 from .spectator import Spectator, TableState
 
 try:
@@ -53,6 +54,15 @@ class WebHumanIO(HumanIO):
         self._event: threading.Event | None = None
         self._choice: int | None = None
         self._menu_len = 0
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._cancelled = True
+            gate = self._event
+            self._pending = None
+        if gate is not None:
+            gate.set()
 
     def ask(
         self,
@@ -61,6 +71,9 @@ class WebHumanIO(HumanIO):
         events: list[dict[str, Any]],
         menu: list[dict[str, Any]],
     ) -> dict[str, Any]:
+        with self._lock:
+            if self._cancelled:
+                raise GameAborted("game aborted")
         gate = threading.Event()
         state_text = prompts.render_state(player_id, state, _prompt_safe_events(events))
         options = [
@@ -85,6 +98,8 @@ class WebHumanIO(HumanIO):
 
         gate.wait()
         with self._lock:
+            if self._cancelled:
+                raise GameAborted("game aborted")
             choice = self._choice
         if choice is None or not 0 <= choice < len(menu):
             raise RuntimeError("human decision was not selected")
@@ -192,6 +207,7 @@ class GameSession:
         self.review: dict[str, Any] | None = None
         self.run_dir = run_dir
         self._status_lock = threading.Lock()
+        self.cancel_event = threading.Event()
         self._game_done = threading.Event()
         self._poller_done = threading.Event()
         self.game_thread: threading.Thread | None = None
@@ -199,12 +215,23 @@ class GameSession:
 
     def set_status(self, status: str) -> None:
         with self._status_lock:
-            self.status = status
+            if self.status != "aborted":
+                self.status = status
+
+    def abort(self) -> bool:
+        with self._status_lock:
+            if self.status not in _ACTIVE_STATUSES:
+                return False
+            self.status = "aborted"
+        self.cancel_event.set()
+        self.human_io.cancel()
+        return True
 
     def set_error(self, message: str) -> None:
         with self._status_lock:
-            self.error = message
-            self.status = "error"
+            if self.status != "aborted":
+                self.error = message
+                self.status = "error"
 
     def status_snapshot(self) -> tuple[str, str | None]:
         with self._status_lock:
@@ -279,6 +306,10 @@ class _ServerState:
         with self.lock:
             return self.sessions.get(run_id)
 
+    def remove_session(self, run_id: str) -> None:
+        with self.lock:
+            self.sessions.pop(run_id, None)
+
     def list_sessions(self) -> list[GameSession]:
         with self.lock:
             return sorted(self.sessions.values(), key=lambda session: session.created)
@@ -340,25 +371,8 @@ def start_game_session(
     (run_dir / "decisions").mkdir(parents=True, exist_ok=True)
     (run_dir / "review").mkdir(parents=True, exist_ok=True)
 
-    session = GameSession(
-        run_id=run_id,
-        created=time.time(),
-        model_specs=list(model_specs),
-        names=names,
-        human_seat=human_seat,
-        human_io=WebHumanIO(),
-        run_dir=str(run_dir),
-    )
-    _write_config(run_dir, session, seed_tuple, label, delay, no_eval)
-
+    human_io = WebHumanIO()
     spectator = Spectator(delay=delay)
-    session.poller_thread = threading.Thread(
-        target=_poll_spectator,
-        args=(session, spectator),
-        daemon=True,
-        name=f"jongbench-web-poller-{run_id}",
-    )
-    session.poller_thread.start()
     engines = [
         _make_engine_for_session(
             name=names[seat],
@@ -368,12 +382,33 @@ def start_game_session(
             seed=seed_tuple,
             keys=keys,
             spectator=spectator,
-            human_io=session.human_io,
+            human_io=human_io,
             decisions_dir=run_dir / "decisions",
         )
         for seat in range(4)
     ]
+    _preflight_engines(engines)
 
+    session = GameSession(
+        run_id=run_id,
+        created=time.time(),
+        model_specs=list(model_specs),
+        names=names,
+        human_seat=human_seat,
+        human_io=human_io,
+        run_dir=str(run_dir),
+    )
+    _write_config(run_dir, session, seed_tuple, label, delay, no_eval)
+    for engine in engines:
+        engine.cancel_event = session.cancel_event
+
+    session.poller_thread = threading.Thread(
+        target=_poll_spectator,
+        args=(session, spectator),
+        daemon=True,
+        name=f"jongbench-web-poller-{run_id}",
+    )
+    session.poller_thread.start()
     session.game_thread = threading.Thread(
         target=_run_game_thread,
         args=(session, spectator, engines, seed_tuple, run_dir, weights, no_eval),
@@ -382,6 +417,37 @@ def start_game_session(
     )
     session.game_thread.start()
     return session
+
+
+def _preflight_engines(engines: list[Any]) -> None:
+    """One tiny completion per distinct provider/model so a missing or invalid
+    API key fails the start request instead of silently degrading every
+    decision to the fallback action."""
+    checks: dict[tuple[str, str], Any] = {}
+    for engine in engines:
+        provider = getattr(engine, "provider", None)
+        spec = getattr(engine, "spec", None)
+        if provider is None or spec is None:
+            continue
+        checks.setdefault((spec.provider, spec.model), engine)
+    if not checks:
+        return
+
+    def check(engine: Any) -> None:
+        try:
+            engine.provider.complete(
+                "Reply with the word OK.",
+                "OK?",
+                max_tokens=8,
+                temperature=engine.temperature,
+            )
+        except Exception as exc:
+            reason = str(exc).splitlines()[0][:240] if str(exc) else type(exc).__name__
+            raise ValueError(f"API check failed for {engine.name}: {reason}") from exc
+
+    with ThreadPoolExecutor(max_workers=len(checks)) as executor:
+        for future in [executor.submit(check, engine) for engine in checks.values()]:
+            future.result()
 
 
 def run_server(
@@ -449,7 +515,7 @@ def run_watch_server(
         state.sessions[session.id] = session
         if open_browser:
             webbrowser.open(f"{url}#run={session.id}")
-        while session.status_snapshot()[0] not in {"done", "error"}:
+        while session.status_snapshot()[0] not in {"done", "error", "aborted"}:
             time.sleep(0.2)
         return session.run_dir
     finally:
@@ -575,6 +641,12 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                             "human_seat": session.human_seat,
                         },
                     )
+                elif parsed.path.startswith("/api/abort/"):
+                    session = self._session_from_path(parsed.path, "/api/abort/")
+                    ok = session.abort()
+                    if ok:
+                        state.remove_session(session.id)
+                    self._send_json(HTTPStatus.OK, {"ok": ok})
                 elif parsed.path.startswith("/api/choose/"):
                     session = self._session_from_path(parsed.path, "/api/choose/")
                     payload = self._read_json_body()
@@ -648,7 +720,7 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                         since = max(since, int(frame["seq"]))
                         self._write_sse("frame", frame)
                     status, error = session.status_snapshot()
-                    if status in {"done", "error"}:
+                    if status in {"done", "error", "aborted"}:
                         self._write_sse("status", _session_state(session))
                         return
                     now = time.monotonic()
@@ -714,8 +786,12 @@ def _run_game_thread(
         session.set_status("evaluating")
         session.review = _evaluate_run(run_dir, summary, weights)
         session.set_status("done")
+    except GameAborted:
+        session._game_done.set()
     except Exception as exc:
         session._game_done.set()
+        if session.cancel_event.is_set():
+            return
         session.set_error(str(exc))
 
 
@@ -922,6 +998,7 @@ def _session_list_item(session: GameSession) -> dict[str, Any]:
         "names": list(session.names),
         "created": session.created,
         "human_seat": session.human_seat,
+        "final": copy.deepcopy(session.final) if status in {"done", "evaluating"} else None,
     }
 
 

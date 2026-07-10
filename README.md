@@ -29,9 +29,19 @@ $ jongbench run --models anthropic:claude-sonnet-5 openai:gpt-5.2 google:gemini-
 # watch one game live in the terminal
 $ jongbench watch --models anthropic:claude-sonnet-5 openai:gpt-5.2 google:gemini-3-pro random
 
+# watch in the browser (add `human` as a model spec to take a seat yourself)
+$ jongbench watch --ui web --models anthropic:claude-sonnet-5 openai:gpt-5.2 google:gemini-3-pro human
+
+# host the web UI (visitors configure seats and bring their own keys)
+$ jongbench serve --host 0.0.0.0 --port 8642
+
 # re-evaluate / regenerate a report
 $ jongbench review runs/<stamp>/
 ```
+
+The web UI is a TypeScript app in `webui/`; the built page is committed at
+`jongbench/webui_page.html`, so running it needs no JS toolchain. To hack on it:
+`cd webui && bun install && bun run dev`.
 
 Model specs: `anthropic:<model>`, `openai:<model>`, `google:<model>`,
 `compat:<base_url>:<model>` (any OpenAI-compatible endpoint), `random` (baseline).

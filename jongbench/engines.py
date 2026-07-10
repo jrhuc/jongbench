@@ -16,6 +16,10 @@ from . import actions, prompts, providers
 DecisionSink = list[dict[str, Any]] | Callable[[dict[str, Any]], None]
 
 
+class GameAborted(RuntimeError):
+    pass
+
+
 def sanitize_events(events: list[dict[str, Any]], player_id: int) -> list[dict[str, Any]]:
     sanitized = copy.deepcopy(events)
     for event in sanitized:
@@ -49,6 +53,7 @@ class BaseEngine(ABC):
         self.spectator = spectator
         self.concurrency = max(1, int(concurrency))
         self.player_ids: list[int] | None = None
+        self.cancel_event: threading.Event | None = None
 
     def set_player_ids(self, player_ids: list[int]) -> None:
         self.player_ids = [int(player_id) for player_id in player_ids]
@@ -56,6 +61,8 @@ class BaseEngine(ABC):
     def react_batch(self, game_states: list[Any]) -> list[str]:
         if self.player_ids is None:
             raise RuntimeError("player_ids not set")
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise GameAborted("game aborted")
 
         reactions: list[dict[str, Any] | None] = [None] * len(game_states)
         jobs: list[tuple[int, int, Any, list[dict[str, Any]], list[actions.MenuItem]]] = []

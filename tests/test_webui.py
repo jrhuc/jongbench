@@ -132,7 +132,53 @@ def main() -> None:
             mask_checked = _assert_masked_frame(sample)
         assert mask_checked
 
+        _test_abort_frees_slot()
+
     print("OK")
+
+
+def _test_abort_frees_slot() -> None:
+    started = [
+        _start_when_allowed(
+            {
+                "models": ["human", "random", "random", "random"],
+                "keys": {},
+                "seed": 777 + i,
+                "human_seat": 0,
+            }
+        )
+        for i in range(2)
+    ]
+    conflict, _ = _request_text(
+        "POST",
+        "/api/start",
+        {"models": ["random"] * 4, "keys": {}, "seed": 999},
+    )
+    assert conflict == 409, conflict
+
+    aborted = _request_json("POST", f"/api/abort/{started[0]}")
+    assert aborted == {"ok": True}, aborted
+    status, _ = _request_text("GET", f"/api/state/{started[0]}")
+    assert status == 404, status
+    listed = {item["run_id"] for item in _request_json("GET", "/api/sessions")}
+    assert started[0] not in listed, listed
+    status, _ = _request_text("POST", f"/api/abort/{started[0]}")
+    assert status == 404, status
+
+    replacement = _start_when_allowed({"models": ["random"] * 4, "keys": {}, "seed": 999})
+    _request_json("POST", f"/api/abort/{started[1]}")
+    _wait_done(replacement, 180)
+
+
+def _start_when_allowed(payload: dict[str, Any]) -> str:
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        status, text = _request_text("POST", "/api/start", payload)
+        if status == 200:
+            return str(json.loads(text)["run_id"])
+        assert status in {409, 429}, (status, text)
+        time.sleep(1.0)
+    raise AssertionError("start was never allowed")
 
 
 def _wait_for_server() -> str:
