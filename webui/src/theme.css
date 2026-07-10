@@ -27,14 +27,22 @@ html, body { margin: 0; }
 
 body {
   min-height: 100vh;
-  background:
-    radial-gradient(1200px 800px at 50% -10%, #11251d 0%, var(--ink) 60%) fixed;
   background-color: var(--ink);
   color: var(--text);
   font-family: var(--sans);
   font-size: 15px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+}
+
+/* Fixed-position underlay instead of background-attachment: fixed, which
+   forces a full-viewport repaint on every scroll frame. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: radial-gradient(1200px 800px at 50% -10%, #11251d 0%, var(--ink) 60%);
 }
 
 #app { min-height: 100vh; display: flex; flex-direction: column; }
