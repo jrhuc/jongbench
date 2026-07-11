@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 from collections import defaultdict, deque
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -49,6 +50,38 @@ _DRAW_TICKER_RE = re.compile(r"^P([0-3]) drew .+$")
 _LAST_SERVER_LOCK = threading.Lock()
 _LAST_SERVER_URL: str | None = None
 _LAST_SERVER_PORT: int | None = None
+_MODEL_CACHE_TTL = 300.0
+_MODEL_CACHE_MAX = 32
+_MODEL_CACHE_LOCK = threading.Lock()
+_MODEL_CACHE: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
+
+
+def _prune_model_cache_locked(now: float) -> None:
+    expired = [
+        entry_key
+        for entry_key, (stamp, _) in _MODEL_CACHE.items()
+        if now - stamp >= _MODEL_CACHE_TTL
+    ]
+    for entry_key in expired:
+        del _MODEL_CACHE[entry_key]
+
+
+def _cached_list_models(provider: str, key: str) -> list[dict[str, Any]]:
+    cache_key = (provider, hashlib.sha256(key.encode("utf-8")).hexdigest())
+    with _MODEL_CACHE_LOCK:
+        _prune_model_cache_locked(time.monotonic())
+        hit = _MODEL_CACHE.get(cache_key)
+        if hit is not None:
+            return hit[1]
+    models = providers.list_models(provider, key)
+    with _MODEL_CACHE_LOCK:
+        now = time.monotonic()
+        _prune_model_cache_locked(now)
+        while len(_MODEL_CACHE) >= _MODEL_CACHE_MAX and cache_key not in _MODEL_CACHE:
+            oldest = min(_MODEL_CACHE.items(), key=lambda item: item[1][0])[0]
+            del _MODEL_CACHE[oldest]
+        _MODEL_CACHE[cache_key] = (now, models)
+    return models
 
 
 class WebHumanIO(HumanIO):
@@ -750,6 +783,20 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                             "human_seat": session.human_seat,
                         },
                     )
+                elif parsed.path == "/api/models":
+                    payload = self._read_json_body()
+                    provider = payload.get("provider")
+                    key = payload.get("key")
+                    allowed = {"anthropic", "openai", "google", "xai", "deepseek"}
+                    if not isinstance(provider, str) or provider not in allowed:
+                        raise _HTTPError(HTTPStatus.BAD_REQUEST, "provider must be a supported model provider")
+                    if not isinstance(key, str) or not key.strip():
+                        raise _HTTPError(HTTPStatus.BAD_REQUEST, "key must be a non-empty string")
+                    try:
+                        models = _cached_list_models(provider, key.strip())
+                    except ValueError as exc:
+                        raise _HTTPError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+                    self._send_json(HTTPStatus.OK, {"models": models})
                 elif parsed.path.startswith("/api/abort/"):
                     session = self._session_from_path(parsed.path, "/api/abort/")
                     ok = session.abort()

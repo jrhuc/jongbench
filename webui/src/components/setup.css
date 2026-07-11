@@ -44,6 +44,8 @@
 .deal-row { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; margin: 3px 0 14px; }
 .deal-button { min-width: 180px; padding: 10px 24px; font-size: 16px; }
 .deal-error { margin: 0; color: #e7a49b; font-size: 12px; text-align: center; }
+.dropdown-note { color: var(--muted); cursor: default; font-size: 12px; padding: 6px 10px; }
+.dropdown-note-error { color: #e7a49b; }
 .tables-section { margin-top: 23px; padding: 22px 24px; }
 .tables-section .section-heading { margin-bottom: 12px; }
 .session-list { border-top: 1px solid var(--line); }

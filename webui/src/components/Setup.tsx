@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 import * as api from "../api";
 import { Dropdown } from "./Dropdown";
+import { ModelCombobox } from "./ModelCombobox";
 import { PROVIDERS, ProviderIcon, providerOf, providerOfName } from "../providers";
 import type { ProviderInfo } from "../providers";
 import type { SessionListItem } from "../types";
@@ -134,15 +135,17 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
                       }))}
                     />
                   </div>
-                  <label class={`model-field${provider.keyName === null ? " model-field-hidden" : ""}`}>
+                  <div class={`model-field${provider.keyName === null ? " model-field-hidden" : ""}`}>
                     <span>Model id</span>
-                    <input
+                    <ModelCombobox
+                      key={seat.providerId}
+                      provider={provider}
+                      apiKey={provider.keyName === null ? "" : keys[provider.keyName] ?? ""}
                       value={seat.model}
-                      placeholder={provider.placeholder}
-                      disabled={provider.keyName === null}
-                      onInput={(event) => updateModel(index, event.currentTarget.value)}
+                      label={`${windName} seat model`}
+                      onChange={(model) => updateModel(index, model)}
                     />
-                  </label>
+                  </div>
                 </article>
               );
             })}

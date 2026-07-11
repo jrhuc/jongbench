@@ -79,6 +79,21 @@ export function demoAvailable(): Promise<boolean> {
   return fetch("/api/demo", { method: "HEAD" }).then((r) => r.ok).catch(() => false);
 }
 
+export interface ModelEntry {
+  id: string;
+  created: number | null;
+}
+
+export function listModels(provider: string, key: string): Promise<ModelEntry[]> {
+  return json<{ models: ModelEntry[] }>(
+    fetch("/api/models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider, key }),
+    }),
+  ).then((body) => body.models);
+}
+
 export interface EventStream {
   close(): void;
 }

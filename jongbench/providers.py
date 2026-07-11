@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
+from urllib import error as urllib_error
+from urllib import parse as urllib_parse
+from urllib import request as urllib_request
 
 
 USAGE = (
@@ -107,13 +112,26 @@ class AnthropicProvider(Provider):
         max_tokens: int = 1200,
         temperature: float = 0.6,
     ) -> tuple[str, dict[str, int]]:
-        response = self._get_client().messages.create(
-            model=self.model,
-            system=system,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            messages=[{"role": "user", "content": user}],
-        )
+        import anthropic
+
+        params: dict[str, Any] = {
+            "model": self.model,
+            "system": system,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [{"role": "user", "content": user}],
+        }
+        while True:
+            try:
+                response = self._get_client().messages.create(**params)
+                break
+            except anthropic.BadRequestError as exc:
+                message = str(exc).lower()
+                if "temperature" in message and "temperature" in params:
+                    params.pop("temperature")
+                else:
+                    raise
+
         text = "".join(
             getattr(block, "text", "")
             for block in getattr(response, "content", [])
@@ -320,3 +338,148 @@ def make_provider(spec: ProviderSpec, api_key: str | None = None) -> Provider:
     if spec.provider == "random":
         raise ValueError("random provider is handled separately")
     raise ValueError(USAGE)
+
+
+def list_models(provider: str, api_key: str) -> list[dict[str, Any]]:
+    openai_exclude = (
+        "whisper",
+        "tts",
+        "embed",
+        "dall-e",
+        "moderation",
+        "image",
+        "audio",
+        "realtime",
+        "transcribe",
+        "davinci",
+        "babbage",
+        "instruct",
+        "codex",
+        "search",
+        "computer-use",
+    )
+
+    def parse_iso_created(value: Any) -> int | None:
+        if not isinstance(value, str) or not value:
+            return None
+        text = value[:-1] + "+00:00" if value.endswith("Z") else value
+        try:
+            return int(datetime.fromisoformat(text).timestamp())
+        except ValueError:
+            return None
+
+    def fetch_json(url: str, headers: dict[str, str], name: str) -> Any:
+        request = urllib_request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib_request.urlopen(request, timeout=15) as response:
+                raw = response.read()
+        except urllib_error.HTTPError as exc:
+            if exc.code in (401, 403):
+                raise ValueError(f"API key was rejected by {name}") from exc
+            raise ValueError(f"{name} returned HTTP {exc.code}") from exc
+        except (urllib_error.URLError, TimeoutError) as exc:
+            raise ValueError(f"could not reach {name}") from exc
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"{name} returned malformed JSON") from exc
+
+    def list_openai_shaped(url: str, name: str) -> list[dict[str, Any]]:
+        payload = fetch_json(
+            url, {"Authorization": f"Bearer {api_key}"}, name
+        )
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, list):
+            raise ValueError(f"{name} returned malformed JSON")
+        entries: list[dict[str, Any]] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            model_id = item.get("id")
+            if not isinstance(model_id, str) or not model_id:
+                continue
+            created = item.get("created")
+            if isinstance(created, bool) or not isinstance(created, int):
+                created = None
+            entries.append({"id": model_id, "created": created})
+        return entries
+
+    if provider == "anthropic":
+        payload = fetch_json(
+            "https://api.anthropic.com/v1/models?limit=1000",
+            {
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            "anthropic",
+        )
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, list):
+            raise ValueError("anthropic returned malformed JSON")
+        models: list[dict[str, Any]] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            model_id = item.get("id")
+            if not isinstance(model_id, str) or not model_id:
+                continue
+            models.append(
+                {
+                    "id": model_id,
+                    "created": parse_iso_created(item.get("created_at")),
+                }
+            )
+    elif provider == "openai":
+        models = [
+            entry
+            for entry in list_openai_shaped(
+                "https://api.openai.com/v1/models", "openai"
+            )
+            if not any(token in entry["id"].lower() for token in openai_exclude)
+        ]
+    elif provider == "google":
+        models = []
+        page_token = None
+        for _ in range(4):
+            query = {"pageSize": "1000"}
+            if page_token:
+                query["pageToken"] = page_token
+            url = (
+                "https://generativelanguage.googleapis.com/v1beta/models?"
+                + urllib_parse.urlencode(query)
+            )
+            payload = fetch_json(
+                url, {"x-goog-api-key": api_key}, "google"
+            )
+            if not isinstance(payload, dict):
+                raise ValueError("google returned malformed JSON")
+            items = payload.get("models")
+            if not isinstance(items, list):
+                raise ValueError("google returned malformed JSON")
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                methods = item.get("supportedGenerationMethods")
+                if not isinstance(methods, list) or "generateContent" not in methods:
+                    continue
+                name = item.get("name")
+                if not isinstance(name, str) or not name:
+                    continue
+                model_id = name.removeprefix("models/")
+                if not model_id:
+                    continue
+                models.append({"id": model_id, "created": None})
+            next_token = payload.get("nextPageToken")
+            if not isinstance(next_token, str) or not next_token:
+                break
+            page_token = next_token
+    elif provider == "xai":
+        models = list_openai_shaped("https://api.x.ai/v1/models", "xai")
+    elif provider == "deepseek":
+        models = list_openai_shaped("https://api.deepseek.com/models", "deepseek")
+    else:
+        raise ValueError(f"unknown provider: {provider}")
+
+    if any(entry["created"] is not None for entry in models):
+        models.sort(key=lambda entry: entry["created"] or 0, reverse=True)
+    return models
