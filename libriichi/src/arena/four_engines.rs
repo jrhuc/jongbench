@@ -1,12 +1,11 @@
 use super::game::{BatchGame, Index};
-use super::result::GameResult;
 use crate::agent::{BatchAgent, new_py_agent};
 use std::array;
 use std::fs::{self, File};
 use std::io;
 use std::path::PathBuf;
 
-use anyhow::{Result, ensure};
+use anyhow::{Result, anyhow, ensure};
 use flate2::Compression;
 use flate2::read::GzEncoder;
 use pyo3::prelude::*;
@@ -43,16 +42,24 @@ impl FourEngines {
         py: Python<'_>,
     ) -> Result<Vec<([String; 4], [i32; 4], (u64, u64))>> {
         ensure!(engines.len() == 4, "expected exactly 4 engines");
+        ensure!(seed_count > 0, "seed_count must be greater than zero");
 
         py.allow_threads(move || {
             if let Some(dir) = &self.log_dir {
                 fs::create_dir_all(dir)?;
             }
 
-            let n = seed_count as usize;
-            let seeds: Vec<_> = (seed_start.0..seed_start.0 + seed_count)
-                .map(|s| (s, seed_start.1))
-                .collect();
+            let n = usize::try_from(seed_count)
+                .map_err(|_| anyhow!("seed_count is too large for this platform"))?;
+            let seeds = (0..seed_count)
+                .map(|offset| {
+                    seed_start
+                        .0
+                        .checked_add(offset)
+                        .map(|seed| (seed, seed_start.1))
+                        .ok_or_else(|| anyhow!("seed range overflow"))
+                })
+                .collect::<Result<Vec<_>>>()?;
 
             let mut agents: Vec<Box<dyn BatchAgent>> = Vec::with_capacity(4);
             for (agent_idx, engine) in engines.into_iter().enumerate() {

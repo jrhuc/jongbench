@@ -1,0 +1,25 @@
+.replay-main { position: relative; }
+
+.replay-bar {
+  position: absolute;
+  z-index: 9;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(10, 20, 16, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  font: 12px var(--mono);
+  color: var(--muted);
+}
+
+.replay-bar input[type="range"] { width: min(280px, 30vw); accent-color: var(--jade); }
+.replay-bar button { padding: 4px 10px; font-size: 12px; }
+.replay-play { min-width: 74px; }
+.replay-pos { min-width: 64px; text-align: center; }
+.replay-bar .dropdown-button { padding: 4px 8px; font-size: 12px; }

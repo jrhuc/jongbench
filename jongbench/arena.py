@@ -19,7 +19,10 @@ def run_games(
     log_dir: str | None = None,
     disable_progress_bar: bool = True,
 ) -> list[GameSummary]:
-    assert len(engines) == 4
+    if len(engines) != 4:
+        raise ValueError(f"expected exactly 4 engines, got {len(engines)}")
+    if games <= 0:
+        raise ValueError("games must be greater than zero")
     arena = libriichi.arena.FourEngines(
         disable_progress_bar=disable_progress_bar, log_dir=log_dir
     )

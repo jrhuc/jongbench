@@ -230,4 +230,4 @@ def _prev_tile(tile: str) -> str:
 
 
 def _tiles_text(tiles: list[str]) -> str:
-    return "".join(fmt_tile(tile) for tile in tiles)
+    return " ".join(fmt_tile(tile) for tile in tiles)

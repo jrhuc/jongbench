@@ -2,23 +2,24 @@ from __future__ import annotations
 
 import copy
 from collections import defaultdict, deque
-from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-import os
 from pathlib import Path
 import re
 import secrets
 import threading
 import time
+import traceback
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 import webbrowser
 
 from . import arena, prompts, providers
-from .engines import BaseEngine, make_engine
+from .artifacts import decision_filename
+from .engines import BaseEngine, GameAborted, make_engine, sanitize_events
 from .spectator import Spectator, TableState
 
 try:
@@ -39,7 +40,12 @@ except ImportError:
 
 
 _ACTIVE_STATUSES = {"starting", "running", "evaluating"}
+_TERMINAL_STATUSES = {"done", "error", "aborted"}
 _BODY_LIMIT = 64 * 1024
+_MAX_SESSION_FRAMES = 256
+_MAX_RETAINED_FINISHED_SESSIONS = 4
+_FINISHED_SESSION_TTL = 30 * 60.0
+_DRAW_TICKER_RE = re.compile(r"^P([0-3]) drew .+$")
 _LAST_SERVER_LOCK = threading.Lock()
 _LAST_SERVER_URL: str | None = None
 _LAST_SERVER_PORT: int | None = None
@@ -53,6 +59,15 @@ class WebHumanIO(HumanIO):
         self._event: threading.Event | None = None
         self._choice: int | None = None
         self._menu_len = 0
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._cancelled = True
+            gate = self._event
+            self._pending = None
+        if gate is not None:
+            gate.set()
 
     def ask(
         self,
@@ -61,10 +76,20 @@ class WebHumanIO(HumanIO):
         events: list[dict[str, Any]],
         menu: list[dict[str, Any]],
     ) -> dict[str, Any]:
+        with self._lock:
+            if self._cancelled:
+                raise GameAborted("game aborted")
         gate = threading.Event()
         state_text = prompts.render_state(player_id, state, _prompt_safe_events(events))
-        labels = [str(item["label"]) for item in menu]
+        options = [
+            _pending_option(index, player_id, item)
+            for index, item in enumerate(menu)
+        ]
         with self._lock:
+            # Rendering is deliberately outside the lock, so cancellation must
+            # be checked again while atomically registering the waiter.
+            if self._cancelled:
+                raise GameAborted("game aborted")
             self._generation += 1
             generation = self._generation
             self._event = gate
@@ -74,11 +99,16 @@ class WebHumanIO(HumanIO):
                 "generation": generation,
                 "seat": int(player_id),
                 "state_text": state_text,
-                "menu": labels,
+                # Keep the labels for older clients, but give the web UI the
+                # raw tile and action metadata it needs for direct tile clicks.
+                "menu": [option["label"] for option in options],
+                "options": options,
             }
 
         gate.wait()
         with self._lock:
+            if self._cancelled:
+                raise GameAborted("game aborted")
             choice = self._choice
         if choice is None or not 0 <= choice < len(menu):
             raise RuntimeError("human decision was not selected")
@@ -111,7 +141,34 @@ class WebHumanIO(HumanIO):
         return True
 
 
+def _pending_option(index: int, player_id: int, item: dict[str, Any]) -> dict[str, Any]:
+    """Expose just enough menu metadata for the browser to render a legal choice."""
+    event = item.get("event")
+    if not isinstance(event, dict):
+        event = {}
+    event_type = str(event.get("type") or item.get("kind") or "none")
+    if event_type == "dahai":
+        action = "discard"
+    elif event_type == "hora":
+        action = "tsumo" if event.get("target") == player_id else "ron"
+    elif event_type == "none":
+        action = "pass"
+    else:
+        action = event_type
+
+    option = {
+        "choice": int(index),
+        "action": action,
+        "label": str(item.get("label", action)),
+    }
+    if action == "discard" and event.get("pai") is not None:
+        option["tile"] = str(event["pai"])
+    return option
+
+
 class _FallbackHumanEngine(BaseEngine):
+    auto_choose_single_menu = False
+
     def __init__(
         self,
         name: str,
@@ -144,6 +201,7 @@ class GameSession:
         human_seat: int | None,
         human_io: WebHumanIO,
         run_dir: str,
+        state_hints: bool,
     ) -> None:
         self.id = run_id
         self.created = created
@@ -153,29 +211,73 @@ class GameSession:
         self.names = list(names)
         self.human_seat = human_seat
         self.human_io = human_io
-        self.frames: list[dict[str, Any]] = []
+        self.frames: deque[dict[str, Any]] = deque(maxlen=_MAX_SESSION_FRAMES)
         self.frames_lock = threading.Lock()
         self.final: dict[str, Any] | None = None
         self.review: dict[str, Any] | None = None
         self.run_dir = run_dir
+        self.state_hints = bool(state_hints)
         self._status_lock = threading.Lock()
+        self._status_version = 1
+        self._status_history: list[tuple[int, str, str | None]] = [
+            (self._status_version, self.status, self.error)
+        ]
+        self.finished_at: float | None = None
+        self.cancel_event = threading.Event()
         self._game_done = threading.Event()
         self._poller_done = threading.Event()
+        self._worker_done = threading.Event()
         self.game_thread: threading.Thread | None = None
         self.poller_thread: threading.Thread | None = None
 
-    def set_status(self, status: str) -> None:
+    def _record_status_locked(self) -> None:
+        self._status_version += 1
+        self._status_history.append((self._status_version, self.status, self.error))
+        if self.status in _TERMINAL_STATUSES and self.finished_at is None:
+            self.finished_at = time.time()
+
+    def set_status(self, status: str) -> bool:
         with self._status_lock:
+            if self.status in _TERMINAL_STATUSES or self.status == status:
+                return False
             self.status = status
+            self._record_status_locked()
+            return True
+
+    def abort(self) -> bool:
+        with self._status_lock:
+            if self.status not in _ACTIVE_STATUSES:
+                return False
+            self.status = "aborted"
+            self._record_status_locked()
+        self.cancel_event.set()
+        self.human_io.cancel()
+        return True
 
     def set_error(self, message: str) -> None:
         with self._status_lock:
+            if self.status in _TERMINAL_STATUSES:
+                return
             self.error = message
             self.status = "error"
+            self._record_status_locked()
 
     def status_snapshot(self) -> tuple[str, str | None]:
         with self._status_lock:
             return self.status, self.error
+
+    def status_transitions_after(
+        self, version: int
+    ) -> list[tuple[int, str, str | None]]:
+        with self._status_lock:
+            return [item for item in self._status_history if item[0] > version]
+
+    def latest_status_transition(self) -> tuple[int, str, str | None]:
+        with self._status_lock:
+            return self._status_history[-1]
+
+    def occupies_slot(self) -> bool:
+        return not self._worker_done.is_set()
 
     def latest_seq(self) -> int:
         with self.frames_lock:
@@ -183,7 +285,9 @@ class GameSession:
 
     def frames_after(self, seq: int) -> list[dict[str, Any]]:
         with self.frames_lock:
-            return [copy.deepcopy(frame) for frame in self.frames if int(frame["seq"]) > seq]
+            # Frames are immutable after publication. Copy the small container,
+            # not every large table snapshot in the SSE backlog.
+            return [frame for frame in self.frames if int(frame["seq"]) > seq]
 
 
 class _DecisionLogSink:
@@ -223,10 +327,11 @@ class _ServerState:
 
     def reserve_start(self) -> bool:
         with self.lock:
+            self._prune_sessions_locked(time.time())
             active = sum(
                 1
                 for session in self.sessions.values()
-                if session.status_snapshot()[0] in _ACTIVE_STATUSES
+                if session.occupies_slot()
             )
             if active + self._reserved >= self.max_concurrent_games:
                 return False
@@ -237,6 +342,14 @@ class _ServerState:
         with self.lock:
             self._reserved = max(0, self._reserved - 1)
             self.sessions[session.id] = session
+            self._prune_sessions_locked(time.time())
+        thread = threading.Thread(
+            target=self._after_worker_exit,
+            args=(session,),
+            daemon=True,
+            name=f"jongbench-web-cleanup-{session.id}",
+        )
+        thread.start()
 
     def release_reserved(self) -> None:
         with self.lock:
@@ -244,11 +357,51 @@ class _ServerState:
 
     def get_session(self, run_id: str) -> GameSession | None:
         with self.lock:
+            self._prune_sessions_locked(time.time())
             return self.sessions.get(run_id)
+
+    def remove_session(self, run_id: str) -> None:
+        with self.lock:
+            self.sessions.pop(run_id, None)
 
     def list_sessions(self) -> list[GameSession]:
         with self.lock:
+            self._prune_sessions_locked(time.time())
             return sorted(self.sessions.values(), key=lambda session: session.created)
+
+    def _after_worker_exit(self, session: GameSession) -> None:
+        session._worker_done.wait()
+        with self.lock:
+            if self.sessions.get(session.id) is not session:
+                return
+            if session.status_snapshot()[0] == "aborted":
+                self.sessions.pop(session.id, None)
+            else:
+                self._prune_sessions_locked(time.time())
+
+    def _prune_sessions_locked(self, now: float) -> None:
+        finished = [
+            session
+            for session in self.sessions.values()
+            if session.status_snapshot()[0] in {"done", "error"}
+            and not session.occupies_slot()
+        ]
+        expired = {
+            session.id
+            for session in finished
+            if session.finished_at is not None
+            and session.finished_at <= now - _FINISHED_SESSION_TTL
+        }
+        retained = sorted(
+            (session for session in finished if session.id not in expired),
+            key=lambda session: session.finished_at or session.created,
+            reverse=True,
+        )
+        expired.update(
+            session.id for session in retained[_MAX_RETAINED_FINISHED_SESSIONS:]
+        )
+        for run_id in expired:
+            self.sessions.pop(run_id, None)
 
     def allow_start(self, ip: str) -> bool:
         now = time.time()
@@ -280,6 +433,7 @@ def start_game_session(
     weights: str,
     no_eval: bool,
     delay: float,
+    state_hints: bool = True,
 ) -> GameSession:
     if len(model_specs) != 4:
         raise ValueError("models must contain exactly 4 specs")
@@ -298,34 +452,16 @@ def start_game_session(
             raise ValueError("human_seat must match the human model seat")
     elif human_seat is not None:
         raise ValueError("human_seat was provided but no model spec is human")
+    if not isinstance(state_hints, bool):
+        raise ValueError("state_hints must be a boolean")
 
     seed_tuple = _normalize_seed(seed)
     run_id = secrets.token_hex(4)
     names = _engine_names(parsed)
     run_dir = _make_run_dir(Path(runs_root), label, run_id)
-    (run_dir / "logs").mkdir(parents=True, exist_ok=True)
-    (run_dir / "decisions").mkdir(parents=True, exist_ok=True)
-    (run_dir / "review").mkdir(parents=True, exist_ok=True)
 
-    session = GameSession(
-        run_id=run_id,
-        created=time.time(),
-        model_specs=list(model_specs),
-        names=names,
-        human_seat=human_seat,
-        human_io=WebHumanIO(),
-        run_dir=str(run_dir),
-    )
-    _write_config(run_dir, session, seed_tuple, label, delay, no_eval)
-
-    spectator = Spectator(delay=delay)
-    session.poller_thread = threading.Thread(
-        target=_poll_spectator,
-        args=(session, spectator),
-        daemon=True,
-        name=f"jongbench-web-poller-{run_id}",
-    )
-    session.poller_thread.start()
+    human_io = WebHumanIO()
+    spectator = Spectator(delay=delay, names=names)
     engines = [
         _make_engine_for_session(
             name=names[seat],
@@ -335,12 +471,37 @@ def start_game_session(
             seed=seed_tuple,
             keys=keys,
             spectator=spectator,
-            human_io=session.human_io,
+            human_io=human_io,
             decisions_dir=run_dir / "decisions",
+            state_hints=state_hints,
         )
         for seat in range(4)
     ]
+    _preflight_engines(engines)
+    for directory in ("logs", "decisions", "review"):
+        (run_dir / directory).mkdir(parents=True, exist_ok=True)
 
+    session = GameSession(
+        run_id=run_id,
+        created=time.time(),
+        model_specs=list(model_specs),
+        names=names,
+        human_seat=human_seat,
+        human_io=human_io,
+        run_dir=str(run_dir),
+        state_hints=state_hints,
+    )
+    _write_config(run_dir, session, seed_tuple, label, delay, no_eval)
+    for engine in engines:
+        engine.cancel_event = session.cancel_event
+
+    session.poller_thread = threading.Thread(
+        target=_poll_spectator,
+        args=(session, spectator, seed_tuple),
+        daemon=True,
+        name=f"jongbench-web-poller-{run_id}",
+    )
+    session.poller_thread.start()
     session.game_thread = threading.Thread(
         target=_run_game_thread,
         args=(session, spectator, engines, seed_tuple, run_dir, weights, no_eval),
@@ -349,6 +510,37 @@ def start_game_session(
     )
     session.game_thread.start()
     return session
+
+
+def _preflight_engines(engines: list[Any]) -> None:
+    """One tiny completion per distinct provider/model so a missing or invalid
+    API key fails the start request instead of silently degrading every
+    decision to the fallback action."""
+    checks: dict[tuple[str, str, str | None], Any] = {}
+    for engine in engines:
+        provider = getattr(engine, "provider", None)
+        spec = getattr(engine, "spec", None)
+        if provider is None or spec is None:
+            continue
+        checks.setdefault((spec.provider, spec.model, spec.base_url), engine)
+    if not checks:
+        return
+
+    def check(engine: Any) -> None:
+        try:
+            engine.provider.complete(
+                "Reply with the word OK.",
+                "OK?",
+                max_tokens=8,
+                temperature=engine.temperature,
+            )
+        except Exception as exc:
+            reason = str(exc).splitlines()[0][:240] if str(exc) else type(exc).__name__
+            raise ValueError(f"API check failed for {engine.name}: {reason}") from exc
+
+    with ThreadPoolExecutor(max_workers=len(checks)) as executor:
+        for future in [executor.submit(check, engine) for engine in checks.values()]:
+            future.result()
 
 
 def run_server(
@@ -389,6 +581,7 @@ def run_watch_server(
     runs_root: str = "runs",
     api_keys: dict[str, str] | None = None,
     no_eval: bool = False,
+    state_hints: bool = True,
 ) -> str:
     state = _ServerState(
         runs_root=runs_root,
@@ -412,12 +605,17 @@ def run_watch_server(
             weights=weights,
             no_eval=no_eval,
             delay=delay,
+            state_hints=state_hints,
         )
-        state.sessions[session.id] = session
+        with state.lock:
+            state.sessions[session.id] = session
         if open_browser:
             webbrowser.open(f"{url}#run={session.id}")
-        while session.status_snapshot()[0] not in {"done", "error"}:
+        while session.status_snapshot()[0] not in {"done", "error", "aborted"}:
             time.sleep(0.2)
+        status, error = session.status_snapshot()
+        if status == "error":
+            raise RuntimeError(error or "web watch failed")
         return session.run_dir
     finally:
         httpd.shutdown()
@@ -497,11 +695,6 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                 parsed = urlparse(self.path)
                 if parsed.path == "/api/start":
                     payload = self._read_json_body()
-                    if not state.reserve_start():
-                        raise _HTTPError(HTTPStatus.CONFLICT, "too many games are already running")
-                    reserved = True
-                    if not state.allow_start(self.client_address[0]):
-                        raise _HTTPError(HTTPStatus.TOO_MANY_REQUESTS, "too many starts from this IP")
                     models = payload.get("models")
                     if not isinstance(models, list) or len(models) != 4 or not all(isinstance(item, str) for item in models):
                         raise _HTTPError(HTTPStatus.BAD_REQUEST, "models must be a list of 4 spec strings")
@@ -512,12 +705,26 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                     if not isinstance(keys, dict):
                         raise _HTTPError(HTTPStatus.BAD_REQUEST, "keys must be an object")
                     clean_keys = {str(k): str(v) for k, v in keys.items() if isinstance(v, str)}
+                    try:
+                        _validate_web_start_credentials(models, clean_keys)
+                    except ValueError as exc:
+                        raise _HTTPError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
                     seed = payload.get("seed")
-                    if seed is not None and not isinstance(seed, int):
+                    if seed is not None and (
+                        not isinstance(seed, int) or isinstance(seed, bool)
+                    ):
                         raise _HTTPError(HTTPStatus.BAD_REQUEST, "seed must be an integer or null")
                     label = payload.get("label")
                     if label is not None and not isinstance(label, str):
                         raise _HTTPError(HTTPStatus.BAD_REQUEST, "label must be a string or null")
+                    state_hints = payload.get("state_hints", True)
+                    if not isinstance(state_hints, bool):
+                        raise _HTTPError(HTTPStatus.BAD_REQUEST, "state_hints must be a boolean")
+                    if not state.reserve_start():
+                        raise _HTTPError(HTTPStatus.CONFLICT, "too many games are already running")
+                    reserved = True
+                    if not state.allow_start(self.client_address[0]):
+                        raise _HTTPError(HTTPStatus.TOO_MANY_REQUESTS, "too many starts from this IP")
                     try:
                         session = start_game_session(
                             models,
@@ -529,6 +736,7 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                             weights=state.weights,
                             no_eval=state.no_eval,
                             delay=state.delay,
+                            state_hints=state_hints,
                         )
                     except ValueError as exc:
                         raise _HTTPError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
@@ -542,6 +750,10 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                             "human_seat": session.human_seat,
                         },
                     )
+                elif parsed.path.startswith("/api/abort/"):
+                    session = self._session_from_path(parsed.path, "/api/abort/")
+                    ok = session.abort()
+                    self._send_json(HTTPStatus.OK, {"ok": ok})
                 elif parsed.path.startswith("/api/choose/"):
                     session = self._session_from_path(parsed.path, "/api/choose/")
                     payload = self._read_json_body()
@@ -575,6 +787,8 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError as exc:
                 raise _HTTPError(HTTPStatus.BAD_REQUEST, "invalid Content-Length") from exc
+            if length < 0:
+                raise _HTTPError(HTTPStatus.BAD_REQUEST, "invalid Content-Length")
             if length > _BODY_LIMIT:
                 raise _HTTPError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request body is too large")
             raw = self.rfile.read(length)
@@ -609,14 +823,46 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
             self.send_header("Connection", "keep-alive")
             self.end_headers()
             last_ping = time.monotonic()
+            status_version, initial_status, initial_error = (
+                session.latest_status_transition()
+            )
             try:
+                # An active late joiner needs the current status before frames,
+                # not historical statuses that would regress the UI. A terminal
+                # late joiner receives its retained frames before the terminal
+                # status closes the stream.
+                if initial_status not in _TERMINAL_STATUSES:
+                    self._write_sse(
+                        "status",
+                        _session_state(
+                            session, status=initial_status, error=initial_error
+                        ),
+                    )
                 while True:
                     for frame in session.frames_after(since):
                         since = max(since, int(frame["seq"]))
                         self._write_sse("frame", frame)
-                    status, error = session.status_snapshot()
-                    if status in {"done", "error"}:
-                        self._write_sse("status", _session_state(session))
+                    if initial_status in _TERMINAL_STATUSES:
+                        self._write_sse(
+                            "status",
+                            _session_state(
+                                session,
+                                status=initial_status,
+                                error=initial_error,
+                            ),
+                        )
+                        return
+                    terminal = False
+                    for version, status, error in session.status_transitions_after(
+                        status_version
+                    ):
+                        status_version = version
+                        self._write_sse(
+                            "status",
+                            _session_state(session, status=status, error=error),
+                        )
+                        terminal = status in _TERMINAL_STATUSES
+                    if terminal:
                         return
                     now = time.monotonic()
                     if now - last_ping >= 15.0:
@@ -675,19 +921,50 @@ def _run_game_thread(
         spectator.finish(summary.names, summary.scores)
         session._game_done.set()
         session._poller_done.wait(timeout=10.0)
+        if session.cancel_event.is_set() or session.status_snapshot()[0] in {
+            "error",
+            "aborted",
+        }:
+            return
         if no_eval:
             session.set_status("done")
             return
         session.set_status("evaluating")
-        session.review = _evaluate_run(run_dir, summary, weights)
+        session.review = _evaluate_run(
+            run_dir,
+            summary,
+            weights,
+            cancel_event=session.cancel_event,
+        )
         session.set_status("done")
+    except GameAborted:
+        pass
     except Exception as exc:
-        session._game_done.set()
+        if session.cancel_event.is_set():
+            return
+        _write_run_error(run_dir, "game", exc)
         session.set_error(str(exc))
+    finally:
+        session._game_done.set()
+        session._poller_done.wait(timeout=10.0)
+        session._worker_done.set()
 
 
-def _poll_spectator(session: GameSession, spectator: Spectator) -> None:
+def _poll_spectator(
+    session: GameSession,
+    spectator: Spectator,
+    seed: tuple[int, int],
+) -> None:
     table = TableState()
+    table.names = list(session.names)
+    partial_log = _DecisionLogSink(Path(session.run_dir) / "logs" / "partial.jsonl")
+    partial_log(
+        {
+            "type": "start_game",
+            "names": list(session.names),
+            "seed": [int(seed[0]), int(seed[1])],
+        }
+    )
     seq = 0
     try:
         while True:
@@ -697,13 +974,23 @@ def _poll_spectator(session: GameSession, spectator: Spectator) -> None:
                     seq = max(seq, int(item["seq"]))
                     event = copy.deepcopy(item["event"])
                     if event.get("type") == "finish":
+                        partial_log({"type": "end_game"})
                         table.finish(event.get("names"), event.get("scores"))
                     else:
+                        partial_log(event)
                         table.apply(event)
                     snapshot = table.snapshot()
+                    public_event = event
                     if session.human_seat is not None:
                         snapshot = _mask_snapshot(snapshot, session.human_seat)
-                    frame = {"seq": seq, "event": event, "snapshot": snapshot}
+                        public_event = _prompt_safe_events(
+                            sanitize_events([event], session.human_seat)
+                        )[0]
+                    frame = {
+                        "seq": seq,
+                        "event": public_event,
+                        "snapshot": snapshot,
+                    }
                     with session.frames_lock:
                         session.frames.append(frame)
                 continue
@@ -711,12 +998,42 @@ def _poll_spectator(session: GameSession, spectator: Spectator) -> None:
                 if not spectator.events_since(seq):
                     return
             time.sleep(0.15)
+    except Exception as exc:
+        _write_run_error(Path(session.run_dir), "spectator", exc)
+        session.cancel_event.set()
+        session.human_io.cancel()
+        session.set_error(str(exc))
     finally:
         session._poller_done.set()
 
 
+def _write_run_error(run_dir: Path, stage: str, exc: Exception) -> None:
+    payload = {
+        "created": datetime.now(timezone.utc).isoformat(),
+        "stage": stage,
+        "type": type(exc).__name__,
+        "message": str(exc),
+        "traceback": traceback.format_exc(),
+    }
+    try:
+        (run_dir / "error.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
 def _mask_snapshot(snapshot: dict[str, Any], human_seat: int) -> dict[str, Any]:
     masked = copy.deepcopy(snapshot)
+    ticker = masked.get("ticker")
+    if isinstance(ticker, list):
+        for index, line in enumerate(ticker):
+            if not isinstance(line, str):
+                continue
+            match = _DRAW_TICKER_RE.fullmatch(line)
+            if match is not None and int(match.group(1)) != human_seat:
+                ticker[index] = f"P{match.group(1)} drew a tile"
     hands = masked.get("hands")
     if isinstance(hands, list):
         for seat, hand in enumerate(hands):
@@ -733,15 +1050,32 @@ def _mask_snapshot(snapshot: dict[str, Any], human_seat: int) -> dict[str, Any]:
     return masked
 
 
-def _evaluate_run(run_dir: Path, summary: arena.GameSummary, weights: str) -> dict[str, Any]:
+def _evaluate_run(
+    run_dir: Path,
+    summary: arena.GameSummary,
+    weights: str,
+    *,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, Any]:
     from . import evaluate, report
 
+    def check_cancelled() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise GameAborted("game aborted")
+
+    check_cancelled()
     logs = sorted((run_dir / "logs").glob("*.json.gz")) + sorted((run_dir / "logs").glob("*.json"))
     if not logs:
         raise RuntimeError("no mjai log was written")
     events = evaluate.load_mjai_log(str(logs[0]))
+    check_cancelled()
     mortal = evaluate.load_engine(weights)
-    reviews = evaluate.review_game(events, mortal)
+    check_cancelled()
+    reviews: dict[int, dict[str, Any]] = {}
+    for seat in range(4):
+        check_cancelled()
+        reviews[seat] = evaluate.review_player(events, seat, mortal)
+        check_cancelled()
     players: dict[str, Any] = {}
     for seat in range(4):
         review = reviews[seat]
@@ -750,6 +1084,7 @@ def _evaluate_run(run_dir: Path, summary: arena.GameSummary, weights: str) -> di
             "review": review,
             "aggregates": evaluate.aggregates(review),
         }
+    check_cancelled()
     data = {
         "seed": [int(summary.seed[0]), int(summary.seed[1])],
         "names": list(summary.names),
@@ -777,6 +1112,7 @@ def _make_engine_for_session(
     spectator: Spectator,
     human_io: WebHumanIO,
     decisions_dir: Path,
+    state_hints: bool,
 ) -> Any:
     if spec.provider == "human":
         try:
@@ -784,12 +1120,17 @@ def _make_engine_for_session(
         except (TypeError, ValueError):
             engine_cls = _NativeHumanEngine or _FallbackHumanEngine
             return engine_cls(name, human_io, spectator=spectator)
-    kwargs: dict[str, Any] = {"spectator": spectator}
+    kwargs: dict[str, Any] = {
+        "spectator": spectator,
+        "state_hints": state_hints,
+    }
     if spec.provider == "random":
         kwargs["seed"] = seed[0] + seat * 1009 + seed[1] * 97
     else:
         kwargs["api_key"] = keys.get(spec.provider) or None
-        kwargs["decision_log"] = _DecisionLogSink(decisions_dir / f"{name}.jsonl")
+        kwargs["decision_log"] = _DecisionLogSink(
+            decisions_dir / decision_filename(name)
+        )
     return make_engine(name, spec_str, **kwargs)
 
 
@@ -810,6 +1151,31 @@ def _parse_spec(spec_str: str) -> providers.ProviderSpec:
     return providers.parse_spec(spec_str)
 
 
+def _validate_web_start_credentials(
+    model_specs: list[str], keys: dict[str, str]
+) -> None:
+    """Keep shared HTTP starts on fixed provider endpoints and visitor keys.
+
+    Direct CLI/watch starts intentionally retain environment-key and custom
+    compatibility-endpoint support.
+    """
+    parsed = [_parse_spec(spec) for spec in model_specs]
+    if any(spec.provider == "compat" for spec in parsed):
+        raise ValueError("compat provider URLs are not allowed in the web UI")
+    missing = sorted(
+        {
+            spec.provider
+            for spec in parsed
+            if spec.provider not in {"human", "random"}
+            and not keys.get(spec.provider, "").strip()
+        }
+    )
+    if missing:
+        raise ValueError(
+            "request-supplied API key required for: " + ", ".join(missing)
+        )
+
+
 def _human_seat_from_specs(model_specs: list[str]) -> int | None:
     for idx, spec in enumerate(model_specs):
         if _parse_spec(spec).provider == "human":
@@ -820,11 +1186,19 @@ def _human_seat_from_specs(model_specs: list[str]) -> int | None:
 def _normalize_seed(seed: int | tuple[int, int] | list[int] | None) -> tuple[int, int]:
     if seed is None:
         return secrets.randbelow(900_000_000) + 1, 1
+    if isinstance(seed, bool):
+        raise ValueError("seed must be an int, [int, int], or null")
     if isinstance(seed, int):
-        return int(seed), 1
-    if isinstance(seed, (tuple, list)) and len(seed) == 2:
-        return int(seed[0]), int(seed[1])
-    raise ValueError("seed must be an int, [int, int], or null")
+        result = (int(seed), 1)
+    elif isinstance(seed, (tuple, list)) and len(seed) == 2:
+        if any(not isinstance(value, int) or isinstance(value, bool) for value in seed):
+            raise ValueError("seed must be an int, [int, int], or null")
+        result = (seed[0], seed[1])
+    else:
+        raise ValueError("seed must be an int, [int, int], or null")
+    if any(value < 0 or value > 2**64 - 1 for value in result):
+        raise ValueError("seed values must be between 0 and 2^64 - 1")
+    return result
 
 
 def _engine_names(parsed: list[providers.ProviderSpec]) -> list[str]:
@@ -846,7 +1220,8 @@ def _safe_name(value: str) -> str:
 
 def _make_run_dir(root: Path, label: str | None, run_id: str) -> Path:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    slug = _safe_name(label or "")
+    raw_label = (label or "").strip()
+    slug = _safe_name(raw_label) if raw_label else ""
     name = f"{stamp}-{slug}-{run_id}" if slug else f"{stamp}-{run_id}"
     path = root / name
     suffix = 2
@@ -874,6 +1249,7 @@ def _write_config(
         "human_seat": session.human_seat,
         "delay": float(delay),
         "no_eval": bool(no_eval),
+        "state_hints": session.state_hints,
     }
     (run_dir / "config.json").write_text(
         json.dumps(config, ensure_ascii=False, indent=2, sort_keys=True),
@@ -889,11 +1265,19 @@ def _session_list_item(session: GameSession) -> dict[str, Any]:
         "names": list(session.names),
         "created": session.created,
         "human_seat": session.human_seat,
+        "final": copy.deepcopy(session.final) if status in {"done", "evaluating"} else None,
     }
 
 
-def _session_state(session: GameSession) -> dict[str, Any]:
-    status, error = session.status_snapshot()
+def _session_state(
+    session: GameSession,
+    *,
+    status: str | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    if status is None:
+        status, current_error = session.status_snapshot()
+        error = current_error
     return {
         "status": status,
         "error": error,
@@ -905,7 +1289,12 @@ def _session_state(session: GameSession) -> dict[str, Any]:
 
 
 def _page_bytes() -> bytes:
-    return (Path(__file__).parent / "webui_page.html").read_bytes()
+    page = Path(__file__).parent / "webui_page.html"
+    if not page.exists():
+        raise FileNotFoundError(
+            "jongbench/webui_page.html is missing; build it with `cd webui && bun install && bun run build`"
+        )
+    return page.read_bytes()
 
 
 def _demo_bytes(state: _ServerState) -> bytes:

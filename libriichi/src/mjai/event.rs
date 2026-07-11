@@ -110,6 +110,11 @@ pub enum Event {
 
         deltas: Option<[i32; 4]>,
         ura_markers: Option<Vec<Tile>>,
+        points: Option<i32>,
+        fu: Option<u8>,
+        han: Option<u8>,
+        yakuman: Option<u8>,
+        yaku: Option<Vec<(String, u8)>>,
     },
     Ryukyoku {
         deltas: Option<[i32; 4]>,

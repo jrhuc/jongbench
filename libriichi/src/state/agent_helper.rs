@@ -1,5 +1,5 @@
 use super::{PlayerState, SinglePlayerTables};
-use crate::algo::agari::AgariCalculator;
+use crate::algo::agari::{Agari, AgariCalculator};
 use crate::algo::point::Point;
 use crate::algo::shanten;
 use crate::algo::sp::{InitState, SPCalculator};
@@ -9,6 +9,15 @@ use crate::{must_tile, t, tu8, tuz};
 
 use anyhow::{Context, Result, ensure};
 use tinyvec::array_vec;
+
+#[derive(Debug, Clone)]
+pub(crate) struct HoraInfo {
+    pub point: Point,
+    pub fu: Option<u8>,
+    pub han: Option<u8>,
+    pub yakuman: Option<u8>,
+    pub yaku: Vec<(String, u8)>,
+}
 
 impl PlayerState {
     /// Used by `BoardState` to check if a player is making 4 kans on his own.
@@ -375,6 +384,14 @@ impl PlayerState {
     ///
     /// `ura_indicators` is used only when the actor has an accepted riichi.
     pub fn agari_points(&self, is_ron: bool, ura_indicators: &[Tile]) -> Result<Point> {
+        Ok(self.agari_info(is_ron, ura_indicators)?.point)
+    }
+
+    pub(crate) fn agari_info(
+        &self,
+        is_ron: bool,
+        ura_indicators: &[Tile],
+    ) -> Result<HoraInfo> {
         ensure!(
             is_ron && self.last_cans.can_ron_agari || self.last_cans.can_tsumo_agari,
             "cannot agari"
@@ -383,7 +400,16 @@ impl PlayerState {
         // Here, 天和 and 地和 are handled individually as special cases, and
         // there is no multi yakuman for these two.
         if !is_ron && self.can_w_riichi {
-            return Ok(Point::yakuman(self.oya == 0, 1));
+            return Ok(HoraInfo {
+                point: Point::yakuman(self.oya == 0, 1),
+                fu: None,
+                han: None,
+                yakuman: Some(1),
+                yaku: vec![(
+                    (if self.oya == 0 { "tenhou" } else { "chiihou" }).to_owned(),
+                    13,
+                )],
+            });
         }
 
         let winning_tile = if is_ron {
@@ -393,30 +419,34 @@ impl PlayerState {
         }
         .context("cannot find the winning tile")?;
 
-        let additional_hans = if is_ron {
-            [
-                self.riichi_accepted[0],       // 立直
-                self.is_w_riichi,              // 両立直
-                self.at_ippatsu,               // 一发
-                self.tiles_left == 0,          // 河底撈魚
-                self.chankan_chance.is_some(), // 槍槓
-            ]
-            .iter()
-            .filter(|&&b| b)
-            .count() as u8
+        let mut yaku: Vec<(String, u8)> = Vec::new();
+        if self.is_w_riichi {
+            yaku.push(("double riichi".to_owned(), 2));
+        } else if self.riichi_accepted[0] {
+            yaku.push(("riichi".to_owned(), 1));
+        }
+        if self.at_ippatsu {
+            yaku.push(("ippatsu".to_owned(), 1));
+        }
+        if is_ron {
+            if self.tiles_left == 0 {
+                yaku.push(("houtei raoyui".to_owned(), 1));
+            }
+            if self.chankan_chance.is_some() {
+                yaku.push(("chankan".to_owned(), 1));
+            }
         } else {
-            [
-                self.riichi_accepted[0],                  // 立直
-                self.is_w_riichi,                         // 両立直
-                self.at_ippatsu,                          // 一发
-                self.is_menzen,                           // 門前清自摸和
-                self.tiles_left == 0 && !self.at_rinshan, // 海底摸月
-                self.at_rinshan,                          // 嶺上開花
-            ]
-            .iter()
-            .filter(|&&b| b)
-            .count() as u8
-        };
+            if self.is_menzen {
+                yaku.push(("menzen tsumo".to_owned(), 1));
+            }
+            if self.tiles_left == 0 && !self.at_rinshan {
+                yaku.push(("haitei raoyue".to_owned(), 1));
+            }
+            if self.at_rinshan {
+                yaku.push(("rinshan kaihou".to_owned(), 1));
+            }
+        }
+        let additional_hans = yaku.iter().map(|(_, han)| *han).sum::<u8>();
 
         let mut tehai = self.tehai;
         let mut final_doras_owned = self.doras_owned[0];
@@ -457,8 +487,51 @@ impl PlayerState {
         let agari = agari_calc
             .agari(additional_hans, final_doras_owned)
             .context("not a hora hand")?;
+        let point = agari.point(self.oya == 0);
+        let base_details = agari_calc.search_yaku_details();
 
-        Ok(agari.point(self.oya == 0))
+        match agari {
+            Agari::Yakuman(count) => {
+                yaku.clear();
+                if let Some(details) = base_details {
+                    yaku.extend(
+                        details
+                            .yaku
+                            .into_iter()
+                            .filter(|item| item.yakuman)
+                            .map(|item| (item.name.to_owned(), 13)),
+                    );
+                }
+                Ok(HoraInfo {
+                    point,
+                    fu: None,
+                    han: None,
+                    yakuman: Some(count),
+                    yaku,
+                })
+            }
+            Agari::Normal { fu, han } => {
+                if let Some(details) = base_details {
+                    yaku.extend(
+                        details
+                            .yaku
+                            .into_iter()
+                            .filter(|item| !item.yakuman)
+                            .map(|item| (item.name.to_owned(), item.han)),
+                    );
+                }
+                if final_doras_owned > 0 {
+                    yaku.push(("dora".to_owned(), final_doras_owned));
+                }
+                Ok(HoraInfo {
+                    point,
+                    fu: (fu > 0).then_some(fu),
+                    han: Some(han),
+                    yakuman: None,
+                    yaku,
+                })
+            }
+        }
     }
 
     /// Calculate the actual shanten at this point. Unlike `self.shanten`, this

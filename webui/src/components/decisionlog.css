@@ -1,0 +1,57 @@
+.dlog { padding-top: 4px; }
+.dlog-back { margin-bottom: 22px; padding: 0; border: 0; background: transparent; color: var(--jade); font-size: 13px; }
+.dlog-back:hover { background: transparent; color: var(--ivory); }
+.dlog-header { display: flex; align-items: end; justify-content: space-between; gap: 18px; padding-bottom: 20px; border-bottom: 1px solid var(--line); }
+.dlog-player { display: inline-flex; align-items: center; gap: 9px; font-size: 29px; }
+.dlog-stats { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px 17px; color: var(--muted); font-size: 11px; }
+.dlog-stats span { white-space: nowrap; }
+.dlog-stats strong { color: var(--ivory); font: 13px var(--mono); }
+.dlog-groups { margin-top: 16px; border-top: 1px solid rgba(35, 57, 47, 0.75); }
+.dlog-group-toggle { display: flex; width: 100%; align-items: center; justify-content: space-between; padding: 12px 2px; border: 0; border-bottom: 1px solid rgba(35, 57, 47, 0.75); border-radius: 0; background: transparent; color: var(--ivory); font: 19px var(--serif); text-align: left; }
+.dlog-group-toggle:hover { background: transparent; color: var(--jade); }
+.dlog-group-summary { color: var(--muted); font: 11px var(--mono); }
+.dlog-entries { border-bottom: 1px solid rgba(35, 57, 47, 0.75); }
+.dlog-entry { border-bottom: 1px solid rgba(35, 57, 47, 0.75); }
+.dlog-entry:last-child { border-bottom: 0; }
+.dlog-entry-match { border-left: 3px solid var(--jade-dim); }
+.dlog-entry-row { display: grid; width: 100%; grid-template-columns: 42px 48px minmax(90px, auto) minmax(0, 1fr) auto 16px; align-items: center; gap: 12px; min-height: 52px; padding: 6px 4px; border: 0; border-radius: 0; background: transparent; color: var(--text); text-align: left; }
+.dlog-entry-row:hover { background: rgba(53, 163, 116, 0.06); }
+.dlog-turn, .dlog-loss, .dlog-rank, .dlog-prob { font-family: var(--mono); }
+.dlog-turn { color: var(--ivory); font-size: 12px; }
+.dlog-tiles-left { color: var(--muted); font: 10px var(--mono); }
+.dlog-played, .dlog-expected, .dlog-candidate-action { display: inline-flex; align-items: center; gap: 7px; font: 12px var(--mono); }
+.dlog-expected { color: var(--muted); }
+.action-call, .action-tiles { display: inline-flex; align-items: center; gap: 6px; }
+.action-word { font-family: var(--mono); }
+.dlog-loss { justify-self: end; padding: 2px 5px; border-radius: 4px; background: var(--ink-3); font-size: 11px; }
+.dlog-loss-muted { color: var(--muted); }
+.dlog-loss-gold { color: var(--gold); }
+.dlog-loss-crimson { color: var(--crimson); }
+.dlog-entry-chevron { color: var(--muted); font-size: 13px; }
+.dlog-entry-detail { padding: 2px 4px 16px 12px; }
+.dlog-meta { display: flex; align-items: center; gap: 16px; margin: 2px 0 12px 42px; color: var(--muted); font: 11px var(--mono); text-transform: lowercase; }
+.dlog-furiten { color: var(--gold); }
+.dlog-context { display: inline-flex; align-items: center; gap: 5px; }
+.dlog-context .tile { --tw: 16px; }
+.dlog-candidates { border-top: 1px solid rgba(35, 57, 47, 0.75); }
+.dlog-candidate { display: grid; grid-template-columns: 22px minmax(88px, auto) minmax(50px, 1fr) 52px auto; align-items: center; gap: 12px; min-height: 40px; padding: 3px 0; border-bottom: 1px solid rgba(35, 57, 47, 0.75); color: var(--muted); font-size: 12px; }
+.dlog-candidate:last-child { border-bottom: 0; }
+.dlog-candidate-actual { color: var(--ivory); }
+.dlog-rank { color: var(--muted); font-size: 10px; text-align: right; }
+.dlog-prob-track { height: 10px; overflow: hidden; border-radius: 4px; background: var(--ink-3); }
+.dlog-prob-fill { display: block; height: 100%; border-radius: 4px; background: var(--jade); }
+.dlog-prob { color: inherit; font-size: 10px; text-align: right; }
+.dlog-tag { padding: 1px 5px; border: 1px solid var(--jade-dim); border-radius: 4px; color: var(--jade); font: 9px var(--mono); white-space: nowrap; }
+@media (max-width: 720px) {
+  .dlog-header { display: block; }
+  .dlog-stats { justify-content: flex-start; margin-top: 10px; }
+  .dlog-entry-row { grid-template-columns: 38px 44px minmax(62px, auto) minmax(0, 1fr) auto 13px; gap: 6px; }
+  .dlog-candidate { grid-template-columns: 18px minmax(68px, auto) minmax(30px, 1fr) 42px auto; gap: 5px; }
+}
+@media (max-width: 520px) {
+  .dlog-entry-row { grid-template-columns: 38px 44px minmax(0, 1fr) auto 13px; }
+  .dlog-expected { grid-column: 3 / 5; }
+  .dlog-entry-row .dlog-loss { grid-column: 4; grid-row: 1; }
+  .dlog-candidate { grid-template-columns: 18px minmax(64px, auto) minmax(25px, 1fr) 40px; }
+  .dlog-tag { grid-column: 2 / -1; justify-self: start; margin-top: -5px; margin-bottom: 5px; }
+}

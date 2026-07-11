@@ -62,7 +62,7 @@ class MenuRandomEngine:
         pass
 
 
-def main() -> None:
+def test_menu_validity() -> None:
     engines = [MenuRandomEngine(f"menu-random-{i}", 10_000 + i) for i in range(4)]
     with tempfile.TemporaryDirectory(prefix="jongbench-actions-") as log_dir:
         arena = libriichi.arena.FourEngines(disable_progress_bar=True, log_dir=log_dir)
@@ -84,4 +84,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    test_menu_validity()

@@ -1,6 +1,7 @@
 use super::{ActionCandidate, PlayerState};
 use crate::tile::Tile;
 
+use anyhow::Result;
 use pyo3::prelude::*;
 
 #[pymethods]
@@ -152,6 +153,20 @@ impl PlayerState {
     #[must_use]
     pub const fn at_furiten(&self) -> bool {
         self.at_furiten
+    }
+
+    #[pyo3(name = "real_time_shanten")]
+    #[must_use]
+    fn real_time_shanten_py(&self) -> i8 {
+        self.real_time_shanten()
+    }
+
+    #[pyo3(name = "reaction_summary")]
+    fn reaction_summary_py(&self, mjai_json: &str) -> Result<(i8, [bool; 34], bool)> {
+        self.validate_reaction_json(mjai_json)?;
+        let mut after = self.clone();
+        after.update_json(mjai_json)?;
+        Ok((after.real_time_shanten(), after.waits, after.at_furiten))
     }
 }
 

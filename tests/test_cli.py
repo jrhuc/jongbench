@@ -5,15 +5,17 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from jongbench import cli
+from jongbench.artifacts import decision_filename
 
 
-def main() -> None:
+def test_cli_workflow() -> None:
     with tempfile.TemporaryDirectory(prefix="jongbench-cli-") as tempdir:
         runs_root = Path(tempdir)
 
@@ -25,6 +27,8 @@ def main() -> None:
         run_dir = run_dirs[0]
 
         assert (run_dir / "config.json").exists()
+        config = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+        assert config["state_hints"] is False
         logs = sorted((run_dir / "logs").glob("*.json.gz"))
         assert len(logs) == 1
         review_files = sorted((run_dir / "review").glob("*.json"))
@@ -63,5 +67,64 @@ def main() -> None:
     print("OK")
 
 
+def test_web_watch_success_exit_code() -> None:
+    with patch(
+        "jongbench.webui.run_watch_server",
+        return_value="/tmp/jongbench-run",
+    ) as run_watch:
+        code = cli.main(
+            [
+                "watch",
+                "--ui",
+                "web",
+                "--models",
+                "random",
+                "random",
+                "random",
+                "random",
+            ]
+        )
+    assert code == 0
+    assert run_watch.call_args.kwargs["state_hints"] is True
+
+    parsed = cli._build_parser().parse_args(
+        [
+            "run",
+            "--models",
+            "random",
+            "random",
+            "random",
+            "random",
+            "--no-state-hints",
+        ]
+    )
+    assert parsed.state_hints is False
+
+
+def test_reconstruct_summary_accounts_for_riichi_sticks() -> None:
+    events = [
+        {"type": "start_game", "names": ["A", "B", "C", "D"], "seed": [9, 1]},
+        {
+            "type": "start_kyoku",
+            "scores": [25000, 25000, 25000, 25000],
+            "kyotaku": 0,
+        },
+        {"type": "reach_accepted", "actor": 1},
+        {"type": "ryukyoku", "deltas": [0, 0, 0, 0]},
+        {"type": "end_kyoku"},
+        {"type": "end_game"},
+    ]
+    summary = cli._reconstruct_summary(events, Path("9_1.json.gz"))
+    assert summary.scores == [26000, 24000, 25000, 25000]
+    assert sum(summary.scores) == 100000
+
+
+def test_decision_filename_cannot_escape_directory() -> None:
+    filename = decision_filename("../../outside/model")
+    assert "/" not in filename
+    assert "\\" not in filename
+    assert filename.endswith(".jsonl")
+
+
 if __name__ == "__main__":
-    main()
+    test_cli_workflow()

@@ -1,0 +1,6 @@
+include libriichi/Cargo.lock
+include libriichi/Cargo.toml
+include libriichi/build.rs
+recursive-include libriichi/benches *.rs
+recursive-include libriichi/src *
+global-exclude .DS_Store

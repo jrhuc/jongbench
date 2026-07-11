@@ -170,6 +170,21 @@ def test_full_game_no_hidden_leak() -> None:
                 assert event.get("pai") == "?"
 
     assert len(fake.calls) >= 10, len(fake.calls)
+    finalized_logs = [
+        raw_events
+        for _, _, raw_events in spectator.records
+        if raw_events and raw_events[-1].get("type") == "end_kyoku"
+    ]
+    assert finalized_logs
+    hora_events = [
+        event
+        for raw_events in finalized_logs
+        for event in raw_events
+        if event.get("type") == "hora"
+    ]
+    assert hora_events
+    assert all(isinstance(event.get("points"), int) for event in hora_events)
+    assert all(event.get("yaku") for event in hora_events)
     total_records = sum(len(log) for log in decision_logs)
     assert total_records == len(fake.calls), (total_records, len(fake.calls))
     for engine, log in ((engines[0], decision_logs[0]), (engines[2], decision_logs[1])):
@@ -179,6 +194,12 @@ def test_full_game_no_hidden_leak() -> None:
         assert engine.totals["fallbacks"] == 0
         assert engine.totals["retries"] == 0
         assert all(record["usage"] == {"input_tokens": 10, "output_tokens": 5} for record in log)
+        assert all(record["prompt_version"] == 2 for record in log)
+        assert all(record["state_hints"] is True for record in log)
+        assert all(
+            record["choice_label"] == record["menu"][record["choice"]]
+            for record in log
+        )
 
     raw_by_key = {
         (player_id, _start_key(raw_events), len(raw_events)): raw_events
@@ -189,11 +210,21 @@ def test_full_game_no_hidden_leak() -> None:
         raw_events = raw_by_key[key]
         start = _start_kyoku(raw_events)
         prompt = call["prompt"]
+        assert "Engine-derived state hints" in prompt
         for seat, hand in enumerate(start["tehais"]):
             if seat == call["player_id"]:
                 continue
             hidden_seq = "".join(str(tile) for tile in hand[:3])
             assert hidden_seq not in prompt, (call["player_id"], seat, hidden_seq)
+
+
+def test_random_engine_is_reproducible_across_batched_games() -> None:
+    def play() -> list[Any]:
+        engines = [RandomEngine(f"random-{seat}", seed=100 + seat) for seat in range(4)]
+        arena = libriichi.arena.FourEngines(disable_progress_bar=True)
+        return arena.py_4p(engines, (8181, 4), 4)
+
+    assert play() == play()
 
 
 def _start_kyoku(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -219,6 +250,7 @@ def _start_key(events: list[dict[str, Any]]) -> tuple[Any, ...]:
 def main() -> None:
     test_sanitize_events()
     test_full_game_no_hidden_leak()
+    test_random_engine_is_reproducible_across_batched_games()
     print("OK")
 
 

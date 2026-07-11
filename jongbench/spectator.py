@@ -16,6 +16,7 @@ _ROUND_NAMES = {"E": "East", "S": "South", "W": "West", "N": "North"}
 _RESET = "\x1b[0m"
 _RIICHI = "\x1b[1;33mRIICHI\x1b[0m"
 _TILE_RE = re.compile(r"\[(\s*)([0-9][mps]|[ESWNPFC])(\s*)\]")
+_DRAW_TICKER_RE = re.compile(r"^P([0-3]) drew .+$")
 
 
 class TableState:
@@ -60,6 +61,7 @@ class TableState:
             self.final_scores = list(self.scores)
         else:
             self.final_scores = list(self.scores)
+        self.kyotaku = 0
         self.done = True
         self._tick("Game finished")
 
@@ -93,6 +95,12 @@ class TableState:
         elif event_type == "ryukyoku":
             self._apply_ryukyoku(event)
         elif event_type == "end_game":
+            if self.kyotaku:
+                leader = min(
+                    range(4), key=lambda seat: (-self.scores[seat], seat)
+                )
+                self.scores[leader] += self.kyotaku * 1000
+                self.kyotaku = 0
             self.done = True
             self.final_names = list(self.names)
             self.final_scores = list(self.scores)
@@ -272,6 +280,9 @@ class TableState:
         actor = _actor(event)
         if actor is None:
             return
+        if not self.riichi_accepted[actor]:
+            self.scores[actor] -= 1000
+            self.kyotaku += 1
         self.riichi_declared[actor] = True
         self.riichi_accepted[actor] = True
         self._tick(f"P{actor} riichi accepted")
@@ -280,16 +291,24 @@ class TableState:
         deltas = event.get("deltas")
         if isinstance(deltas, list) and len(deltas) == 4:
             self.scores = [score + int(delta) for score, delta in zip(self.scores, deltas, strict=True)]
+        self.kyotaku = 0
         actor = _actor(event)
         target = _target(event)
+        points = event.get("points")
+        point_text = ""
+        if isinstance(points, int) and not isinstance(points, bool):
+            point_text = f" for {points:,} points"
         if actor is None:
             self._tick("Win")
         elif target == actor:
-            self._tick(f"P{actor} won by tsumo")
+            self._tick(f"P{actor} tsumos{point_text}")
         elif target is not None:
-            self._tick(f"P{actor} won from P{target}")
+            self._tick(f"P{actor} calls ron on P{target}{point_text}")
         else:
-            self._tick(f"P{actor} won")
+            self._tick(f"P{actor} wins{point_text}")
+        yaku_text = _format_yaku(event.get("yaku"))
+        if yaku_text:
+            self._tick(f"Yaku: {yaku_text}")
 
     def _apply_ryukyoku(self, event: dict[str, Any]) -> None:
         deltas = event.get("deltas")
@@ -322,8 +341,13 @@ class Spectator:
         *,
         delay: float = 0.0,
         on_update: Callable[[TableState], None] | None = None,
+        names: list[str] | None = None,
     ) -> None:
         self.table = TableState()
+        if names is not None:
+            if len(names) != 4:
+                raise ValueError(f"expected 4 names, got {len(names)}")
+            self.table.names = [str(name) for name in names]
         self.delay = delay
         self.on_update = on_update
         self._lock = threading.Lock()
@@ -385,36 +409,50 @@ class Spectator:
             self._next_seq += 1
 
 
-def render_table(table: TableState, glyphs: bool = False, *, reveal: bool = True) -> str:
+def render_table(
+    table: TableState,
+    glyphs: bool = False,
+    *,
+    reveal: bool = True,
+    pov: int = 0,
+) -> str:
+    if not 0 <= pov < 4:
+        raise ValueError(f"expected pov in 0..3, got {pov}")
+    bottom = pov
+    right = (pov + 1) % 4
+    top = (pov + 2) % 4
+    left = (pov + 3) % 4
     width = 100
     height = 40
     grid = [[" " for _ in range(width)] for _ in range(height)]
 
-    _put_center(grid, 0, _seat_title(table, 2), width)
-    _put_center(grid, 1, _hand_line(table, 2, reveal, glyphs), width)
-    _put_center(grid, 2, _meld_line(table, 2, glyphs), width)
-    for row, line in enumerate(_discard_lines(table.discards[2], glyphs, max_rows=4), start=4):
+    _put_center(grid, 0, _seat_title(table, top), width)
+    _put_center(grid, 1, _hand_line(table, top, reveal, glyphs, pov), width)
+    _put_center(grid, 2, _meld_line(table, top, glyphs), width)
+    for row, line in enumerate(
+        _discard_lines(table.discards[top], glyphs, max_rows=4), start=4
+    ):
         _put_center(grid, row, line, width)
 
-    _put_center(grid, 38, _hand_line(table, 0, True, glyphs), width)
-    _put_center(grid, 37, _meld_line(table, 0, glyphs), width)
-    _put_center(grid, 39, _seat_title(table, 0), width)
-    bottom_discards = _discard_lines(table.discards[0], glyphs, max_rows=4)
+    _put_center(grid, 38, _hand_line(table, bottom, reveal, glyphs, pov), width)
+    _put_center(grid, 37, _meld_line(table, bottom, glyphs), width)
+    _put_center(grid, 39, _seat_title(table, bottom), width)
+    bottom_discards = _discard_lines(table.discards[bottom], glyphs, max_rows=4)
     bottom_start = 32 + max(0, 4 - len(bottom_discards))
     for row, line in enumerate(bottom_discards, start=bottom_start):
         _put_center(grid, row, line, width)
 
-    _put(grid, 8, 0, _fit(_seat_title(table, 3), 28))
-    _put_vertical_hand(grid, table, 3, 0, 10, reveal, glyphs)
-    _put_side_discards(grid, table.discards[3], 7, 12, glyphs)
-    _put(grid, 26, 0, _fit(_meld_line(table, 3, glyphs), 30))
+    _put(grid, 8, 0, _fit(_seat_title(table, left), 28))
+    _put_vertical_hand(grid, table, left, 0, 10, reveal, glyphs, pov)
+    _put_side_discards(grid, table.discards[left], 7, 12, glyphs)
+    _put(grid, 26, 0, _fit(_meld_line(table, left, glyphs), 30))
 
-    _put_right(grid, 8, _fit(_seat_title(table, 1), 28), width)
-    _put_vertical_hand(grid, table, 1, width - 5, 10, reveal, glyphs)
-    _put_side_discards(grid, table.discards[1], 70, 12, glyphs)
-    _put_right(grid, 26, _fit(_meld_line(table, 1, glyphs), 30), width)
+    _put_right(grid, 8, _fit(_seat_title(table, right), 28), width)
+    _put_vertical_hand(grid, table, right, width - 5, 10, reveal, glyphs, pov)
+    _put_side_discards(grid, table.discards[right], 70, 12, glyphs)
+    _put_right(grid, 26, _fit(_meld_line(table, right, glyphs), 30), width)
 
-    _put_center_box(grid, table, glyphs)
+    _put_center_box(grid, table, glyphs, pov)
 
     rendered = "\n".join("".join(row).rstrip() for row in grid)
     return _colorize(rendered)
@@ -426,11 +464,13 @@ class TerminalRenderer:
         *,
         glyphs: bool = False,
         reveal: bool = True,
+        pov: int = 0,
         stream: Any | None = None,
         min_interval: float = 0.1,
     ) -> None:
         self.glyphs = glyphs
         self.reveal = reveal
+        self.pov = pov
         self.stream = stream if stream is not None else sys.stdout
         self.min_interval = min_interval
         self._last_draw = 0.0
@@ -444,10 +484,18 @@ class TerminalRenderer:
             return
         self._last_draw = now
         print("\x1b[H\x1b[2J", end="", file=self.stream)
-        print(render_table(table, glyphs=self.glyphs, reveal=self.reveal), file=self.stream)
+        print(
+            render_table(
+                table,
+                glyphs=self.glyphs,
+                reveal=self.reveal,
+                pov=self.pov,
+            ),
+            file=self.stream,
+        )
         print("", file=self.stream)
         for line in table.ticker:
-            print(line, file=self.stream)
+            print(_visible_ticker_line(line, self.reveal, self.pov), file=self.stream)
         self.stream.flush()
 
 
@@ -493,9 +541,15 @@ def _tile_cell(tile: str | None, glyphs: bool, *, concealed: bool = False) -> st
     return f"[{shown:^3}]"
 
 
-def _hand_line(table: TableState, seat: int, reveal: bool, glyphs: bool) -> str:
+def _hand_line(
+    table: TableState,
+    seat: int,
+    reveal: bool,
+    glyphs: bool,
+    pov: int,
+) -> str:
     hand = table.hands[seat]
-    concealed = not reveal and seat != 0
+    concealed = not reveal and seat != pov
     return " ".join(_tile_cell(tile, glyphs, concealed=concealed) for tile in hand)
 
 
@@ -541,8 +595,9 @@ def _put_vertical_hand(
     row: int,
     reveal: bool,
     glyphs: bool,
+    pov: int,
 ) -> None:
-    concealed = not reveal and seat != 0
+    concealed = not reveal and seat != pov
     for idx, tile in enumerate(table.hands[seat][:14]):
         _put(grid, row + idx, col, _tile_cell(tile, glyphs, concealed=concealed))
 
@@ -558,7 +613,12 @@ def _put_side_discards(
         _put(grid, row + idx % 6, col + (idx // 6) * 8, _discard_cell(discard, glyphs))
 
 
-def _put_center_box(grid: list[list[str]], table: TableState, glyphs: bool) -> None:
+def _put_center_box(
+    grid: list[list[str]],
+    table: TableState,
+    glyphs: bool,
+    pov: int,
+) -> None:
     left = 31
     top = 15
     box_width = 38
@@ -569,9 +629,13 @@ def _put_center_box(grid: list[list[str]], table: TableState, glyphs: bool) -> N
         _box_line(f"honba {table.honba}  kyotaku {table.kyotaku}", inner),
         _box_line(f"tiles left {table.tiles_left}", inner),
         _box_line("dora " + " ".join(_tile_cell(tile, glyphs) for tile in table.dora_indicators), inner),
-        _box_line(_score_line(table, 2), inner),
-        _box_line(f"{_score_line(table, 3):<17}{_score_line(table, 1):>17}", inner),
-        _box_line(_score_line(table, 0), inner),
+        _box_line(_score_line(table, (pov + 2) % 4), inner),
+        _box_line(
+            f"{_score_line(table, (pov + 3) % 4):<17}"
+            f"{_score_line(table, (pov + 1) % 4):>17}",
+            inner,
+        ),
+        _box_line(_score_line(table, pov), inner),
         "+" + "-" * inner + "+",
     ]
     for idx, row in enumerate(rows):
@@ -584,6 +648,29 @@ def _round_label(table: TableState) -> str:
 
 def _score_line(table: TableState, seat: int) -> str:
     return f"P{seat} {table.seat_wind(seat)} {table.scores[seat]}"
+
+
+def _visible_ticker_line(line: str, reveal: bool, pov: int) -> str:
+    if reveal:
+        return line
+    match = _DRAW_TICKER_RE.fullmatch(line)
+    if match is not None and int(match.group(1)) != pov:
+        return f"P{match.group(1)} drew a tile"
+    return line
+
+
+def _format_yaku(value: Any) -> str:
+    if not isinstance(value, list):
+        return ""
+    labels: list[str] = []
+    for item in value:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            continue
+        name, han = item
+        if not isinstance(name, str) or not isinstance(han, int) or isinstance(han, bool):
+            continue
+        labels.append(f"{han} dora" if name == "dora" else name)
+    return ", ".join(labels)
 
 
 def _box_line(text: str, inner: int) -> str:

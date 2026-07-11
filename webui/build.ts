@@ -1,0 +1,60 @@
+// Emits jongbench/webui_page.html: one self-contained page (JS, CSS and the
+// pai.svg sprite inlined) served as-is by jongbench/webui.py.
+
+import { watch } from "node:fs";
+
+const ROOT = import.meta.dir;
+const OUT_PATH = `${ROOT}/../jongbench/webui_page.html`;
+const SPRITE_PATH = `${ROOT}/../assets/pai.svg`;
+
+async function build(): Promise<void> {
+  const result = await Bun.build({
+    entrypoints: [`${ROOT}/src/main.tsx`],
+    minify: true,
+    target: "browser",
+  });
+  if (!result.success) {
+    for (const log of result.logs) console.error(log);
+    throw new Error("bundle failed");
+  }
+  let js = "";
+  let css = "";
+  for (const artifact of result.outputs) {
+    if (artifact.path.endsWith(".css")) css += await artifact.text();
+    else js += await artifact.text();
+  }
+  // The sprite's #tile body rect has no fill (renders black); make it
+  // transparent so the CSS tile face shows through.
+  const sprite = (await Bun.file(SPRITE_PATH).text()).replace(
+    '<rect x="0" y="0" width="320" height="446" rx="30" ry="30" />',
+    '<rect x="0" y="0" width="320" height="446" rx="30" ry="30" fill="none" />',
+  );
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jongbench</title>
+<style>${css}</style>
+</head>
+<body>
+<div id="sprite" hidden>${sprite}</div>
+<div id="app"></div>
+<script>${js}</script>
+</body>
+</html>
+`;
+  await Bun.write(OUT_PATH, html);
+  console.log(`built ${OUT_PATH} (${(html.length / 1024).toFixed(0)} KiB)`);
+}
+
+await build();
+
+if (process.argv.includes("--watch")) {
+  let pending: ReturnType<typeof setTimeout> | null = null;
+  watch(`${ROOT}/src`, { recursive: true }, () => {
+    if (pending) clearTimeout(pending);
+    pending = setTimeout(() => build().catch(console.error), 100);
+  });
+  console.log("watching webui/src ...");
+}

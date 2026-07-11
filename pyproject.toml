@@ -3,7 +3,7 @@ name = "jongbench"
 version = "0.1.0"
 description = "Benchmark LLMs playing riichi mahjong, graded by the Mortal deep-RL model"
 requires-python = ">=3.12"
-license = { text = "AGPL-3.0-or-later" }
+license = "AGPL-3.0-or-later"
 dependencies = [
     "torch>=2.4",
     "numpy>=1.26",
@@ -13,15 +13,28 @@ dependencies = [
     "rich>=13.7",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.3"]
+
 [project.scripts]
 jongbench = "jongbench.cli:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77", "setuptools-rust>=1.11,<2"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["jongbench"]
+include-package-data = false
 
 [tool.setuptools.package-data]
-jongbench = ["*.so", "*.html"]
+jongbench = ["*.html"]
+
+[tool.setuptools.exclude-package-data]
+jongbench = ["libriichi.so"]
+
+[[tool.setuptools-rust.ext-modules]]
+target = "jongbench.libriichi"
+path = "libriichi/Cargo.toml"
+binding = "PyO3"
+debug = false

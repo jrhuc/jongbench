@@ -6,17 +6,29 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from jongbench.report import summarize, write_report
+from jongbench.report import _WEBUI_SPRITE_RE, summarize, write_report
 
 
 NAMES = ["modelA", "modelB", "modelC", "modelD"]
 
 
-def main() -> None:
+def test_packaged_webui_contains_report_sprite_fallback() -> None:
+    page_path = ROOT / "jongbench" / "webui_page.html"
+    if not page_path.exists():
+        pytest.skip("webui_page.html not built; run `cd webui && bun run build`")
+    page = page_path.read_text(encoding="utf-8")
+    match = _WEBUI_SPRITE_RE.search(page)
+    assert match is not None
+    assert 'id="pai-1m"' in match.group(1)
+
+
+def test_report_generation() -> None:
     with tempfile.TemporaryDirectory(prefix="jongbench-report-") as tempdir:
         run = Path(tempdir)
         (run / "review").mkdir()
@@ -223,4 +235,4 @@ def _write_decisions(run: Path) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    test_report_generation()

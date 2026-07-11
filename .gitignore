@@ -20,9 +20,9 @@ dist/
 coverage.xml
 htmlcov/
 
-# Native libriichi build output and copied extension module
+# Native libriichi build output and extension module
 /libriichi/target/
-/jongbench/libriichi.so
+/jongbench/libriichi*.so
 
 # Downloaded Mortal checkpoints; keep configuration under weights/ versioned
 /weights/*.pth
@@ -33,7 +33,11 @@ htmlcov/
 # Benchmark output: logs, decisions, reviews, reports, and recordings
 /runs/
 
-# Local credentials and macOS metadata
+# Web UI toolchain and build output (`cd webui && bun install && bun run build`)
+webui/node_modules/
+/jongbench/webui_page.html
+
+# Local credentials
 .env
 .env.*
 !.env.example

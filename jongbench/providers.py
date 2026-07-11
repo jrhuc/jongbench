@@ -198,23 +198,25 @@ class OpenAIProvider(Provider):
             "max_completion_tokens": max_tokens,
             "temperature": temperature,
         }
-        try:
-            response = self._get_client().chat.completions.create(**params)
-        except openai.BadRequestError as exc:
-            message = str(exc)
-            message_lower = message.lower()
-            retry_params = dict(params)
-            should_retry = False
-            if "temperature" in message_lower:
-                retry_params.pop("temperature", None)
-                should_retry = True
-            if "max_completion_tokens" in message_lower:
-                retry_params.pop("max_completion_tokens", None)
-                retry_params["max_tokens"] = max_tokens
-                should_retry = True
-            if not should_retry:
-                raise
-            response = self._get_client().chat.completions.create(**retry_params)
+        while True:
+            try:
+                response = self._get_client().chat.completions.create(**params)
+                break
+            except openai.BadRequestError as exc:
+                message = str(exc).lower()
+                changed = False
+                if "temperature" in message and "temperature" in params:
+                    params.pop("temperature")
+                    changed = True
+                if (
+                    "max_completion_tokens" in message
+                    and "max_completion_tokens" in params
+                ):
+                    params.pop("max_completion_tokens")
+                    params["max_tokens"] = max_tokens
+                    changed = True
+                if not changed:
+                    raise
 
         message = response.choices[0].message if response.choices else None
         content = getattr(message, "content", "") if message is not None else ""

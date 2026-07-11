@@ -334,7 +334,14 @@ fn furiten() {
     });
     assert!(!ps.at_furiten);
     assert!(cans.can_ron_agari);
-    assert_eq!(ps.agari_points(true, &[]).unwrap().ron, 5800);
+    let info = ps.agari_info(true, &[]).unwrap();
+    assert_eq!(info.point.ron, 5800);
+    assert_eq!(info.fu, Some(30));
+    assert_eq!(info.han, Some(3));
+    assert_eq!(
+        info.yaku,
+        vec![("pinfu".to_owned(), 1), ("dora".to_owned(), 2)]
+    );
 
     // riichi furiten test
     let cans = ps.test_update(&Event::Tsumo {

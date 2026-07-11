@@ -15,23 +15,45 @@ $ cp libriichi/target/release/libriichi.dylib jongbench/libriichi.so
 $ curl -L -o weights/mortal.pth https://huggingface.co/VoidShine/mortal-298k/resolve/main/mortal_298k.pth
 ```
 
-API keys via env: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`.
+CLI API keys via env: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`.
+The shared web UI never reads server-side provider credentials; each visitor must
+enter the keys used by their game.
 
 ## Usage
 
 ```console
-# end-to-end smoke test, no API keys needed
+# test, no API keys needed
 $ jongbench selfcheck
 
 # benchmark: N games, summary + HTML report
 $ jongbench run --models anthropic:claude-sonnet-5 openai:gpt-5.2 google:gemini-3-pro random --games 8
 
+# raw-reasoning mode: omit engine-derived shanten/wait/furiten hints
+$ jongbench run --no-state-hints --models anthropic:claude-sonnet-5 openai:gpt-5.2 google:gemini-3-pro random --games 8
+
 # watch one game live in the terminal
 $ jongbench watch --models anthropic:claude-sonnet-5 openai:gpt-5.2 google:gemini-3-pro random
+
+# watch in the browser (add `human` as a model spec to take a seat yourself)
+$ jongbench watch --ui web --models anthropic:claude-sonnet-5 openai:gpt-5.2 google:gemini-3-pro human
+
+# host the web UI (visitors configure seats and bring their own keys)
+$ jongbench serve --host 0.0.0.0 --port 8642
 
 # re-evaluate / regenerate a report
 $ jongbench review runs/<stamp>/
 ```
+
+The web UI is a TypeScript app in `webui/`. Build it once with
+`cd webui && bun install && bun run build`, which emits `jongbench/webui_page.html`.
+
+State hints are enabled by default. They add rule-derived shanten, waits, furiten, and
+discard-result structure without exposing hidden tiles, EV, safety, or a recommended move.
+Use `--no-state-hints` in the CLI or clear the web setup checkbox for raw reasoning.
+
+Win events in the live log and saved mjai log include ron/tsumo, base hand points,
+han, fu when relevant below the limit-hand threshold, or yakuman count, plus the
+engine-calculated yaku list.
 
 Model specs: `anthropic:<model>`, `openai:<model>`, `google:<model>`,
 `compat:<base_url>:<model>` (any OpenAI-compatible endpoint), `random` (baseline).
