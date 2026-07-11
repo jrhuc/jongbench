@@ -104,6 +104,12 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
     }));
   };
 
+  const updateReasoning = (index: number, reasoning: string) => {
+    setSeats((current) => current.map((seat, seatIndex) =>
+      seatIndex === index ? { ...seat, reasoning } : seat,
+    ));
+  };
+
   const start = (event: Event) => {
     event.preventDefault();
     setError(null);
@@ -178,37 +184,34 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
                   </div>
                   <div class={`model-field${provider.keyName === null ? " model-field-hidden" : ""}`}>
                     <span>Model id</span>
-                    <ModelCombobox
-                      key={seat.providerId}
-                      provider={provider}
-                      apiKey={provider.keyName === null ? "" : keys[provider.keyName] ?? ""}
-                      value={seat.model}
-                      label={`${windName} seat model`}
-                      onChange={(model) => updateModel(index, model)}
-                      onModelsChange={(models) => updateModels(index, models)}
-                    />
+                    <div class="model-control-row">
+                      <ModelCombobox
+                        key={seat.providerId}
+                        provider={provider}
+                        apiKey={provider.keyName === null ? "" : keys[provider.keyName] ?? ""}
+                        value={seat.model}
+                        label={`${windName} seat model`}
+                        onChange={(model) => updateModel(index, model)}
+                        onModelsChange={(models) => updateModels(index, models)}
+                      />
+                      {reasoningOptions.length > 0 && (
+                        <div class="reasoning-control">
+                          <Dropdown
+                            label={`${windName} seat reasoning`}
+                            value={seat.reasoning}
+                            onChange={(reasoning) => updateReasoning(index, reasoning)}
+                            options={[
+                              { value: "default", label: "Default" },
+                              ...reasoningOptions.map((level) => ({
+                                value: level,
+                                label: REASONING_LABELS[level] ?? level,
+                              })),
+                            ]}
+                          />
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  {reasoningOptions.length > 0 && <div class="reasoning-field">
-                    <span>Reasoning</span>
-                    <Dropdown
-                      label={`${windName} seat reasoning`}
-                      value={seat.reasoning}
-                      onChange={(reasoning) =>
-                        setSeats((current) =>
-                          current.map((entry, seatIndex) =>
-                            seatIndex === index ? { ...entry, reasoning } : entry,
-                          ),
-                        )
-                      }
-                      options={[
-                        { value: "default", label: "Default" },
-                        ...reasoningOptions.map((level) => ({
-                          value: level,
-                          label: REASONING_LABELS[level] ?? level,
-                        })),
-                      ]}
-                    />
-                  </div>}
                 </article>
               );
             })}
