@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 import * as api from "../api";
+import { Dropdown } from "./Dropdown";
 import { PROVIDERS, ProviderIcon, providerOf, providerOfName } from "../providers";
 import type { ProviderInfo } from "../providers";
 import type { SessionListItem } from "../types";
@@ -119,22 +120,20 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
                     <span class="seat-wind">{wind}</span>
                     <span>{windName} seat</span>
                   </div>
-                  <label class="provider-field">
+                  <div class="provider-field">
                     <span>Player</span>
-                    <span class="provider-select-wrap">
-                      <ProviderIcon provider={provider} />
-                      <select value={seat.providerId} onInput={(event) => updateSeat(index, event.currentTarget.value)}>
-                        {PROVIDERS.map((option) => (
-                          <option
-                            value={option.id}
-                            disabled={option.id === "human" && humanSeat !== -1 && humanSeat !== index}
-                          >
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </span>
-                  </label>
+                    <Dropdown
+                      label={`${windName} seat player`}
+                      value={seat.providerId}
+                      onChange={(providerId) => updateSeat(index, providerId)}
+                      options={PROVIDERS.map((option) => ({
+                        value: option.id,
+                        label: option.label,
+                        icon: <ProviderIcon provider={option} />,
+                        disabled: option.id === "human" && humanSeat !== -1 && humanSeat !== index,
+                      }))}
+                    />
+                  </div>
                   <label class={`model-field${provider.keyName === null ? " model-field-hidden" : ""}`}>
                     <span>Model id</span>
                     <input

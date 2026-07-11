@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 import * as api from "../api";
 import { formatEvent, MAX_VISIBLE_LOG_ENTRIES } from "../log";
 import type { DemoBundle, SessionState } from "../types";
+import { Dropdown } from "./Dropdown";
 import { Table } from "./Table";
 import { Results } from "./Results";
 import "./replay.css";
@@ -102,11 +103,13 @@ export function Replay() {
           onInput={(event) => { setPlaying(false); setIndex(Number(event.currentTarget.value)); }}
         />
         <span class="replay-pos">{index + 1}/{frames.length}</span>
-        <select value={speed} onInput={(event) => setSpeed(Number(event.currentTarget.value))} title="Speed">
-          {SPEEDS.map((value) => (
-            <option key={value} value={value}>{value}×</option>
-          ))}
-        </select>
+        <Dropdown
+          label="Speed"
+          up
+          value={String(speed)}
+          onChange={(value) => setSpeed(Number(value))}
+          options={SPEEDS.map((value) => ({ value: String(value), label: `${value}×` }))}
+        />
         <button onClick={() => setShowResults(true)}>Results</button>
       </div>
       {showResults && (

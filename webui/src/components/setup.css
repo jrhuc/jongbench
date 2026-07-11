@@ -31,8 +31,7 @@
 .provider-field, .model-field, .key-field { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
 .model-field { margin-top: 11px; }
 .model-field-hidden { visibility: hidden; }
-.provider-select-wrap { display: flex; align-items: center; gap: 8px; }
-.provider-select-wrap select, .model-field input, .key-field input { width: 100%; min-width: 0; }
+.model-field input, .key-field input { width: 100%; min-width: 0; }
 .keys-panel { padding-bottom: 22px; }
 .keys-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
 .key-field > span { display: flex; align-items: center; gap: 6px; }

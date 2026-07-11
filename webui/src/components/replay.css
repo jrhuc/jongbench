@@ -22,4 +22,4 @@
 .replay-bar button { padding: 4px 10px; font-size: 12px; }
 .replay-play { min-width: 74px; }
 .replay-pos { min-width: 64px; text-align: center; }
-.replay-bar select { padding: 4px 6px; font-size: 12px; }
+.replay-bar .dropdown-button { padding: 4px 8px; font-size: 12px; }
