@@ -25,6 +25,7 @@ export interface StartRequest {
   human_seat: number | null;
   label: string | null;
   state_hints: boolean;
+  reasoning: (string | null)[];
 }
 
 export interface StartResponse {
@@ -82,6 +83,7 @@ export function demoAvailable(): Promise<boolean> {
 export interface ModelEntry {
   id: string;
   created: number | null;
+  reasoning: string[];
 }
 
 export function listModels(provider: string, key: string): Promise<ModelEntry[]> {

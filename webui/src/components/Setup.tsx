@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 import * as api from "../api";
+import type { ModelEntry } from "../api";
 import { Dropdown } from "./Dropdown";
 import { ModelCombobox } from "./ModelCombobox";
 import { PROVIDERS, ProviderIcon, providerOf, providerOfName } from "../providers";
@@ -10,6 +11,8 @@ import "./setup.css";
 interface SeatDraft {
   providerId: string;
   model: string;
+  reasoning: string;
+  models: ModelEntry[] | null;
 }
 
 const WINDS = [
@@ -20,11 +23,21 @@ const WINDS = [
 ] as const;
 
 const DEFAULT_SEATS: SeatDraft[] = [
-  { providerId: "anthropic", model: "claude-sonnet-5" },
-  { providerId: "openai", model: "gpt-5.2" },
-  { providerId: "google", model: "gemini-3-pro" },
-  { providerId: "xai", model: "grok-4" },
+  { providerId: "anthropic", model: "claude-sonnet-5", reasoning: "default", models: null },
+  { providerId: "openai", model: "gpt-5.2", reasoning: "default", models: null },
+  { providerId: "google", model: "gemini-3-pro", reasoning: "default", models: null },
+  { providerId: "xai", model: "grok-4", reasoning: "default", models: null },
 ];
+
+const REASONING_LABELS: Record<string, string> = {
+  off: "Off",
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "X-High",
+  max: "Max",
+};
 
 function createdTime(created: number): string {
   const milliseconds = created < 10_000_000_000 ? created * 1000 : created;
@@ -59,13 +72,36 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
     const provider = providerOf(providerId);
     setSeats((current) =>
       current.map((seat, seatIndex) =>
-        seatIndex === index ? { providerId, model: provider.placeholder } : seat,
+        seatIndex === index
+          ? { providerId, model: provider.placeholder, reasoning: "default", models: null }
+          : seat,
       ),
     );
   };
 
   const updateModel = (index: number, model: string) => {
-    setSeats((current) => current.map((seat, seatIndex) => (seatIndex === index ? { ...seat, model } : seat)));
+    setSeats((current) => current.map((seat, seatIndex) => {
+      if (seatIndex !== index) return seat;
+      const reasoningOptions = seat.models?.find((entry) => entry.id === model.trim())?.reasoning ?? [];
+      return {
+        ...seat,
+        model,
+        reasoning: reasoningOptions.includes(seat.reasoning) ? seat.reasoning : "default",
+      };
+    }));
+  };
+
+  const updateModels = (index: number, models: ModelEntry[] | null) => {
+    setSeats((current) => current.map((seat, seatIndex) => {
+      if (seatIndex !== index) return seat;
+      if (models === null) return seat.models === null ? seat : { ...seat, models };
+      const reasoningOptions = models.find((entry) => entry.id === seat.model.trim())?.reasoning ?? [];
+      return {
+        ...seat,
+        models,
+        reasoning: reasoningOptions.includes(seat.reasoning) ? seat.reasoning : "default",
+      };
+    }));
   };
 
   const start = (event: Event) => {
@@ -92,6 +128,10 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
       human_seat: humanSeat === -1 ? null : humanSeat,
       label: null,
       state_hints: stateHints,
+      reasoning: seats.map((seat) => {
+        const levels = seat.models?.find((entry) => entry.id === seat.model.trim())?.reasoning ?? [];
+        return levels.includes(seat.reasoning) ? seat.reasoning : null;
+      }),
     }).then(({ run_id }) => onStarted(run_id)).catch((exc: Error) => {
       setError(exc.message);
       setSubmitting(false);
@@ -114,6 +154,7 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
           <div class="seat-grid">
             {seats.map((seat, index) => {
               const provider = providerOf(seat.providerId);
+              const reasoningOptions = seat.models?.find((entry) => entry.id === seat.model.trim())?.reasoning ?? [];
               const [wind, windName] = WINDS[index];
               return (
                 <article class="seat-card" key={wind}>
@@ -144,8 +185,30 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
                       value={seat.model}
                       label={`${windName} seat model`}
                       onChange={(model) => updateModel(index, model)}
+                      onModelsChange={(models) => updateModels(index, models)}
                     />
                   </div>
+                  {reasoningOptions.length > 0 && <div class="reasoning-field">
+                    <span>Reasoning</span>
+                    <Dropdown
+                      label={`${windName} seat reasoning`}
+                      value={seat.reasoning}
+                      onChange={(reasoning) =>
+                        setSeats((current) =>
+                          current.map((entry, seatIndex) =>
+                            seatIndex === index ? { ...entry, reasoning } : entry,
+                          ),
+                        )
+                      }
+                      options={[
+                        { value: "default", label: "Default" },
+                        ...reasoningOptions.map((level) => ({
+                          value: level,
+                          label: REASONING_LABELS[level] ?? level,
+                        })),
+                      ]}
+                    />
+                  </div>}
                 </article>
               );
             })}

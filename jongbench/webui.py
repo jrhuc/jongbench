@@ -467,6 +467,7 @@ def start_game_session(
     no_eval: bool,
     delay: float,
     state_hints: bool = True,
+    reasoning: list[str | None] | None = None,
 ) -> GameSession:
     if len(model_specs) != 4:
         raise ValueError("models must contain exactly 4 specs")
@@ -487,10 +488,38 @@ def start_game_session(
         raise ValueError("human_seat was provided but no model spec is human")
     if not isinstance(state_hints, bool):
         raise ValueError("state_hints must be a boolean")
+    if reasoning is not None:
+        if (
+            not isinstance(reasoning, list)
+            or len(reasoning) != 4
+            or not all(
+                item is None
+                or (isinstance(item, str) and item in providers.REASONING_LEVELS)
+                for item in reasoning
+            )
+        ):
+            raise ValueError(
+                "reasoning must be a list of 4 supported levels or nulls"
+            )
+        allowed_providers = {"anthropic", "openai", "google", "xai", "deepseek"}
+        for idx, level in enumerate(reasoning):
+            if level is None:
+                continue
+            provider = parsed[idx].provider
+            if provider not in allowed_providers:
+                raise ValueError(f"reasoning is not supported for {provider}")
+            supported = providers.reasoning_levels(provider, parsed[idx].model)
+            if provider != "anthropic" and level not in supported:
+                choices = ", ".join(supported) or "none"
+                raise ValueError(
+                    f"{parsed[idx].model} does not support {level} reasoning "
+                    f"(available: {choices})"
+                )
+    reasoning_levels = reasoning if reasoning is not None else [None, None, None, None]
 
     seed_tuple = _normalize_seed(seed)
     run_id = secrets.token_hex(4)
-    names = _engine_names(parsed)
+    names = _engine_names(parsed, reasoning_levels)
     run_dir = _make_run_dir(Path(runs_root), label, run_id)
 
     human_io = WebHumanIO()
@@ -507,6 +536,7 @@ def start_game_session(
             human_io=human_io,
             decisions_dir=run_dir / "decisions",
             state_hints=state_hints,
+            reasoning=reasoning_levels[seat],
         )
         for seat in range(4)
     ]
@@ -524,7 +554,7 @@ def start_game_session(
         run_dir=str(run_dir),
         state_hints=state_hints,
     )
-    _write_config(run_dir, session, seed_tuple, label, delay, no_eval)
+    _write_config(run_dir, session, seed_tuple, label, delay, no_eval, reasoning)
     for engine in engines:
         engine.cancel_event = session.cancel_event
 
@@ -549,13 +579,21 @@ def _preflight_engines(engines: list[Any]) -> None:
     """One tiny completion per distinct provider/model so a missing or invalid
     API key fails the start request instead of silently degrading every
     decision to the fallback action."""
-    checks: dict[tuple[str, str, str | None], Any] = {}
+    checks: dict[tuple[str, str, str | None, str | None], Any] = {}
     for engine in engines:
         provider = getattr(engine, "provider", None)
         spec = getattr(engine, "spec", None)
         if provider is None or spec is None:
             continue
-        checks.setdefault((spec.provider, spec.model, spec.base_url), engine)
+        checks.setdefault(
+            (
+                spec.provider,
+                spec.model,
+                spec.base_url,
+                getattr(engine, "reasoning", None),
+            ),
+            engine,
+        )
     if not checks:
         return
 
@@ -564,7 +602,7 @@ def _preflight_engines(engines: list[Any]) -> None:
             engine.provider.complete(
                 "Reply with the word OK.",
                 "OK?",
-                max_tokens=8,
+                max_tokens=getattr(engine, "max_tokens", 8),
                 temperature=engine.temperature,
             )
         except Exception as exc:
@@ -639,6 +677,7 @@ def run_watch_server(
             no_eval=no_eval,
             delay=delay,
             state_hints=state_hints,
+            reasoning=None,
         )
         with state.lock:
             state.sessions[session.id] = session
@@ -770,6 +809,7 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                             no_eval=state.no_eval,
                             delay=state.delay,
                             state_hints=state_hints,
+                            reasoning=payload.get("reasoning"),
                         )
                     except ValueError as exc:
                         raise _HTTPError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
@@ -1160,6 +1200,7 @@ def _make_engine_for_session(
     human_io: WebHumanIO,
     decisions_dir: Path,
     state_hints: bool,
+    reasoning: str | None = None,
 ) -> Any:
     if spec.provider == "human":
         try:
@@ -1178,6 +1219,7 @@ def _make_engine_for_session(
         kwargs["decision_log"] = _DecisionLogSink(
             decisions_dir / decision_filename(name)
         )
+        kwargs["reasoning"] = reasoning
     return make_engine(name, spec_str, **kwargs)
 
 
@@ -1248,12 +1290,19 @@ def _normalize_seed(seed: int | tuple[int, int] | list[int] | None) -> tuple[int
     return result
 
 
-def _engine_names(parsed: list[providers.ProviderSpec]) -> list[str]:
+def _engine_names(
+    parsed: list[providers.ProviderSpec],
+    reasoning: list[str | None] | None = None,
+) -> list[str]:
+    levels = reasoning if reasoning is not None else [None, None, None, None]
     seen: dict[str, int] = {}
     names = []
     for seat, spec in enumerate(parsed):
         base = spec.display_name if spec.provider not in {"human"} else "human"
         base = _safe_name(base or f"P{seat}")
+        level = levels[seat] if seat < len(levels) else None
+        if level is not None:
+            base = f"{base}-{level}"
         count = seen.get(base, 0) + 1
         seen[base] = count
         names.append(base if count == 1 else f"{base}-{count}")
@@ -1285,6 +1334,7 @@ def _write_config(
     label: str | None,
     delay: float,
     no_eval: bool,
+    reasoning: list[str | None] | None = None,
 ) -> None:
     config = {
         "label": label or run_dir.name,
@@ -1298,6 +1348,8 @@ def _write_config(
         "no_eval": bool(no_eval),
         "state_hints": session.state_hints,
     }
+    if reasoning is not None:
+        config["reasoning"] = list(reasoning)
     (run_dir / "config.json").write_text(
         json.dumps(config, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",

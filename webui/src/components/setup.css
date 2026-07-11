@@ -28,8 +28,8 @@
 .seat-card { min-width: 0; padding: 15px; border: 1px solid var(--line); border-radius: 8px; background: rgba(8, 19, 15, 0.38); }
 .seat-title { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; color: var(--ivory); font-weight: 600; }
 .seat-wind { color: var(--gold); font: 22px/1 var(--serif); }
-.provider-field, .model-field, .key-field { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
-.model-field { margin-top: 11px; }
+.provider-field, .model-field, .reasoning-field, .key-field { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
+.model-field, .reasoning-field { margin-top: 11px; }
 .model-field-hidden { visibility: hidden; }
 .model-field input, .key-field input { width: 100%; min-width: 0; }
 .keys-panel { padding-bottom: 22px; }

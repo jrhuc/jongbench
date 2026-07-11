@@ -175,13 +175,20 @@ class LLMEngine(BaseEngine):
         spectator: Any | None = None,
         concurrency: int = 4,
         state_hints: bool = True,
+        reasoning: str | None = None,
     ) -> None:
         super().__init__(name, spectator=spectator, concurrency=concurrency)
         self.spec = providers.parse_spec(spec_str)
-        self.provider = providers.make_provider(self.spec, api_key=api_key)
+        self.reasoning = reasoning
+        self.provider = providers.make_provider(
+            self.spec, api_key=api_key, reasoning=reasoning
+        )
         self.decision_log: DecisionSink = [] if decision_log is None else decision_log
         self.temperature = temperature
         self.max_tokens = max_tokens
+        if reasoning not in {None, "off"}:
+            floor = 32000 if reasoning in {"xhigh", "max"} else 16000
+            self.max_tokens = max(self.max_tokens, floor)
         self.state_hints = bool(state_hints)
         self.totals = {
             "calls": 0,

@@ -7,11 +7,12 @@ const modelCache = new Map<string, Promise<ModelEntry[]>>();
 
 /** Model id input that lists the provider's available models once its API key
     is entered, while always allowing free text. */
-export function ModelCombobox({ provider, apiKey, value, onChange, label }: {
+export function ModelCombobox({ provider, apiKey, value, onChange, onModelsChange, label }: {
   provider: ProviderInfo;
   apiKey: string;
   value: string;
   onChange(value: string): void;
+  onModelsChange(models: ModelEntry[] | null): void;
   label?: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -21,7 +22,15 @@ export function ModelCombobox({ provider, apiKey, value, onChange, label }: {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const onModelsChangeRef = useRef(onModelsChange);
   const menuId = useId();
+
+  onModelsChangeRef.current = onModelsChange;
+
+  useEffect(() => {
+    setModels(null);
+    onModelsChangeRef.current(null);
+  }, [provider.id, apiKey.trim()]);
 
   useEffect(() => {
     if (!open) return;
@@ -33,10 +42,10 @@ export function ModelCombobox({ provider, apiKey, value, onChange, label }: {
   }, [open]);
 
   useEffect(() => {
-    if (!open) return;
     const key = apiKey.trim();
     if (!key) {
       setModels(null);
+      onModelsChangeRef.current(null);
       setLoading(false);
       setError(null);
       return;
@@ -45,29 +54,34 @@ export function ModelCombobox({ provider, apiKey, value, onChange, label }: {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    let pending = modelCache.get(cacheKey);
-    if (!pending) {
-      pending = api.listModels(provider.id, key).catch((exc: Error) => {
-        modelCache.delete(cacheKey);
-        throw exc;
+    const timer = window.setTimeout(() => {
+      let pending = modelCache.get(cacheKey);
+      if (!pending) {
+        pending = api.listModels(provider.id, key).catch((exc: Error) => {
+          modelCache.delete(cacheKey);
+          throw exc;
+        });
+        modelCache.set(cacheKey, pending);
+      }
+      pending.then((entries) => {
+        if (cancelled) return;
+        setModels(entries);
+        onModelsChangeRef.current(entries);
+        setLoading(false);
+        setError(null);
+      }).catch((exc: Error) => {
+        if (cancelled) return;
+        setModels(null);
+        onModelsChangeRef.current(null);
+        setLoading(false);
+        setError(exc.message);
       });
-      modelCache.set(cacheKey, pending);
-    }
-    pending.then((entries) => {
-      if (cancelled) return;
-      setModels(entries);
-      setLoading(false);
-      setError(null);
-    }).catch((exc: Error) => {
-      if (cancelled) return;
-      setModels(null);
-      setLoading(false);
-      setError(exc.message);
-    });
+    }, 350);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
-  }, [open, provider.id, apiKey]);
+  }, [provider.id, apiKey.trim()]);
 
   const openMenu = () => {
     setQuery("");
