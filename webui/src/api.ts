@@ -25,6 +25,7 @@ export interface StartRequest {
   human_seat: number | null;
   label: string | null;
   state_hints: boolean;
+  reasoning: (string | null)[];
 }
 
 export interface StartResponse {
@@ -77,6 +78,27 @@ export function fetchDemo(): Promise<DemoBundle> {
 
 export function demoAvailable(): Promise<boolean> {
   return fetch("/api/demo", { method: "HEAD" }).then((r) => r.ok).catch(() => false);
+}
+
+export function localEndpointsAvailable(): Promise<boolean> {
+  return json<{ local_endpoints: boolean }>(fetch("/api/config"))
+    .then((body) => body.local_endpoints);
+}
+
+export interface ModelEntry {
+  id: string;
+  created: number | null;
+  reasoning: string[];
+}
+
+export function listModels(provider: string, key: string, baseUrl?: string): Promise<ModelEntry[]> {
+  return json<{ models: ModelEntry[] }>(
+    fetch("/api/models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider, key, base_url: baseUrl }),
+    }),
+  ).then((body) => body.models);
 }
 
 export interface EventStream {

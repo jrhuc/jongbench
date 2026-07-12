@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 import * as api from "../api";
+import type { ModelEntry } from "../api";
 import { Dropdown } from "./Dropdown";
+import { ModelCombobox } from "./ModelCombobox";
 import { PROVIDERS, ProviderIcon, providerOf, providerOfName } from "../providers";
 import type { ProviderInfo } from "../providers";
 import type { SessionListItem } from "../types";
@@ -9,6 +11,8 @@ import "./setup.css";
 interface SeatDraft {
   providerId: string;
   model: string;
+  reasoning: string;
+  models: ModelEntry[] | null;
 }
 
 const WINDS = [
@@ -19,11 +23,21 @@ const WINDS = [
 ] as const;
 
 const DEFAULT_SEATS: SeatDraft[] = [
-  { providerId: "anthropic", model: "claude-sonnet-5" },
-  { providerId: "openai", model: "gpt-5.2" },
-  { providerId: "google", model: "gemini-3-pro" },
-  { providerId: "xai", model: "grok-4" },
+  { providerId: "anthropic", model: "claude-sonnet-5", reasoning: "default", models: null },
+  { providerId: "openai", model: "gpt-5.2", reasoning: "default", models: null },
+  { providerId: "google", model: "gemini-3-pro", reasoning: "default", models: null },
+  { providerId: "xai", model: "grok-4.5", reasoning: "default", models: null },
 ];
+
+const REASONING_LABELS: Record<string, string> = {
+  off: "Off",
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "X-High",
+  max: "Max",
+};
 
 function createdTime(created: number): string {
   const milliseconds = created < 10_000_000_000 ? created * 1000 : created;
@@ -33,6 +47,8 @@ function createdTime(created: number): string {
 export function Setup({ onStarted }: { onStarted(runId: string): void }) {
   const [seats, setSeats] = useState<SeatDraft[]>(DEFAULT_SEATS);
   const [keys, setKeys] = useState<Record<string, string>>({});
+  const [localBaseUrl, setLocalBaseUrl] = useState("http://127.0.0.1:11434/v1");
+  const [allowLocal, setAllowLocal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasDemo, setHasDemo] = useState(false);
@@ -43,7 +59,7 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
     [seats],
   );
   const missingKeyProviders = selectedProviders.filter(
-    (provider) => provider.keyName !== null && !keys[provider.keyName]?.trim(),
+    (provider) => provider.keyName !== null && !provider.optionalKey && !keys[provider.keyName]?.trim(),
   );
   const missingKeysMessage = missingKeyProviders.length === 0
     ? null
@@ -52,19 +68,49 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
 
   useEffect(() => {
     api.demoAvailable().then(setHasDemo);
+    api.localEndpointsAvailable().then(setAllowLocal).catch(() => {});
   }, []);
 
   const updateSeat = (index: number, providerId: string) => {
     const provider = providerOf(providerId);
     setSeats((current) =>
       current.map((seat, seatIndex) =>
-        seatIndex === index ? { providerId, model: provider.placeholder } : seat,
+        seatIndex === index
+          ? { providerId, model: provider.placeholder, reasoning: "default", models: null }
+          : seat,
       ),
     );
   };
 
   const updateModel = (index: number, model: string) => {
-    setSeats((current) => current.map((seat, seatIndex) => (seatIndex === index ? { ...seat, model } : seat)));
+    setSeats((current) => current.map((seat, seatIndex) => {
+      if (seatIndex !== index) return seat;
+      const reasoningOptions = seat.models?.find((entry) => entry.id === model.trim())?.reasoning ?? [];
+      return {
+        ...seat,
+        model,
+        reasoning: reasoningOptions.includes(seat.reasoning) ? seat.reasoning : "default",
+      };
+    }));
+  };
+
+  const updateModels = (index: number, models: ModelEntry[] | null) => {
+    setSeats((current) => current.map((seat, seatIndex) => {
+      if (seatIndex !== index) return seat;
+      if (models === null) return seat.models === null ? seat : { ...seat, models };
+      const reasoningOptions = models.find((entry) => entry.id === seat.model.trim())?.reasoning ?? [];
+      return {
+        ...seat,
+        models,
+        reasoning: reasoningOptions.includes(seat.reasoning) ? seat.reasoning : "default",
+      };
+    }));
+  };
+
+  const updateReasoning = (index: number, reasoning: string) => {
+    setSeats((current) => current.map((seat, seatIndex) =>
+      seatIndex === index ? { ...seat, reasoning } : seat,
+    ));
   };
 
   const start = (event: Event) => {
@@ -78,10 +124,13 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
     const requestKeys = Object.fromEntries(
       selectedProviders
         .filter((provider): provider is ProviderInfo & { keyName: string } => provider.keyName !== null)
-        .map((provider) => [provider.keyName, keys[provider.keyName]!.trim()]),
+        .map((provider) => [provider.keyName, (keys[provider.keyName] ?? "").trim()]),
     );
     const models = seats.map((seat) => {
       const provider = providerOf(seat.providerId);
+      if (provider.id === "local") {
+        return `compat:${localBaseUrl.trim()}:${seat.model.trim() || provider.placeholder}`;
+      }
       return provider.keyName === null ? provider.id : `${provider.id}:${seat.model.trim() || provider.placeholder}`;
     });
     api.startGame({
@@ -91,6 +140,10 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
       human_seat: humanSeat === -1 ? null : humanSeat,
       label: null,
       state_hints: stateHints,
+      reasoning: seats.map((seat) => {
+        const levels = seat.models?.find((entry) => entry.id === seat.model.trim())?.reasoning ?? [];
+        return levels.includes(seat.reasoning) ? seat.reasoning : null;
+      }),
     }).then(({ run_id }) => onStarted(run_id)).catch((exc: Error) => {
       setError(exc.message);
       setSubmitting(false);
@@ -100,25 +153,22 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
   return (
     <main class="setup-main">
       <section class="setup-hero">
-        <h1 class="setup-kicker">Riichi mahjong model benchmark</h1>
+        <h1 class="setup-kicker">Riichi mahjong × LLM benchmark</h1>
         {hasDemo && <a class="setup-demo" href="#replay">watch a recorded game →</a>}
       </section>
 
       <form class="setup-form" onSubmit={start}>
-        <section class="setup-section dragon-hatsu">
-          <div class="section-heading">
-            <h2><span class="dragon-glyph">發</span>Choose the table</h2>
-            <p>Seat four players and let the tiles decide.</p>
-          </div>
+        <section class="setup-section seats-section" aria-label="Seats">
           <div class="seat-grid">
             {seats.map((seat, index) => {
               const provider = providerOf(seat.providerId);
+              const reasoningOptions = seat.models?.find((entry) => entry.id === seat.model.trim())?.reasoning ?? [];
               const [wind, windName] = WINDS[index];
               return (
-                <article class="seat-card" key={wind}>
+                <article class={`seat-tile${index === 0 ? " seat-tile-east" : ""}`} key={wind}>
                   <div class="seat-title">
                     <span class="seat-wind">{wind}</span>
-                    <span>{windName} seat</span>
+                    <span class="seat-label">{windName} seat</span>
                   </div>
                   <div class="provider-field">
                     <span>Player</span>
@@ -126,7 +176,7 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
                       label={`${windName} seat player`}
                       value={seat.providerId}
                       onChange={(providerId) => updateSeat(index, providerId)}
-                      options={PROVIDERS.map((option) => ({
+                      options={PROVIDERS.filter((option) => option.id !== "local" || allowLocal).map((option) => ({
                         value: option.id,
                         label: option.label,
                         icon: <ProviderIcon provider={option} />,
@@ -134,15 +184,37 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
                       }))}
                     />
                   </div>
-                  <label class={`model-field${provider.keyName === null ? " model-field-hidden" : ""}`}>
+                  <div class={`model-field${provider.keyName === null ? " model-field-hidden" : ""}`}>
                     <span>Model id</span>
-                    <input
-                      value={seat.model}
-                      placeholder={provider.placeholder}
-                      disabled={provider.keyName === null}
-                      onInput={(event) => updateModel(index, event.currentTarget.value)}
-                    />
-                  </label>
+                    <div class="model-control-row">
+                      <ModelCombobox
+                        key={seat.providerId}
+                        provider={provider}
+                        apiKey={provider.keyName === null ? "" : keys[provider.keyName] ?? ""}
+                        baseUrl={provider.id === "local" ? localBaseUrl : undefined}
+                        value={seat.model}
+                        label={`${windName} seat model`}
+                        onChange={(model) => updateModel(index, model)}
+                        onModelsChange={(models) => updateModels(index, models)}
+                      />
+                      {reasoningOptions.length > 0 && (
+                        <div class="reasoning-control">
+                          <Dropdown
+                            label={`${windName} seat reasoning`}
+                            value={seat.reasoning}
+                            onChange={(reasoning) => updateReasoning(index, reasoning)}
+                            options={[
+                              { value: "default", label: "Default" },
+                              ...reasoningOptions.map((level) => ({
+                                value: level,
+                                label: REASONING_LABELS[level] ?? level,
+                              })),
+                            ]}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </article>
               );
             })}
@@ -150,21 +222,35 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
         </section>
 
         {selectedProviders.some((provider) => provider.keyName !== null) && (
-          <section class="setup-section keys-panel dragon-haku">
+          <section class="setup-card keys-panel">
             <div class="section-heading">
-              <h2><span class="dragon-glyph">白</span>Keys</h2>
-              <p>Enter a key for every selected model provider. Keys are held in memory for this game only and never logged.</p>
+              <span class="tile-chip chip-haku" aria-hidden="true"></span>
+              <div>
+                <h2>Keys</h2>
+                <p>Configure access for each selected provider. Keys are held in memory for this game only and never logged.</p>
+              </div>
             </div>
             <div class="keys-grid">
+              {selectedProviders.some((provider) => provider.id === "local") && (
+                <label class="key-field">
+                  <span>Local OpenAI-compatible URL</span>
+                  <input
+                    type="url"
+                    value={localBaseUrl}
+                    required
+                    onInput={(event) => setLocalBaseUrl(event.currentTarget.value)}
+                  />
+                </label>
+              )}
               {selectedProviders.filter((provider): provider is ProviderInfo & { keyName: string } => provider.keyName !== null).map((provider) => (
                 <label class="key-field" key={provider.id}>
                   <span><ProviderIcon provider={provider} /> {provider.label} API key</span>
                   <input
                     type="password"
                     value={keys[provider.keyName] ?? ""}
-                    placeholder="Required"
-                    required
-                    aria-invalid={!keys[provider.keyName]?.trim()}
+                    placeholder={provider.optionalKey ? "Optional" : "Required"}
+                    required={!provider.optionalKey}
+                    aria-invalid={!provider.optionalKey && !keys[provider.keyName]?.trim()}
                     onInput={(event) => setKeys((current) => ({ ...current, [provider.keyName]: event.currentTarget.value }))}
                   />
                 </label>
@@ -173,10 +259,13 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
           </section>
         )}
 
-        <section class="setup-section prompt-panel dragon-chun">
+        <section class="setup-card prompt-panel">
           <div class="section-heading">
-            <h2><span class="dragon-glyph">中</span>Prompt assistance</h2>
-            <p>Choose whether models receive rule-derived structure alongside the visible table.</p>
+            <span class="tile-chip chip-chun" aria-hidden="true">中</span>
+            <div>
+              <h2>Prompt assistance</h2>
+              <p>Choose whether models receive rule-derived structure alongside the visible table.</p>
+            </div>
           </div>
           <label class="prompt-toggle">
             <input
@@ -192,7 +281,8 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
         </section>
 
         <div class="deal-row">
-          <button class="primary deal-button" type="submit" disabled={submitting || missingKeysMessage !== null}>
+          <button class="deal-button" type="submit" disabled={submitting || missingKeysMessage !== null}>
+            <span class="deal-dot" aria-hidden="true" />
             {submitting ? "Checking keys…" : "Deal"}
           </button>
           {missingKeysMessage && <p class="deal-error" role="status">{missingKeysMessage}</p>}

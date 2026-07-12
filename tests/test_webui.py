@@ -87,6 +87,11 @@ def test_web_starts_reject_custom_endpoints_and_require_request_keys() -> None:
         ("google", "google:test"),
         ("xai", "xai:test"),
         ("deepseek", "deepseek:test"),
+        ("meta", "meta:test"),
+        ("kimi", "kimi:test"),
+        ("zai", "zai:test"),
+        ("openrouter", "openrouter:test"),
+        ("cerebras", "cerebras:test"),
     ):
         try:
             webui._validate_web_start_credentials([spec] + ["random"] * 3, {})
@@ -97,6 +102,25 @@ def test_web_starts_reject_custom_endpoints_and_require_request_keys() -> None:
         webui._validate_web_start_credentials(
             [spec] + ["random"] * 3, {provider: "visitor-key"}
         )
+
+
+def test_web_local_models_are_loopback_only() -> None:
+    local = "compat:http://127.0.0.1:11434/v1:model"
+    webui._validate_web_start_credentials(
+        [local] + ["random"] * 3, {}, allow_local_endpoints=True
+    )
+    for spec in (
+        "compat:https://example.com/v1:model",
+        "compat:http://192.168.1.2:11434/v1:model",
+    ):
+        try:
+            webui._validate_web_start_credentials(
+                [spec] + ["random"] * 3, {}, allow_local_endpoints=True
+            )
+        except ValueError as exc:
+            assert "loopback" in str(exc)
+        else:
+            raise AssertionError("web start accepted a non-loopback endpoint")
 
 
 def test_preflight_distinguishes_compatibility_base_urls() -> None:
@@ -121,6 +145,114 @@ def test_preflight_distinguishes_compatibility_base_urls() -> None:
     urls = ["https://one.invalid/v1", "https://two.invalid/v1"]
     webui._preflight_engines([FakeEngine(url) for url in urls])
     assert sorted(calls) == urls
+
+
+def test_preflight_distinguishes_reasoning_levels() -> None:
+    calls: list[str] = []
+
+    class FakeProvider:
+        def __init__(self, reasoning: str) -> None:
+            self.reasoning = reasoning
+
+        def complete(self, *args: Any, **kwargs: Any) -> tuple[str, dict[str, int]]:
+            del args, kwargs
+            calls.append(self.reasoning)
+            return "OK", {}
+
+    class FakeEngine:
+        def __init__(self, reasoning: str) -> None:
+            self.name = reasoning
+            self.temperature = 0.0
+            self.reasoning = reasoning
+            self.max_tokens = 8
+            self.spec = ProviderSpec("openai", "gpt-5.2")
+            self.provider = FakeProvider(reasoning)
+
+    webui._preflight_engines(
+        [FakeEngine("medium"), FakeEngine("medium"), FakeEngine("high")]
+    )
+    assert sorted(calls) == ["high", "medium"]
+
+
+def test_web_reasoning_validation() -> None:
+    invalid = (
+        (["medium"] * 3, "list of 4"),
+        (["turbo", None, None, None], "supported levels"),
+        (["high", None, None, None], "not supported for random"),
+    )
+    for reasoning, message in invalid:
+        try:
+            webui.start_game_session(
+                ["random"] * 4,
+                {},
+                1,
+                None,
+                None,
+                runs_root="/tmp/unused-jongbench-test",
+                weights="unused",
+                no_eval=True,
+                delay=0,
+                reasoning=reasoning,
+            )
+        except ValueError as exc:
+            assert message in str(exc)
+        else:
+            raise AssertionError(f"accepted invalid reasoning: {reasoning!r}")
+
+    try:
+        webui.start_game_session(
+            ["openai:gpt-5.1", "random", "random", "random"],
+            {},
+            1,
+            None,
+            None,
+            runs_root="/tmp/unused-jongbench-test",
+            weights="unused",
+            no_eval=True,
+            delay=0,
+            reasoning=["xhigh", None, None, None],
+        )
+    except ValueError as exc:
+        assert "available: off, low, medium, high" in str(exc)
+    else:
+        raise AssertionError("accepted an unsupported model reasoning level")
+
+
+def test_reasoning_propagates_to_names_and_config() -> None:
+    parsed = [
+        webui._parse_spec("openai:gpt-5.2"),
+        webui._parse_spec("openai:gpt-5.2"),
+        webui._parse_spec("random"),
+        webui._parse_spec("human"),
+    ]
+    reasoning = ["high", "off", None, None]
+    names = webui._engine_names(parsed, reasoning)
+    assert names == ["gpt-5.2-high", "gpt-5.2-off", "random", "human"]
+
+    with tempfile.TemporaryDirectory(prefix="jongbench-reasoning-") as tempdir:
+        run_dir = Path(tempdir)
+        session = webui.GameSession(
+            run_id="reasoning",
+            created=time.time(),
+            model_specs=["openai:gpt-5.2"] * 2 + ["random", "human"],
+            names=names,
+            human_seat=3,
+            human_io=webui.WebHumanIO(),
+            run_dir=tempdir,
+            state_hints=True,
+        )
+        webui._write_config(
+            run_dir,
+            session,
+            (1, 2),
+            None,
+            0,
+            True,
+            reasoning,
+        )
+        config = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+        assert config["reasoning"] == reasoning
+        assert config["names"] == names
 
 
 def test_terminal_statuses_and_transition_history_are_stable() -> None:

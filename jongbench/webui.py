@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 from collections import defaultdict, deque
+import hashlib
+import ipaddress
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -49,6 +51,44 @@ _DRAW_TICKER_RE = re.compile(r"^P([0-3]) drew .+$")
 _LAST_SERVER_LOCK = threading.Lock()
 _LAST_SERVER_URL: str | None = None
 _LAST_SERVER_PORT: int | None = None
+_MODEL_CACHE_TTL = 300.0
+_MODEL_CACHE_MAX = 32
+_MODEL_CACHE_LOCK = threading.Lock()
+_MODEL_CACHE: dict[tuple[str, str, str], tuple[float, list[dict[str, Any]]]] = {}
+
+
+def _prune_model_cache_locked(now: float) -> None:
+    expired = [
+        entry_key
+        for entry_key, (stamp, _) in _MODEL_CACHE.items()
+        if now - stamp >= _MODEL_CACHE_TTL
+    ]
+    for entry_key in expired:
+        del _MODEL_CACHE[entry_key]
+
+
+def _cached_list_models(
+    provider: str, key: str, base_url: str | None = None
+) -> list[dict[str, Any]]:
+    cache_key = (
+        provider,
+        base_url or "",
+        hashlib.sha256(key.encode("utf-8")).hexdigest(),
+    )
+    with _MODEL_CACHE_LOCK:
+        _prune_model_cache_locked(time.monotonic())
+        hit = _MODEL_CACHE.get(cache_key)
+        if hit is not None:
+            return hit[1]
+    models = providers.list_models(provider, key, base_url)
+    with _MODEL_CACHE_LOCK:
+        now = time.monotonic()
+        _prune_model_cache_locked(now)
+        while len(_MODEL_CACHE) >= _MODEL_CACHE_MAX and cache_key not in _MODEL_CACHE:
+            oldest = min(_MODEL_CACHE.items(), key=lambda item: item[1][0])[0]
+            del _MODEL_CACHE[oldest]
+        _MODEL_CACHE[cache_key] = (now, models)
+    return models
 
 
 class WebHumanIO(HumanIO):
@@ -313,6 +353,7 @@ class _ServerState:
         no_eval: bool,
         demo_path: str | None,
         delay: float,
+        allow_local_endpoints: bool = False,
     ) -> None:
         self.runs_root = runs_root
         self.weights = weights
@@ -320,6 +361,7 @@ class _ServerState:
         self.no_eval = bool(no_eval)
         self.demo_path = demo_path
         self.delay = float(delay)
+        self.allow_local_endpoints = allow_local_endpoints
         self.sessions: dict[str, GameSession] = {}
         self.lock = threading.Lock()
         self._reserved = 0
@@ -359,10 +401,6 @@ class _ServerState:
         with self.lock:
             self._prune_sessions_locked(time.time())
             return self.sessions.get(run_id)
-
-    def remove_session(self, run_id: str) -> None:
-        with self.lock:
-            self.sessions.pop(run_id, None)
 
     def list_sessions(self) -> list[GameSession]:
         with self.lock:
@@ -434,6 +472,7 @@ def start_game_session(
     no_eval: bool,
     delay: float,
     state_hints: bool = True,
+    reasoning: list[str | None] | None = None,
 ) -> GameSession:
     if len(model_specs) != 4:
         raise ValueError("models must contain exactly 4 specs")
@@ -454,10 +493,38 @@ def start_game_session(
         raise ValueError("human_seat was provided but no model spec is human")
     if not isinstance(state_hints, bool):
         raise ValueError("state_hints must be a boolean")
+    if reasoning is not None:
+        if (
+            not isinstance(reasoning, list)
+            or len(reasoning) != 4
+            or not all(
+                item is None
+                or (isinstance(item, str) and item in providers.REASONING_LEVELS)
+                for item in reasoning
+            )
+        ):
+            raise ValueError(
+                "reasoning must be a list of 4 supported levels or nulls"
+            )
+        allowed_providers = {"anthropic", "openai", "google", *providers.COMPAT_BASE_URLS}
+        for idx, level in enumerate(reasoning):
+            if level is None:
+                continue
+            provider = parsed[idx].provider
+            if provider not in allowed_providers:
+                raise ValueError(f"reasoning is not supported for {provider}")
+            supported = providers.reasoning_levels(provider, parsed[idx].model)
+            if provider != "anthropic" and level not in supported:
+                choices = ", ".join(supported) or "none"
+                raise ValueError(
+                    f"{parsed[idx].model} does not support {level} reasoning "
+                    f"(available: {choices})"
+                )
+    reasoning_levels = reasoning if reasoning is not None else [None, None, None, None]
 
     seed_tuple = _normalize_seed(seed)
     run_id = secrets.token_hex(4)
-    names = _engine_names(parsed)
+    names = _engine_names(parsed, reasoning_levels)
     run_dir = _make_run_dir(Path(runs_root), label, run_id)
 
     human_io = WebHumanIO()
@@ -474,6 +541,7 @@ def start_game_session(
             human_io=human_io,
             decisions_dir=run_dir / "decisions",
             state_hints=state_hints,
+            reasoning=reasoning_levels[seat],
         )
         for seat in range(4)
     ]
@@ -491,7 +559,7 @@ def start_game_session(
         run_dir=str(run_dir),
         state_hints=state_hints,
     )
-    _write_config(run_dir, session, seed_tuple, label, delay, no_eval)
+    _write_config(run_dir, session, seed_tuple, label, delay, no_eval, reasoning)
     for engine in engines:
         engine.cancel_event = session.cancel_event
 
@@ -516,13 +584,21 @@ def _preflight_engines(engines: list[Any]) -> None:
     """One tiny completion per distinct provider/model so a missing or invalid
     API key fails the start request instead of silently degrading every
     decision to the fallback action."""
-    checks: dict[tuple[str, str, str | None], Any] = {}
+    checks: dict[tuple[str, str, str | None, str | None], Any] = {}
     for engine in engines:
         provider = getattr(engine, "provider", None)
         spec = getattr(engine, "spec", None)
         if provider is None or spec is None:
             continue
-        checks.setdefault((spec.provider, spec.model, spec.base_url), engine)
+        checks.setdefault(
+            (
+                spec.provider,
+                spec.model,
+                spec.base_url,
+                getattr(engine, "reasoning", None),
+            ),
+            engine,
+        )
     if not checks:
         return
 
@@ -531,7 +607,7 @@ def _preflight_engines(engines: list[Any]) -> None:
             engine.provider.complete(
                 "Reply with the word OK.",
                 "OK?",
-                max_tokens=8,
+                max_tokens=getattr(engine, "max_tokens", 8),
                 temperature=engine.temperature,
             )
         except Exception as exc:
@@ -560,6 +636,7 @@ def run_server(
         no_eval=no_eval,
         demo_path=demo_path,
         delay=0.0,
+        allow_local_endpoints=_is_loopback_host(host),
     )
     httpd, url = _make_server(state, host, port)
     print(f"jongbench web UI listening on {url}", flush=True)
@@ -590,6 +667,7 @@ def run_watch_server(
         no_eval=no_eval,
         demo_path=None,
         delay=delay,
+        allow_local_endpoints=_is_loopback_host(host),
     )
     httpd, url = _make_server(state, host, port)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True, name="jongbench-watch-web")
@@ -606,6 +684,7 @@ def run_watch_server(
             no_eval=no_eval,
             delay=delay,
             state_hints=state_hints,
+            reasoning=None,
         )
         with state.lock:
             state.sessions[session.id] = session
@@ -677,6 +756,8 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                     self._send_json(HTTPStatus.OK, session.review)
                 elif path == "/api/demo":
                     self._send_bytes(HTTPStatus.OK, _demo_bytes(state), "application/json; charset=utf-8")
+                elif path == "/api/config":
+                    self._send_json(HTTPStatus.OK, {"local_endpoints": state.allow_local_endpoints})
                 else:
                     raise _HTTPError(HTTPStatus.NOT_FOUND, "not found")
             except (BrokenPipeError, ConnectionResetError):
@@ -706,7 +787,9 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                         raise _HTTPError(HTTPStatus.BAD_REQUEST, "keys must be an object")
                     clean_keys = {str(k): str(v) for k, v in keys.items() if isinstance(v, str)}
                     try:
-                        _validate_web_start_credentials(models, clean_keys)
+                        _validate_web_start_credentials(
+                            models, clean_keys, state.allow_local_endpoints
+                        )
                     except ValueError as exc:
                         raise _HTTPError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
                     seed = payload.get("seed")
@@ -737,6 +820,7 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                             no_eval=state.no_eval,
                             delay=state.delay,
                             state_hints=state_hints,
+                            reasoning=payload.get("reasoning"),
                         )
                     except ValueError as exc:
                         raise _HTTPError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
@@ -750,6 +834,25 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                             "human_seat": session.human_seat,
                         },
                     )
+                elif parsed.path == "/api/models":
+                    payload = self._read_json_body()
+                    provider = payload.get("provider")
+                    key = payload.get("key")
+                    base_url = payload.get("base_url")
+                    allowed = {"anthropic", "openai", "google", *providers.COMPAT_BASE_URLS}
+                    if provider == "compat":
+                        if not state.allow_local_endpoints or not _is_loopback_url(base_url):
+                            raise _HTTPError(HTTPStatus.BAD_REQUEST, "local endpoint must use a loopback URL")
+                        allowed.add("compat")
+                    if not isinstance(provider, str) or provider not in allowed:
+                        raise _HTTPError(HTTPStatus.BAD_REQUEST, "provider must be a supported model provider")
+                    if not isinstance(key, str) or (provider != "compat" and not key.strip()):
+                        raise _HTTPError(HTTPStatus.BAD_REQUEST, "key must be a non-empty string")
+                    try:
+                        models = _cached_list_models(provider, key.strip(), base_url)
+                    except ValueError as exc:
+                        raise _HTTPError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+                    self._send_json(HTTPStatus.OK, {"models": models})
                 elif parsed.path.startswith("/api/abort/"):
                     session = self._session_from_path(parsed.path, "/api/abort/")
                     ok = session.abort()
@@ -1057,7 +1160,7 @@ def _evaluate_run(
     *,
     cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
-    from . import evaluate, report
+    from . import evaluate
 
     def check_cancelled() -> None:
         if cancel_event is not None and cancel_event.is_set():
@@ -1094,10 +1197,8 @@ def _evaluate_run(
     }
     path = run_dir / "review" / f"{summary.seed[0]}_{summary.seed[1]}.json"
     path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    report_path = report.write_report(str(run_dir))
     response = dict(data)
     response["run_dir"] = str(run_dir)
-    response["report_path"] = report_path
     return response
 
 
@@ -1113,6 +1214,7 @@ def _make_engine_for_session(
     human_io: WebHumanIO,
     decisions_dir: Path,
     state_hints: bool,
+    reasoning: str | None = None,
 ) -> Any:
     if spec.provider == "human":
         try:
@@ -1131,6 +1233,7 @@ def _make_engine_for_session(
         kwargs["decision_log"] = _DecisionLogSink(
             decisions_dir / decision_filename(name)
         )
+        kwargs["reasoning"] = reasoning
     return make_engine(name, spec_str, **kwargs)
 
 
@@ -1152,7 +1255,9 @@ def _parse_spec(spec_str: str) -> providers.ProviderSpec:
 
 
 def _validate_web_start_credentials(
-    model_specs: list[str], keys: dict[str, str]
+    model_specs: list[str],
+    keys: dict[str, str],
+    allow_local_endpoints: bool = False,
 ) -> None:
     """Keep shared HTTP starts on fixed provider endpoints and visitor keys.
 
@@ -1160,13 +1265,17 @@ def _validate_web_start_credentials(
     compatibility-endpoint support.
     """
     parsed = [_parse_spec(spec) for spec in model_specs]
-    if any(spec.provider == "compat" for spec in parsed):
-        raise ValueError("compat provider URLs are not allowed in the web UI")
+    local_specs = [spec for spec in parsed if spec.provider == "compat"]
+    if local_specs and (
+        not allow_local_endpoints
+        or any(not _is_loopback_url(spec.base_url) for spec in local_specs)
+    ):
+        raise ValueError("local models require a loopback OpenAI-compatible URL")
     missing = sorted(
         {
             spec.provider
             for spec in parsed
-            if spec.provider not in {"human", "random"}
+            if spec.provider not in {"human", "random", "compat"}
             and not keys.get(spec.provider, "").strip()
         }
     )
@@ -1174,6 +1283,34 @@ def _validate_web_start_credentials(
         raise ValueError(
             "request-supplied API key required for: " + ", ".join(missing)
         )
+
+
+def _is_loopback_host(host: str) -> bool:
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_loopback_url(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    parsed = urlparse(value)
+    try:
+        hostname = parsed.hostname
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme in {"http", "https"}
+        and hostname
+        and _is_loopback_host(hostname)
+        and not parsed.username
+        and not parsed.password
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 def _human_seat_from_specs(model_specs: list[str]) -> int | None:
@@ -1201,12 +1338,19 @@ def _normalize_seed(seed: int | tuple[int, int] | list[int] | None) -> tuple[int
     return result
 
 
-def _engine_names(parsed: list[providers.ProviderSpec]) -> list[str]:
+def _engine_names(
+    parsed: list[providers.ProviderSpec],
+    reasoning: list[str | None] | None = None,
+) -> list[str]:
+    levels = reasoning if reasoning is not None else [None, None, None, None]
     seen: dict[str, int] = {}
     names = []
     for seat, spec in enumerate(parsed):
         base = spec.display_name if spec.provider not in {"human"} else "human"
         base = _safe_name(base or f"P{seat}")
+        level = levels[seat] if seat < len(levels) else None
+        if level is not None:
+            base = f"{base}-{level}"
         count = seen.get(base, 0) + 1
         seen[base] = count
         names.append(base if count == 1 else f"{base}-{count}")
@@ -1238,6 +1382,7 @@ def _write_config(
     label: str | None,
     delay: float,
     no_eval: bool,
+    reasoning: list[str | None] | None = None,
 ) -> None:
     config = {
         "label": label or run_dir.name,
@@ -1251,6 +1396,8 @@ def _write_config(
         "no_eval": bool(no_eval),
         "state_hints": session.state_hints,
     }
+    if reasoning is not None:
+        config["reasoning"] = list(reasoning)
     (run_dir / "config.json").write_text(
         json.dumps(config, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",

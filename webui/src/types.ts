@@ -161,5 +161,4 @@ export interface Review {
   placements: Record<string, number>;
   players: Record<string, PlayerReview>;
   run_dir?: string;
-  report_path?: string;
 }
