@@ -153,26 +153,22 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
   return (
     <main class="setup-main">
       <section class="setup-hero">
-        <h1 class="setup-kicker">Riichi mahjong model benchmark</h1>
+        <h1 class="setup-kicker">Riichi mahjong × LLM benchmark</h1>
         {hasDemo && <a class="setup-demo" href="#replay">watch a recorded game →</a>}
       </section>
 
       <form class="setup-form" onSubmit={start}>
-        <section class="setup-section dragon-hatsu">
-          <div class="section-heading">
-            <h2><span class="dragon-glyph">發</span>Choose the table</h2>
-            <p>Seat four players and let the tiles decide.</p>
-          </div>
+        <section class="setup-section seats-section" aria-label="Seats">
           <div class="seat-grid">
             {seats.map((seat, index) => {
               const provider = providerOf(seat.providerId);
               const reasoningOptions = seat.models?.find((entry) => entry.id === seat.model.trim())?.reasoning ?? [];
               const [wind, windName] = WINDS[index];
               return (
-                <article class="seat-card" key={wind}>
+                <article class={`seat-tile${index === 0 ? " seat-tile-east" : ""}`} key={wind}>
                   <div class="seat-title">
                     <span class="seat-wind">{wind}</span>
-                    <span>{windName} seat</span>
+                    <span class="seat-label">{windName} seat</span>
                   </div>
                   <div class="provider-field">
                     <span>Player</span>
@@ -226,10 +222,13 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
         </section>
 
         {selectedProviders.some((provider) => provider.keyName !== null) && (
-          <section class="setup-section keys-panel dragon-haku">
+          <section class="setup-card keys-panel">
             <div class="section-heading">
-              <h2><span class="dragon-glyph">白</span>Keys</h2>
-              <p>Configure access for each selected provider. Keys are held in memory for this game only and never logged.</p>
+              <span class="tile-chip chip-haku" aria-hidden="true"></span>
+              <div>
+                <h2>Keys</h2>
+                <p>Configure access for each selected provider. Keys are held in memory for this game only and never logged.</p>
+              </div>
             </div>
             <div class="keys-grid">
               {selectedProviders.some((provider) => provider.id === "local") && (
@@ -260,10 +259,13 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
           </section>
         )}
 
-        <section class="setup-section prompt-panel dragon-chun">
+        <section class="setup-card prompt-panel">
           <div class="section-heading">
-            <h2><span class="dragon-glyph">中</span>Prompt assistance</h2>
-            <p>Choose whether models receive rule-derived structure alongside the visible table.</p>
+            <span class="tile-chip chip-chun" aria-hidden="true">中</span>
+            <div>
+              <h2>Prompt assistance</h2>
+              <p>Choose whether models receive rule-derived structure alongside the visible table.</p>
+            </div>
           </div>
           <label class="prompt-toggle">
             <input
@@ -279,7 +281,8 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
         </section>
 
         <div class="deal-row">
-          <button class="primary deal-button" type="submit" disabled={submitting || missingKeysMessage !== null}>
+          <button class="deal-button" type="submit" disabled={submitting || missingKeysMessage !== null}>
+            <span class="deal-dot" aria-hidden="true" />
             {submitting ? "Checking keys…" : "Deal"}
           </button>
           {missingKeysMessage && <p class="deal-error" role="status">{missingKeysMessage}</p>}

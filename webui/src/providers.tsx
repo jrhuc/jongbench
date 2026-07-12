@@ -18,7 +18,7 @@ export const PROVIDERS: ProviderInfo[] = [
   {
     id: "openai",
     label: "OpenAI",
-    color: "#74aa9c",
+    color: "#10a37f",
     keyName: "openai",
     placeholder: "gpt-5.2",
   },
@@ -32,42 +32,42 @@ export const PROVIDERS: ProviderInfo[] = [
   {
     id: "xai",
     label: "xAI",
-    color: "#b8bcc4",
+    color: "#43474f",
     keyName: "xai",
     placeholder: "grok-4",
   },
   {
     id: "deepseek",
     label: "DeepSeek",
-    color: "#536dfe",
+    color: "#4d6bfe",
     keyName: "deepseek",
     placeholder: "deepseek-chat",
   },
   {
     id: "meta",
     label: "Meta",
-    color: "#4f7cff",
+    color: "#0866ff",
     keyName: "meta",
     placeholder: "muse-spark-1.1",
   },
   {
     id: "kimi",
     label: "Kimi",
-    color: "#7957d5",
+    color: "#6a51e6",
     keyName: "kimi",
     placeholder: "kimi-k2.6",
   },
   {
     id: "zai",
     label: "Z.ai",
-    color: "#5b8def",
+    color: "#3d63e8",
     keyName: "zai",
     placeholder: "glm-5.2",
   },
   {
     id: "openrouter",
     label: "OpenRouter",
-    color: "#8b7cf6",
+    color: "#7c6ff0",
     keyName: "openrouter",
     placeholder: "openai/gpt-5.5",
   },
@@ -81,7 +81,7 @@ export const PROVIDERS: ProviderInfo[] = [
   {
     id: "local",
     label: "Local",
-    color: "#8d97a5",
+    color: "#6b7684",
     keyName: "compat",
     placeholder: "model",
     optionalKey: true,
@@ -96,7 +96,7 @@ export const PROVIDERS: ProviderInfo[] = [
   {
     id: "human",
     label: "Human",
-    color: "#d4a94e",
+    color: "#d9a531",
     keyName: null,
     placeholder: "",
   },
@@ -127,68 +127,110 @@ function byId(id: string): ProviderInfo {
   return PROVIDERS.find((p) => p.id === id)!;
 }
 
-export function ProviderIcon({ provider, size = 16 }: { provider: ProviderInfo; size?: number }) {
-  const s = size;
-  const c = provider.color;
-  switch (provider.id) {
+/* Every provider mark is a hanko-style stamp chip: brand color square,
+   bone glyph. Keeps the set cohesive however many providers are added. */
+const STAMP = "#fdf6e3";
+
+function stampMark(id: string, c: string) {
+  switch (id) {
     case "anthropic":
       return (
-        <svg width={s} height={s} viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M6.1 3h2.4l4.4 10h-2.3L9.7 10.7H5.9L5 13H2.7L6.1 3zm.6 5.8h2.4L7.9 5.6 6.7 8.8z" fill={c} />
-          <path d="M9.9 3h2.2l1.6 3.8-1.7 1.4L9.9 3z" fill={c} opacity="0.55" />
-        </svg>
+        <>
+          <path d="M6.4 3.9h2.1l3.7 8.2h-2l-.75-1.85H6L5.25 12.1h-2L6.4 3.9zm.25 4.75h2.15L7.7 6.1 6.65 8.65z" fill={STAMP} />
+          <path d="M9.6 3.9h1.9l1.4 3.2-1.5 1.2-1.8-4.4z" fill={STAMP} opacity="0.62" />
+        </>
       );
     case "openai":
       return (
-        <svg width={s} height={s} viewBox="0 0 16 16" aria-hidden="true">
-          <path
-            d="M8 1.8l5.4 3.1v6.2L8 14.2l-5.4-3.1V4.9L8 1.8zm0 2L4.6 5.9v4.2L8 12.2l3.4-2.1V5.9L8 3.8z"
-            fill={c}
-          />
-          <circle cx="8" cy="8" r="1.7" fill={c} />
-        </svg>
+        <>
+          <path d="M8 2.9l4.4 2.55v5.1L8 13.1l-4.4-2.55v-5.1L8 2.9z" fill="none" stroke={STAMP} stroke-width="1.5" />
+          <circle cx="8" cy="8" r="1.5" fill={STAMP} />
+        </>
       );
     case "google":
       return (
-        <svg width={s} height={s} viewBox="0 0 16 16" aria-hidden="true">
-          <circle cx="5.5" cy="5.5" r="2.6" fill="#4285f4" />
-          <circle cx="10.5" cy="5.5" r="2.6" fill="#ea4335" />
-          <circle cx="5.5" cy="10.5" r="2.6" fill="#34a853" />
-          <circle cx="10.5" cy="10.5" r="2.6" fill="#fbbc05" />
-        </svg>
+        <path
+          d="M8 2.4c.38 3 2.2 4.82 5.2 5.2v.8c-3 .38-4.82 2.2-5.2 5.2h-.8c-.38-3-2.2-4.82-5.2-5.2v-.8c3-.38 4.82-2.2 5.2-5.2h.8z"
+          fill={STAMP}
+        />
       );
     case "xai":
       return (
-        <svg width={s} height={s} viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M3 3h2.6L13 13h-2.6L3 3z" fill={c} />
-          <path d="M13 3h-2.6L7.9 6.4l1.3 1.7L13 3zM3 13h2.6l2.5-3.4-1.3-1.7L3 13z" fill={c} opacity="0.6" />
-        </svg>
+        <>
+          <path d="M3.7 3.6h2.3l6.3 8.8h-2.3L3.7 3.6z" fill={STAMP} />
+          <path d="M12.3 3.6h-2.2L7.9 6.7l1.15 1.6 3.25-4.7zM3.7 12.4h2.2l2.2-3.1-1.15-1.6-3.25 4.7z" fill={STAMP} opacity="0.62" />
+        </>
       );
     case "deepseek":
       return (
-        <svg width={s} height={s} viewBox="0 0 16 16" aria-hidden="true">
-          <path
-            d="M2 10.5C3.5 6 7 3.5 12.5 4c.9.1 1.5.5 1.5 1.2 0 2.8-3.2 7.3-8.5 7.3-1.4 0-2.6-.7-3.5-2z"
-            fill={c}
-          />
-          <circle cx="11.4" cy="6" r="0.9" fill="#0b1512" />
-        </svg>
+        <>
+          <path d="M2.6 10.2C4 6.3 7.2 4.1 12.2 4.5c.8.07 1.3.47 1.3 1.1 0 2.5-2.9 6.4-7.6 6.4-1.25 0-2.35-.6-3.3-1.8z" fill={STAMP} />
+          <circle cx="11.2" cy="6.1" r="0.85" fill={c} />
+        </>
+      );
+    case "meta":
+      return (
+        <path
+          d="M8 8c-1.1 1.5-2 2.4-3.2 2.4a2.4 2.4 0 0 1 0-4.8c1.2 0 2.1.9 3.2 2.4 1.1-1.5 2-2.4 3.2-2.4a2.4 2.4 0 0 1 0 4.8C10 10.4 9.1 9.5 8 8z"
+          fill="none"
+          stroke={STAMP}
+          stroke-width="1.5"
+        />
+      );
+    case "kimi":
+      return <path d="M10.3 2.8a5.5 5.5 0 1 0 2.9 7.2 4.4 4.4 0 0 1-2.9-7.2z" fill={STAMP} />;
+    case "zai":
+      return <path d="M4.2 3.9h7.6v1.9L7.4 10h4.5v2.1H4V10.2L8.4 6H4.2V3.9z" fill={STAMP} />;
+    case "openrouter":
+      return (
+        <>
+          <path d="M2.8 5.5h2c3.3 0 4.6 5 7.5 5" fill="none" stroke={STAMP} stroke-width="1.6" />
+          <path d="M2.8 10.5h2c3.3 0 4.6-5 7.5-5" fill="none" stroke={STAMP} stroke-width="1.6" />
+          <path d="M11.4 3.3l3 2.2-3 2.2z" fill={STAMP} />
+          <path d="M11.4 8.3l3 2.2-3 2.2z" fill={STAMP} />
+        </>
+      );
+    case "cerebras":
+      return (
+        <>
+          <circle cx="8" cy="8" r="4.7" fill={STAMP} />
+          <path d="M3.3 6.2h9.4M3.3 9.8h9.4M6.2 3.3v9.4M9.8 3.3v9.4" stroke={c} stroke-width="0.9" />
+        </>
+      );
+    case "local":
+      return (
+        <>
+          <path d="M3.8 5l3.1 3-3.1 3" fill="none" stroke={STAMP} stroke-width="1.8" />
+          <rect x="8.4" y="10.4" width="4" height="1.8" fill={STAMP} />
+        </>
+      );
+    case "random":
+      return (
+        <>
+          <circle cx="4.6" cy="4.6" r="1.35" fill={STAMP} />
+          <circle cx="11.4" cy="4.6" r="1.35" fill={STAMP} />
+          <circle cx="8" cy="8" r="1.45" fill="#c2372e" />
+          <circle cx="4.6" cy="11.4" r="1.35" fill={STAMP} />
+          <circle cx="11.4" cy="11.4" r="1.35" fill={STAMP} />
+        </>
       );
     case "human":
       return (
-        <svg width={s} height={s} viewBox="0 0 16 16" aria-hidden="true">
-          <circle cx="8" cy="5" r="2.6" fill={c} />
-          <path d="M2.8 13.6c.6-3 2.8-4.4 5.2-4.4s4.6 1.4 5.2 4.4H2.8z" fill={c} />
-        </svg>
+        <>
+          <circle cx="8" cy="5.2" r="2.3" fill={STAMP} />
+          <path d="M3.4 12.9c.55-2.7 2.5-4 4.6-4s4.05 1.3 4.6 4H3.4z" fill={STAMP} />
+        </>
       );
     default:
-      return (
-        <svg width={s} height={s} viewBox="0 0 16 16" aria-hidden="true">
-          <rect x="2.2" y="2.2" width="11.6" height="11.6" rx="2.4" fill="none" stroke={c} stroke-width="1.6" />
-          <circle cx="5.6" cy="5.6" r="1.1" fill={c} />
-          <circle cx="10.4" cy="10.4" r="1.1" fill={c} />
-          <circle cx="8" cy="8" r="1.1" fill={c} />
-        </svg>
-      );
+      return <circle cx="8" cy="8" r="2.2" fill={STAMP} />;
   }
+}
+
+export function ProviderIcon({ provider, size = 16 }: { provider: ProviderInfo; size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" aria-hidden="true" style="flex:none">
+      <rect x="0.5" y="0.5" width="15" height="15" rx="4.2" fill={provider.color} stroke="rgba(253,246,227,0.35)" />
+      {stampMark(provider.id, provider.color)}
+    </svg>
+  );
 }

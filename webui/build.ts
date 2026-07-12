@@ -6,6 +6,10 @@ import { watch } from "node:fs";
 const ROOT = import.meta.dir;
 const OUT_PATH = `${ROOT}/../jongbench/webui_page.html`;
 const SPRITE_PATH = `${ROOT}/../assets/pai.svg`;
+// Dela Gothic One subset to ascii + the handful of kanji the UI renders,
+// and DSEG7 Classic subset to digits for the table's LED score readouts.
+const FONT_PATH = `${ROOT}/../assets/dela.woff2`;
+const LED_FONT_PATH = `${ROOT}/../assets/dseg7.woff2`;
 
 async function build(): Promise<void> {
   const result = await Bun.build({
@@ -23,6 +27,10 @@ async function build(): Promise<void> {
     if (artifact.path.endsWith(".css")) css += await artifact.text();
     else js += await artifact.text();
   }
+  const font = Buffer.from(await Bun.file(FONT_PATH).arrayBuffer()).toString("base64");
+  css = css.replace("__DELA_WOFF2__", font);
+  const led = Buffer.from(await Bun.file(LED_FONT_PATH).arrayBuffer()).toString("base64");
+  css = css.replace("__DSEG7_WOFF2__", led);
   // The sprite's #tile body rect has no fill (renders black); make it
   // transparent so the CSS tile face shows through.
   const sprite = (await Bun.file(SPRITE_PATH).text()).replace(

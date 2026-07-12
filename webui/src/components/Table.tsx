@@ -19,54 +19,87 @@ interface TableProps {
 
 const WIND_CHARS: Record<string, string> = { E: "東", S: "南", W: "西", N: "北" };
 const EMPHASIZED_ACTIONS = new Set(["riichi", "reach", "ron", "tsumo", "hora"]);
+const DORA_NEXT: Record<string, string> = { E: "S", S: "W", W: "N", N: "E", P: "F", F: "C", C: "P" };
 
 function optionsFor(pending: Pending): PendingOption[] {
   return pending.options ?? [];
 }
 
-function MeldView({ meld, size }: { meld: Meld; size: "s" | "m" }) {
+/* The tile a dora indicator points at: next rank wrapping 9->1, winds and
+   dragons cycling in their own rings. */
+function doraOf(indicator: Tile): string {
+  const match = /^([1-9])([mps])r?$/.exec(indicator);
+  if (match) return `${match[1] === "9" ? 1 : Number(match[1]) + 1}${match[2]}`;
+  return DORA_NEXT[indicator] ?? "";
+}
+
+function doraSetOf(indicators: Tile[]): Set<string> {
+  return new Set(indicators.map(doraOf));
+}
+
+function isDora(tile: Tile, dora: Set<string>): boolean {
+  return dora.has(tile.replace(/r$/, ""));
+}
+
+function MeldView({ meld, size, dora }: { meld: Meld; size: "s" | "m"; dora: Set<string> }) {
   const calledIndex = meld.from_seat === null ? -1 : meld.tiles.length - 1;
   const hidden = meld.kind === "ankan";
   return (
     <span class="seat-meld">
-      {meld.tiles.map((tile, index) => (
-        <TileView
-          key={`${tile}-${index}`}
-          tile={hidden && (index === 0 || index === meld.tiles.length - 1) ? "?" : tile}
-          size={size}
-          rotated={index === calledIndex}
-        />
-      ))}
+      {meld.tiles.map((tile, index) => {
+        const shown = hidden && (index === 0 || index === meld.tiles.length - 1) ? "?" : tile;
+        return (
+          <TileView
+            key={`${tile}-${index}`}
+            tile={shown}
+            size={size}
+            rotated={index === calledIndex}
+            dora={shown !== "?" && isDora(tile, dora)}
+          />
+        );
+      })}
     </span>
   );
 }
 
-function Pond({ discards, size, glowNewest }: { discards: Discard[]; size: "s" | "m"; glowNewest: boolean }) {
+/* Rows of six, each an independent flex line so a rotated riichi tile only
+   widens its own row — a grid column would shift the neighbouring rows too. */
+function Pond({ discards, size, glowNewest, dora }: { discards: Discard[]; size: "s" | "m"; glowNewest: boolean; dora: Set<string> }) {
   const newest = discards.length - 1;
+  const rows: Discard[][] = [];
+  for (let start = 0; start < discards.length; start += 6) rows.push(discards.slice(start, start + 6));
   return (
     <div class="pond">
-      {discards.map((discard, index) => (
-        <span
-          class={`pond-tile${glowNewest && index === newest ? " pond-newest" : ""}${discard.tsumogiri ? " pond-tsumogiri" : ""}`}
-          key={`${discard.tile}-${index}`}
-        >
-          <TileView tile={discard.tile} size={size} rotated={discard.riichi} dimmed={discard.called} />
-        </span>
+      {rows.map((row, rowIndex) => (
+        <div class="pond-row" key={rowIndex}>
+          {row.map((discard, columnIndex) => {
+            const index = rowIndex * 6 + columnIndex;
+            return (
+              <span
+                class={`pond-tile${glowNewest && index === newest ? " pond-newest" : ""}${discard.tsumogiri ? " pond-tsumogiri" : ""}`}
+                key={`${discard.tile}-${index}`}
+              >
+                <TileView tile={discard.tile} size={size} rotated={discard.riichi} dimmed={discard.called} dora={isDora(discard.tile, dora)} />
+              </span>
+            );
+          })}
+        </div>
       ))}
     </div>
   );
 }
 
-function SeatPlate({ seat, corner, dealer, active }: { seat: SeatState; corner: number; dealer: boolean; active: boolean }) {
+/* One edge of the autotable's electronic center panel: wind, player identity
+   and an LED score readout, oriented along that player's side of the square. */
+function CenterSeat({ seat, side, dealer, active }: { seat: SeatState; side: number; dealer: boolean; active: boolean }) {
   const provider = providerOfName(seat.name);
   return (
-    <div class={`seat-plate seat-plate-${corner}${dealer ? " seat-dealer" : ""}${active ? " seat-active" : ""}`}>
-      <span class="seat-wind">{WIND_CHARS[seat.wind] ?? seat.wind}</span>
-      <span class="seat-provider">{provider && <ProviderIcon provider={provider} size={14} />}</span>
-      <span class="seat-name" title={seat.name}>{seat.name}</span>
-      <span class="seat-score">{seat.score.toLocaleString()}</span>
-      {seat.riichi_declared && <span class="seat-riichi" title="Riichi" />}
-      {active && <span class="seat-thinking">…</span>}
+    <div class={`cseat cseat-${side}${dealer ? " cseat-dealer" : ""}${active ? " cseat-active" : ""}`} title={seat.name}>
+      <span class="cseat-wind">{WIND_CHARS[seat.wind] ?? seat.wind}</span>
+      {provider && <span class="cseat-icon"><ProviderIcon provider={provider} size={13} /></span>}
+      <span class="cseat-name">{provider ? provider.label : seat.name}</span>
+      {seat.riichi_declared && <span class="cseat-lamp" title="Riichi" />}
+      <span class="cseat-score">{seat.score}</span>
     </div>
   );
 }
@@ -77,6 +110,7 @@ function SeatLayer({
   isPov,
   pending,
   lastEvent,
+  dora,
   onChoose,
 }: {
   seat: SeatState;
@@ -84,6 +118,7 @@ function SeatLayer({
   isPov: boolean;
   pending: Pending | null;
   lastEvent: MjaiEvent | null;
+  dora: Set<string>;
   onChoose: (generation: number, choice: number) => void;
 }) {
   const discardOptions = pending ? optionsFor(pending).filter((option) => option.action === "discard" && option.tile) : [];
@@ -92,10 +127,11 @@ function SeatLayer({
 
   return (
     <div class={`seat-layer seat-layer-${side}`}>
-      <Pond discards={seat.discards} size={isPov ? "m" : "s"} glowNewest={justDiscarded} />
+      {seat.riichi_declared && <span class="riichi-stick" title="Riichi" />}
+      <Pond discards={seat.discards} size={isPov ? "m" : "s"} glowNewest={justDiscarded} dora={dora} />
       <div class="seat-melds">
         {seat.melds.map((meld, index) => (
-          <MeldView key={index} meld={meld} size={isPov ? "m" : "s"} />
+          <MeldView key={index} meld={meld} size={isPov ? "m" : "s"} dora={dora} />
         ))}
       </div>
       <div class="seat-hand">
@@ -107,6 +143,7 @@ function SeatLayer({
               tile={tile}
               size={isPov ? "l" : "m"}
               dimmed={canDiscard && !option}
+              dora={isDora(tile, dora)}
               onClick={option ? () => onChoose(pending!.generation, option.choice) : undefined}
             />
           );
@@ -116,30 +153,45 @@ function SeatLayer({
   );
 }
 
-function Center({ snapshot, turnSide }: { snapshot: Snapshot; turnSide: number | null }) {
+function Center({ snapshot, sides, activeSeat }: {
+  snapshot: Snapshot;
+  sides: { side: number; seat: SeatState }[];
+  activeSeat: number | null;
+}) {
   const dora: Tile[] = [
     ...snapshot.dora_indicators,
     ...Array<Tile>(Math.max(0, 5 - snapshot.dora_indicators.length)).fill("?"),
   ];
   return (
-    <section class={`center${turnSide === null ? "" : ` center-turn-${turnSide}`}`}>
+    <section class="center">
       <span class="center-wall center-wall-h center-wall-top" />
       <span class="center-wall center-wall-h center-wall-bottom" />
       <span class="center-wall center-wall-v center-wall-left" />
       <span class="center-wall center-wall-v center-wall-right" />
       <div class="center-square">
-        <div class="center-round">
-          {WIND_CHARS[snapshot.bakaze] ?? snapshot.bakaze} <b>{snapshot.kyoku}</b>
-        </div>
-        <div class="center-meta">
-          {snapshot.honba > 0 && <span>{snapshot.honba} honba</span>}
-          {snapshot.kyotaku > 0 && <span class="center-kyotaku">{snapshot.kyotaku} riichi</span>}
-          <span><b>{snapshot.tiles_left}</b> left</span>
-        </div>
-        <div class="center-dora">
-          {dora.map((tile, index) => (
-            <TileView key={`${tile}-${index}`} tile={tile} size="s" />
-          ))}
+        {sides.map(({ side, seat }) => (
+          <CenterSeat
+            key={seat.seat}
+            seat={seat}
+            side={side}
+            dealer={seat.seat === snapshot.oya}
+            active={activeSeat === seat.seat}
+          />
+        ))}
+        <div class="center-info">
+          <div class="center-round">
+            {WIND_CHARS[snapshot.bakaze] ?? snapshot.bakaze} <b>{snapshot.kyoku}</b>
+          </div>
+          <div class="center-meta">
+            {snapshot.honba > 0 && <span>{snapshot.honba} honba</span>}
+            {snapshot.kyotaku > 0 && <span class="center-kyotaku">{snapshot.kyotaku} riichi</span>}
+            <span><b>{snapshot.tiles_left}</b> left</span>
+          </div>
+          <div class="center-dora">
+            {dora.map((tile, index) => (
+              <TileView key={`${tile}-${index}`} tile={tile} size="s" />
+            ))}
+          </div>
         </div>
       </div>
     </section>
@@ -175,7 +227,7 @@ export function Table({ snapshot, lastEvent, session, pending, log, onChoose, on
   const actor = typeof lastEvent?.actor === "number" ? lastEvent.actor : null;
   const humanTurn = pending !== null && pending.seat === pov;
   const activeSeat = humanTurn ? pov : session.status === "running" ? actor : null;
-  const turnSide = activeSeat === null ? null : (activeSeat - pov + 4) % 4;
+  const dora = doraSetOf(snapshot.dora_indicators);
 
   return (
     <div class="table-root">
@@ -185,22 +237,14 @@ export function Table({ snapshot, lastEvent, session, pending, log, onChoose, on
             key={seat.seat}
             seat={seat}
             side={side}
-            isPov={side === 0}
+            isPov={side === 0 && session.human_seat !== null}
             pending={humanTurn ? pending : null}
             lastEvent={lastEvent}
+            dora={dora}
             onChoose={onChoose}
           />
         ))}
-        {sides.map(({ side, seat }) => (
-          <SeatPlate
-            key={seat.seat}
-            seat={seat}
-            corner={side}
-            dealer={seat.seat === snapshot.oya}
-            active={activeSeat === seat.seat}
-          />
-        ))}
-        <Center snapshot={snapshot} turnSide={turnSide} />
+        <Center snapshot={snapshot} sides={sides} activeSeat={activeSeat} />
         {humanTurn && <ActionBar pending={pending} onChoose={onChoose} />}
       </div>
       <div class="table-controls">

@@ -33,7 +33,7 @@ function App() {
     <>
       <header class="app-header">
         <a class="brand" href="#" onClick={() => (location.hash = "")}>
-          <span class="brand-mark">雀</span> jongbench
+          <span class="brand-mark" title="washizu tile">發</span> jongbench
         </a>
         {route.view === "run" && (
           <span class="run-id" title="run id">

@@ -25,15 +25,17 @@ interface TileProps {
   size?: "s" | "m" | "l";
   rotated?: boolean;
   dimmed?: boolean;
+  dora?: boolean;
   onClick?: () => void;
 }
 
-export function TileView({ tile, size = "m", rotated, dimmed, onClick }: TileProps) {
+export function TileView({ tile, size = "m", rotated, dimmed, dora, onClick }: TileProps) {
   const back = tile === "?";
   const classes = ["tile", `tile-${size}`];
   if (back) classes.push("tile-back");
   if (rotated) classes.push("tile-rot");
   if (dimmed) classes.push("tile-dim");
+  if (dora) classes.push("tile-dora");
   if (isRed(tile)) classes.push("tile-aka");
   if (onClick) classes.push("tile-click");
   const contents = (
