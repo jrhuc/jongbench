@@ -1,4 +1,3 @@
-import json
 import traceback
 import torch
 import numpy as np
@@ -92,45 +91,3 @@ def sample_top_p(logits, p):
     probs_sort[mask] = 0.
     sampled = probs_idx.gather(-1, probs_sort.multinomial(1)).squeeze(-1)
     return sampled
-
-class ExampleMjaiLogEngine:
-    def __init__(self, name: str):
-        self.engine_type = 'mjai-log'
-        self.name = name
-        self.player_ids = None
-
-    def set_player_ids(self, player_ids: List[int]):
-        self.player_ids = player_ids
-
-    def react_batch(self, game_states):
-        res = []
-        for game_state in game_states:
-            game_idx = game_state.game_index
-            state = game_state.state
-            events_json = game_state.events_json
-
-            events = json.loads(events_json)
-            assert events[0]['type'] == 'start_kyoku'
-
-            player_id = self.player_ids[game_idx]
-            cans = state.last_cans
-            if cans.can_discard:
-                tile = state.last_self_tsumo()
-                res.append(json.dumps({
-                    'type': 'dahai',
-                    'actor': player_id,
-                    'pai': tile,
-                    'tsumogiri': True,
-                }))
-            else:
-                res.append('{"type":"none"}')
-        return res
-
-    # They will be executed at specific events. They can be no-op but must be
-    # defined.
-    def start_game(self, game_idx: int):
-        pass
-    def end_kyoku(self, game_idx: int):
-        pass
-    def end_game(self, game_idx: int, scores: List[int]):
-        pass

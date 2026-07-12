@@ -4,6 +4,7 @@ export interface ProviderInfo {
   color: string;
   keyName: string | null;
   placeholder: string;
+  optionalKey?: boolean;
 }
 
 export const PROVIDERS: ProviderInfo[] = [
@@ -43,6 +44,49 @@ export const PROVIDERS: ProviderInfo[] = [
     placeholder: "deepseek-chat",
   },
   {
+    id: "meta",
+    label: "Meta",
+    color: "#4f7cff",
+    keyName: "meta",
+    placeholder: "muse-spark-1.1",
+  },
+  {
+    id: "kimi",
+    label: "Kimi",
+    color: "#7957d5",
+    keyName: "kimi",
+    placeholder: "kimi-k2.6",
+  },
+  {
+    id: "zai",
+    label: "Z.ai",
+    color: "#5b8def",
+    keyName: "zai",
+    placeholder: "glm-5.2",
+  },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    color: "#8b7cf6",
+    keyName: "openrouter",
+    placeholder: "openai/gpt-5.5",
+  },
+  {
+    id: "cerebras",
+    label: "Cerebras",
+    color: "#f15a24",
+    keyName: "cerebras",
+    placeholder: "gpt-oss-120b",
+  },
+  {
+    id: "local",
+    label: "Local",
+    color: "#8d97a5",
+    keyName: "compat",
+    placeholder: "model",
+    optionalKey: true,
+  },
+  {
     id: "random",
     label: "Random",
     color: "#8d97a5",
@@ -73,6 +117,9 @@ export function providerOfName(name: string): ProviderInfo | null {
   if (lowered.startsWith("gemini")) return byId("google");
   if (lowered.startsWith("grok")) return byId("xai");
   if (lowered.startsWith("deepseek")) return byId("deepseek");
+  if (lowered.startsWith("muse")) return byId("meta");
+  if (lowered.startsWith("kimi")) return byId("kimi");
+  if (lowered.startsWith("glm")) return byId("zai");
   return null;
 }
 

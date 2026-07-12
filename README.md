@@ -37,12 +37,17 @@ $ jongbench watch --models anthropic:claude-sonnet-5 openai:gpt-5.2 google:gemin
 # watch in the browser (add `human` as a model spec to take a seat yourself)
 $ jongbench watch --ui web --models anthropic:claude-sonnet-5 openai:gpt-5.2 google:gemini-3-pro human
 
-# host the web UI (visitors configure seats and bring their own keys)
+# host the web UI in the background (visitors configure seats and bring their own keys)
 $ jongbench serve --host 0.0.0.0 --port 8642
+$ jongbench serve status|stop|restart   # daemon control; logs in ~/.jongbench/serve.log
+$ jongbench serve --foreground          # run blocking in the terminal instead
 
 # re-evaluate / regenerate a report
 $ jongbench review runs/<stamp>/
 ```
+
+To run `jongbench` without activating the venv, link the entry point onto your PATH:
+`ln -sf "$(pwd)/.venv/bin/jongbench" ~/.local/bin/jongbench`.
 
 The web UI is a TypeScript app in `webui/`. Build it once with
 `cd webui && bun install && bun run build`, which emits `jongbench/webui_page.html`.
@@ -55,8 +60,10 @@ Win events in the live log and saved mjai log include ron/tsumo, base hand point
 han, fu when relevant below the limit-hand threshold, or yakuman count, plus the
 engine-calculated yaku list.
 
-Model specs: `anthropic:<model>`, `openai:<model>`, `google:<model>`,
-`compat:<base_url>:<model>` (any OpenAI-compatible endpoint), `random` (baseline).
+Model specs: `anthropic:<model>`, `openai:<model>`, `google:<model>`, `xai:<model>`,
+`deepseek:<model>`, `meta:<model>`, `kimi:<model>`, `zai:<model>`,
+`openrouter:<model>`, `cerebras:<model>`, `compat:<base_url>:<model>` (any
+OpenAI-compatible endpoint from the CLI, loopback-only in the web UI), and `random`.
 
 See `DESIGN.md` for architecture. Licensed AGPL-3.0 (inherits from vendored Mortal
 code). The Mortal weights are the community-trained

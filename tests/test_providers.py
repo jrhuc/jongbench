@@ -75,6 +75,8 @@ def test_reasoning_levels_match_provider_model_capabilities() -> None:
         ("xai", "grok-3-mini"): ["low", "high"],
         ("xai", "grok-4.3-fast"): ["off", "low", "medium", "high"],
         ("deepseek", "deepseek-reasoner"): ["off", "high", "max"],
+        ("cerebras", "gpt-oss-120b"): ["low", "medium", "high"],
+        ("cerebras", "zai-glm-4.7"): ["off"],
     }
     for (provider, model), expected in cases.items():
         assert reasoning_levels(provider, model) == expected
@@ -204,3 +206,17 @@ def test_compat_spec_preserves_url_ports() -> None:
     spec = parse_spec("compat:http://127.0.0.1:8080/v1:model-name")
     assert spec.base_url == "http://127.0.0.1:8080/v1"
     assert spec.model == "model-name"
+
+
+def test_openai_compatible_presets() -> None:
+    expected = {
+        "meta": "https://api.meta.ai/v1",
+        "kimi": "https://api.moonshot.ai/v1",
+        "zai": "https://api.z.ai/api/paas/v4",
+        "openrouter": "https://openrouter.ai/api/v1",
+        "cerebras": "https://api.cerebras.ai/v1",
+    }
+    for provider, base_url in expected.items():
+        spec = parse_spec(f"{provider}:model")
+        assert spec.provider == provider
+        assert spec.base_url == base_url

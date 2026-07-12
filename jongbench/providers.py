@@ -14,9 +14,26 @@ from urllib import request as urllib_request
 
 USAGE = (
     "Usage: anthropic:<model>, openai:<model>, google:<model>, "
-    "xai:<model>, deepseek:<model>, "
+    "xai:<model>, deepseek:<model>, meta:<model>, kimi:<model>, "
+    "zai:<model>, openrouter:<model>, cerebras:<model>, "
     "compat:<base_url>:<model>, random, or human"
 )
+
+COMPAT_BASE_URLS = {
+    "xai": "https://api.x.ai/v1",
+    "deepseek": "https://api.deepseek.com",
+    "meta": "https://api.meta.ai/v1",
+    "kimi": "https://api.moonshot.ai/v1",
+    "zai": "https://api.z.ai/api/paas/v4",
+    "openrouter": "https://openrouter.ai/api/v1",
+    "cerebras": "https://api.cerebras.ai/v1",
+}
+
+_COMPAT_ENV_KEYS = {
+    provider: f"{provider.upper()}_API_KEY" for provider in COMPAT_BASE_URLS
+}
+_COMPAT_ENV_KEYS["meta"] = "META_MODEL_API_KEY"
+_COMPAT_ENV_KEYS["kimi"] = "MOONSHOT_API_KEY"
 
 REASONING_LEVELS = (
     "off",
@@ -53,11 +70,7 @@ def parse_spec(s: str) -> ProviderSpec:
         if s.startswith(prefix) and s[len(prefix) :]:
             return ProviderSpec(provider=provider, model=s[len(prefix) :])
 
-    presets = {
-        "xai": "https://api.x.ai/v1",
-        "deepseek": "https://api.deepseek.com",
-    }
-    for provider, base_url in presets.items():
+    for provider, base_url in COMPAT_BASE_URLS.items():
         prefix = f"{provider}:"
         if s.startswith(prefix) and s[len(prefix) :]:
             return ProviderSpec(
@@ -398,26 +411,16 @@ def make_provider(
         return CompatProvider(
             spec.model, spec.base_url, api_key=api_key, reasoning=reasoning
         )
-    if spec.provider == "xai":
+    if spec.provider in COMPAT_BASE_URLS:
         if spec.base_url is None:
-            raise ValueError("xai provider requires base_url")
+            raise ValueError(f"{spec.provider} provider requires base_url")
         return CompatProvider(
             spec.model,
             spec.base_url,
             api_key=api_key,
-            env_key="XAI_API_KEY",
+            env_key=_COMPAT_ENV_KEYS[spec.provider],
             reasoning=reasoning,
-        )
-    if spec.provider == "deepseek":
-        if spec.base_url is None:
-            raise ValueError("deepseek provider requires base_url")
-        return CompatProvider(
-            spec.model,
-            spec.base_url,
-            api_key=api_key,
-            env_key="DEEPSEEK_API_KEY",
-            reasoning=reasoning,
-            reasoning_style="deepseek",
+            reasoning_style="deepseek" if spec.provider == "deepseek" else "openai",
         )
     if spec.provider == "random":
         raise ValueError("random provider is handled separately")
@@ -471,6 +474,11 @@ def reasoning_levels(
         return []
     if provider == "deepseek" and "deepseek" in model_id:
         return ["off", "high", "max"]
+    if provider == "cerebras":
+        if "gpt-oss" in model_id:
+            return ["low", "medium", "high"]
+        if "glm" in model_id:
+            return ["off"]
     return []
 
 
@@ -538,7 +546,9 @@ def _google_thinking_budget_max(model_id: str) -> int:
     return 24_576
 
 
-def list_models(provider: str, api_key: str) -> list[dict[str, Any]]:
+def list_models(
+    provider: str, api_key: str, base_url: str | None = None
+) -> list[dict[str, Any]]:
     openai_exclude = (
         "whisper",
         "tts",
@@ -684,10 +694,12 @@ def list_models(provider: str, api_key: str) -> list[dict[str, Any]]:
             if not isinstance(next_token, str) or not next_token:
                 break
             page_token = next_token
-    elif provider == "xai":
-        models = list_openai_shaped("https://api.x.ai/v1/models", "xai")
-    elif provider == "deepseek":
-        models = list_openai_shaped("https://api.deepseek.com/models", "deepseek")
+    elif provider in COMPAT_BASE_URLS:
+        models = list_openai_shaped(
+            f"{COMPAT_BASE_URLS[provider].rstrip('/')}/models", provider
+        )
+    elif provider == "compat" and base_url:
+        models = list_openai_shaped(f"{base_url.rstrip('/')}/models", "local")
     else:
         raise ValueError(f"unknown provider: {provider}")
 

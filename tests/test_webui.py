@@ -87,6 +87,11 @@ def test_web_starts_reject_custom_endpoints_and_require_request_keys() -> None:
         ("google", "google:test"),
         ("xai", "xai:test"),
         ("deepseek", "deepseek:test"),
+        ("meta", "meta:test"),
+        ("kimi", "kimi:test"),
+        ("zai", "zai:test"),
+        ("openrouter", "openrouter:test"),
+        ("cerebras", "cerebras:test"),
     ):
         try:
             webui._validate_web_start_credentials([spec] + ["random"] * 3, {})
@@ -97,6 +102,25 @@ def test_web_starts_reject_custom_endpoints_and_require_request_keys() -> None:
         webui._validate_web_start_credentials(
             [spec] + ["random"] * 3, {provider: "visitor-key"}
         )
+
+
+def test_web_local_models_are_loopback_only() -> None:
+    local = "compat:http://127.0.0.1:11434/v1:model"
+    webui._validate_web_start_credentials(
+        [local] + ["random"] * 3, {}, allow_local_endpoints=True
+    )
+    for spec in (
+        "compat:https://example.com/v1:model",
+        "compat:http://192.168.1.2:11434/v1:model",
+    ):
+        try:
+            webui._validate_web_start_credentials(
+                [spec] + ["random"] * 3, {}, allow_local_endpoints=True
+            )
+        except ValueError as exc:
+            assert "loopback" in str(exc)
+        else:
+            raise AssertionError("web start accepted a non-loopback endpoint")
 
 
 def test_preflight_distinguishes_compatibility_base_urls() -> None:

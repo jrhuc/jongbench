@@ -7,9 +7,10 @@ const modelCache = new Map<string, Promise<ModelEntry[]>>();
 
 /** Model id input that lists the provider's available models once its API key
     is entered, while always allowing free text. */
-export function ModelCombobox({ provider, apiKey, value, onChange, onModelsChange, label }: {
+export function ModelCombobox({ provider, apiKey, baseUrl, value, onChange, onModelsChange, label }: {
   provider: ProviderInfo;
   apiKey: string;
+  baseUrl?: string;
   value: string;
   onChange(value: string): void;
   onModelsChange(models: ModelEntry[] | null): void;
@@ -30,7 +31,7 @@ export function ModelCombobox({ provider, apiKey, value, onChange, onModelsChang
   useEffect(() => {
     setModels(null);
     onModelsChangeRef.current(null);
-  }, [provider.id, apiKey.trim()]);
+  }, [provider.id, apiKey.trim(), baseUrl]);
 
   useEffect(() => {
     if (!open) return;
@@ -43,21 +44,21 @@ export function ModelCombobox({ provider, apiKey, value, onChange, onModelsChang
 
   useEffect(() => {
     const key = apiKey.trim();
-    if (!key) {
+    if ((!key && provider.id !== "local") || (provider.id === "local" && !baseUrl)) {
       setModels(null);
       onModelsChangeRef.current(null);
       setLoading(false);
       setError(null);
       return;
     }
-    const cacheKey = `${provider.id}\0${key}`;
+    const cacheKey = `${provider.id}\0${baseUrl ?? ""}\0${key}`;
     let cancelled = false;
     setLoading(true);
     setError(null);
     const timer = window.setTimeout(() => {
       let pending = modelCache.get(cacheKey);
       if (!pending) {
-        pending = api.listModels(provider.id, key).catch((exc: Error) => {
+        pending = api.listModels(provider.id === "local" ? "compat" : provider.id, key, baseUrl).catch((exc: Error) => {
           modelCache.delete(cacheKey);
           throw exc;
         });
@@ -81,7 +82,7 @@ export function ModelCombobox({ provider, apiKey, value, onChange, onModelsChang
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [provider.id, apiKey.trim()]);
+  }, [provider.id, apiKey.trim(), baseUrl]);
 
   const openMenu = () => {
     setQuery("");
@@ -97,7 +98,7 @@ export function ModelCombobox({ provider, apiKey, value, onChange, onModelsChang
   })();
   const visible = filtered.slice(0, 12);
   const moreCount = filtered.length - visible.length;
-  const hasKey = apiKey.trim().length > 0;
+  const hasKey = apiKey.trim().length > 0 || provider.id === "local";
   const showOptions = hasKey && !loading && error === null && models !== null;
 
   const move = (delta: number) => {

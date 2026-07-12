@@ -26,7 +26,7 @@ const DEFAULT_SEATS: SeatDraft[] = [
   { providerId: "anthropic", model: "claude-sonnet-5", reasoning: "default", models: null },
   { providerId: "openai", model: "gpt-5.2", reasoning: "default", models: null },
   { providerId: "google", model: "gemini-3-pro", reasoning: "default", models: null },
-  { providerId: "xai", model: "grok-4", reasoning: "default", models: null },
+  { providerId: "xai", model: "grok-4.5", reasoning: "default", models: null },
 ];
 
 const REASONING_LABELS: Record<string, string> = {
@@ -47,6 +47,8 @@ function createdTime(created: number): string {
 export function Setup({ onStarted }: { onStarted(runId: string): void }) {
   const [seats, setSeats] = useState<SeatDraft[]>(DEFAULT_SEATS);
   const [keys, setKeys] = useState<Record<string, string>>({});
+  const [localBaseUrl, setLocalBaseUrl] = useState("http://127.0.0.1:11434/v1");
+  const [allowLocal, setAllowLocal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasDemo, setHasDemo] = useState(false);
@@ -57,7 +59,7 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
     [seats],
   );
   const missingKeyProviders = selectedProviders.filter(
-    (provider) => provider.keyName !== null && !keys[provider.keyName]?.trim(),
+    (provider) => provider.keyName !== null && !provider.optionalKey && !keys[provider.keyName]?.trim(),
   );
   const missingKeysMessage = missingKeyProviders.length === 0
     ? null
@@ -66,6 +68,7 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
 
   useEffect(() => {
     api.demoAvailable().then(setHasDemo);
+    api.localEndpointsAvailable().then(setAllowLocal).catch(() => {});
   }, []);
 
   const updateSeat = (index: number, providerId: string) => {
@@ -121,10 +124,13 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
     const requestKeys = Object.fromEntries(
       selectedProviders
         .filter((provider): provider is ProviderInfo & { keyName: string } => provider.keyName !== null)
-        .map((provider) => [provider.keyName, keys[provider.keyName]!.trim()]),
+        .map((provider) => [provider.keyName, (keys[provider.keyName] ?? "").trim()]),
     );
     const models = seats.map((seat) => {
       const provider = providerOf(seat.providerId);
+      if (provider.id === "local") {
+        return `compat:${localBaseUrl.trim()}:${seat.model.trim() || provider.placeholder}`;
+      }
       return provider.keyName === null ? provider.id : `${provider.id}:${seat.model.trim() || provider.placeholder}`;
     });
     api.startGame({
@@ -174,7 +180,7 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
                       label={`${windName} seat player`}
                       value={seat.providerId}
                       onChange={(providerId) => updateSeat(index, providerId)}
-                      options={PROVIDERS.map((option) => ({
+                      options={PROVIDERS.filter((option) => option.id !== "local" || allowLocal).map((option) => ({
                         value: option.id,
                         label: option.label,
                         icon: <ProviderIcon provider={option} />,
@@ -189,6 +195,7 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
                         key={seat.providerId}
                         provider={provider}
                         apiKey={provider.keyName === null ? "" : keys[provider.keyName] ?? ""}
+                        baseUrl={provider.id === "local" ? localBaseUrl : undefined}
                         value={seat.model}
                         label={`${windName} seat model`}
                         onChange={(model) => updateModel(index, model)}
@@ -222,18 +229,29 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
           <section class="setup-section keys-panel dragon-haku">
             <div class="section-heading">
               <h2><span class="dragon-glyph">白</span>Keys</h2>
-              <p>Enter a key for every selected model provider. Keys are held in memory for this game only and never logged.</p>
+              <p>Configure access for each selected provider. Keys are held in memory for this game only and never logged.</p>
             </div>
             <div class="keys-grid">
+              {selectedProviders.some((provider) => provider.id === "local") && (
+                <label class="key-field">
+                  <span>Local OpenAI-compatible URL</span>
+                  <input
+                    type="url"
+                    value={localBaseUrl}
+                    required
+                    onInput={(event) => setLocalBaseUrl(event.currentTarget.value)}
+                  />
+                </label>
+              )}
               {selectedProviders.filter((provider): provider is ProviderInfo & { keyName: string } => provider.keyName !== null).map((provider) => (
                 <label class="key-field" key={provider.id}>
                   <span><ProviderIcon provider={provider} /> {provider.label} API key</span>
                   <input
                     type="password"
                     value={keys[provider.keyName] ?? ""}
-                    placeholder="Required"
-                    required
-                    aria-invalid={!keys[provider.keyName]?.trim()}
+                    placeholder={provider.optionalKey ? "Optional" : "Required"}
+                    required={!provider.optionalKey}
+                    aria-invalid={!provider.optionalKey && !keys[provider.keyName]?.trim()}
                     onInput={(event) => setKeys((current) => ({ ...current, [provider.keyName]: event.currentTarget.value }))}
                   />
                 </label>

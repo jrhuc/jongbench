@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import arena, evaluate, providers, report
+from . import arena, daemon, evaluate, providers, report
 from .artifacts import decision_filename
 from .arena import GameSummary
 from .engines import RandomEngine, TerminalHumanIO, make_engine
@@ -357,21 +357,43 @@ def _cmd_record(args: argparse.Namespace) -> int:
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
-    try:
-        from . import webui
-    except ImportError:
-        print("web UI not built yet", file=sys.stderr)
-        return 1
-    return int(
-        webui.run_server(
-            host=args.host,
-            port=int(args.port),
-            runs_root=args.runs_root,
-            weights=args.weights,
-            demo_path=args.demo,
+    if args.action == "stop":
+        return daemon.stop()
+    if args.action == "restart":
+        return daemon.restart()
+    if args.action == "status":
+        return daemon.status()
+
+    if args.foreground:
+        try:
+            from . import webui
+        except ImportError:
+            print("web UI not built yet", file=sys.stderr)
+            return 1
+        return int(
+            webui.run_server(
+                host=args.host,
+                port=int(args.port),
+                runs_root=args.runs_root,
+                weights=args.weights,
+                demo_path=args.demo,
+            )
+            or 0
         )
-        or 0
-    )
+
+    flags = [
+        "--host",
+        args.host,
+        "--port",
+        str(int(args.port)),
+        "--runs-root",
+        str(Path(args.runs_root).resolve()),
+        "--weights",
+        str(Path(args.weights).resolve()),
+    ]
+    if args.demo:
+        flags += ["--demo", str(Path(args.demo).resolve())]
+    return daemon.start(flags, args.host, int(args.port))
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -423,7 +445,6 @@ def _build_parser() -> argparse.ArgumentParser:
     selfcheck = subparsers.add_parser("selfcheck")
     selfcheck.add_argument("--runs-root", default="runs")
     selfcheck.add_argument("--weights", default="weights/mortal.pth")
-    selfcheck.add_argument("--keep", action="store_true", help=argparse.SUPPRESS)
     selfcheck.set_defaults(func=_cmd_selfcheck)
 
     record = subparsers.add_parser("record")
@@ -433,6 +454,8 @@ def _build_parser() -> argparse.ArgumentParser:
     record.set_defaults(func=_cmd_record)
 
     serve = subparsers.add_parser("serve")
+    serve.add_argument("action", nargs="?", choices=["stop", "restart", "status"])
+    serve.add_argument("--foreground", action="store_true")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8642)
     serve.add_argument("--runs-root", default="runs")
