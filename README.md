@@ -45,6 +45,9 @@ $ jongbench serve --foreground          # run blocking in the terminal instead
 # re-evaluate / regenerate a report
 $ jongbench review runs/<stamp>/
 
+# read a model's reasoning against Mortal's verdict on the same decisions
+$ jongbench reasoning runs/<stamp>/ --worst 5
+
 # build a bank of Mortal-graded single decisions for riichi-decision-v1
 $ jongbench positions --out bank.jsonl --games 4          # from Mortal self-play
 $ jongbench positions --out bank.jsonl --from-log runs/<stamp>/logs/g0.json.gz

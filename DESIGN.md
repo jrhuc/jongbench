@@ -290,6 +290,22 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
 - verifiers does not require Prime inference: set `client.base_url` and `client.api_key_var`
   to point its client at OpenRouter like the rest of jongbench.
 
+### reasoning.py
+- `join(decisions, review, player_id)` pairs each logged decision with Mortal's verdict on
+  the same board position. `evaluate.py` grades without seeing the reasoning and the
+  decision log captures reasoning without knowing whether the move was good; joined, they
+  answer what a rating cannot — what the model was thinking when it blundered.
+- The join is by board coordinates (kyoku, honba, junme, tiles_left), which `engines.py`
+  now records using `_decision_coords`, deriving them exactly as `review_player` does. A
+  positional zip would be wrong: the logs differ in length because a furo-toggle pass never
+  reached the model and a forced action was never graded.
+- Coordinates are not unique — riichi is two decisions at one coordinate — so entries queue
+  per coordinate and pair in order. Measured join coverage on a real hanchan: 99.8%
+  (1,018 of 1,020); the remainder are decisions Mortal did not grade.
+- `summary()` contrasts mean reasoning length when the model agreed with Mortal against
+  when it did not, reported as two means rather than a correlation. `worst(n)` ranks by
+  probability lost. `jongbench reasoning <run_dir>` prints both.
+
 ### bridge.py
 - `CallbackProvider`: provider-shaped adapter that hands the newest user turn to a
   callable instead of an API. `make_bridged_engine(name, ask)` returns an `LLMEngine`

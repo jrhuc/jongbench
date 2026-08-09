@@ -32,6 +32,34 @@ class _Conversation:
 _DECLINABLE = {"none", "chi", "pon", "daiminkan"}
 
 
+_BAKAZE_ORDER = {"E": 0, "S": 1, "W": 2, "N": 3}
+
+
+def _decision_coords(player_id: int, events: list[dict[str, Any]]) -> dict[str, int]:
+    """Where on the board this decision happened, in `evaluate`'s coordinates.
+
+    `kyoku` is the absolute hand number, `junme` counts this seat's own turns, and
+    `tiles_left` counts down from 70 — each derived the same way `review_player` derives
+    it, so the two sides join without a positional guess.
+    """
+    kyoku = honba = 0
+    for event in events:
+        if event.get("type") == "start_kyoku":
+            kyoku = _BAKAZE_ORDER.get(str(event.get("bakaze")), 0) * 4 + int(
+                event.get("kyoku", 1)
+            ) - 1
+            honba = int(event.get("honba", 0))
+            break
+    junme = sum(
+        1
+        for event in events
+        if event.get("actor") == player_id
+        and event.get("type") in {"tsumo", "chi", "pon"}
+    )
+    tiles_left = 70 - sum(1 for event in events if event.get("type") == "tsumo")
+    return {"kyoku": kyoku, "honba": honba, "junme": junme, "tiles_left": tiles_left}
+
+
 def _kyoku_id(events: list[dict[str, Any]]) -> tuple[Any, ...] | None:
     for event in events:
         if event.get("type") == "start_kyoku":
@@ -366,6 +394,9 @@ class LLMEngine(BaseEngine):
             "ts": time.time(),
             "player_id": player_id,
             "kyoku_events_len": len(events),
+            # Board coordinates computed exactly as evaluate.review_player computes them,
+            # so a decision can be joined to Mortal's verdict on it.
+            **_decision_coords(player_id, events),
             "menu": labels,
             "choice": choice,
             "choice_label": labels[choice],

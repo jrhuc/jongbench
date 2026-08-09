@@ -280,6 +280,68 @@ def _cmd_review(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_reasoning(args: argparse.Namespace) -> int:
+    from jongbench import reasoning as reasoning_module
+
+    run_dir = Path(args.run_dir)
+    review_paths = sorted((run_dir / "review").glob("*.json"), key=_log_sort_key)
+    if not review_paths:
+        print(f"no reviews in {run_dir / 'review'}; run `jongbench review` first")
+        return 1
+
+    decisions_by_name: dict[str, list[dict[str, Any]]] = {}
+    for path in (run_dir / "decisions").glob("*.jsonl"):
+        with path.open() as handle:
+            decisions_by_name[path.stem] = [
+                json.loads(line) for line in handle if line.strip()
+            ]
+    if not decisions_by_name:
+        print(f"no decision logs in {run_dir / 'decisions'} (were all seats random?)")
+        return 1
+
+    joined_any = False
+    for path in review_paths:
+        data = _read_json(path)
+        for player_id, player in sorted((data.get("players") or {}).items()):
+            name = str(player.get("name", ""))
+            records = decisions_by_name.get(decision_filename(name).removesuffix(".jsonl"))
+            if not records:
+                continue
+            joined = reasoning_module.join(
+                records, player.get("review") or {}, player_id=int(player_id)
+            )
+            if not joined.decisions:
+                continue
+            joined_any = True
+            summary = joined.summary()
+            print(f"\n{path.stem} P{player_id} {name}")
+            print(
+                f"  joined {summary['joined']}/{summary['logged']} decisions "
+                f"({summary['coverage']:.1%}); {summary['with_reasoning']} carry reasoning"
+            )
+            if summary["with_reasoning"]:
+                print(
+                    f"  reasoning chars: {summary['mean_reasoning_chars']:.0f} mean; "
+                    f"{summary['mean_reasoning_chars_when_matching_mortal']:.0f} when "
+                    f"agreeing with Mortal, "
+                    f"{summary['mean_reasoning_chars_when_not']:.0f} when not"
+                )
+            for decision in joined.worst(args.worst):
+                print(
+                    f"    kyoku {decision.kyoku} junme {decision.junme:2d}  "
+                    f"played {decision.choice_label[:28]:28s} "
+                    f"lost {decision.prob_loss:.2f}"
+                )
+                if decision.reasoning:
+                    snippet = " ".join(decision.reasoning.split())[: args.chars]
+                    print(f"      {snippet}")
+
+    if not joined_any:
+        print("no decisions could be joined to a review")
+        return 1
+    return 0
+
+
 def _cmd_positions(args: argparse.Namespace) -> int:
     import gzip
     import tempfile
@@ -489,6 +551,12 @@ def _build_parser() -> argparse.ArgumentParser:
     selfcheck.add_argument("--runs-root", default="runs")
     selfcheck.add_argument("--weights", default="weights/mortal.pth")
     selfcheck.set_defaults(func=_cmd_selfcheck)
+
+    reasoning_cmd = subparsers.add_parser("reasoning")
+    reasoning_cmd.add_argument("run_dir")
+    reasoning_cmd.add_argument("--worst", type=int, default=5)
+    reasoning_cmd.add_argument("--chars", type=int, default=300)
+    reasoning_cmd.set_defaults(func=_cmd_reasoning)
 
     positions_cmd = subparsers.add_parser("positions")
     positions_cmd.add_argument("--out", default="bank.jsonl")
