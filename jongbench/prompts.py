@@ -61,15 +61,74 @@ Rules: Tenhou-style four-player hanchan, red fives, and open tanyao allowed.
 Play to maximize final placement, not just hand value.
 Balance speed, value, defense, dealer pressure, riichi sticks, honba, and endgame standings.
 Do not assume hidden information beyond your hand and public table state.
+
+NOTATION
 Every concealed tile is written separately. Suited tiles use 1m-9m, 1p-9p, and 1s-9s.
 Red fives are written as 5m(red), 5p(red), and 5s(red); they are still rank 5.
 Honors: E S W N are winds; P F C are white, green, and red dragons.
-A dora indicator is not itself dora; the next tile in its cycle is dora. Dora alone is not a yaku.
+A discard marked ' was drawn and immediately discarded; one marked * declared riichi.
+
+HAND STRUCTURE
+A standard complete hand has four melds and one pair; listed melds are already complete.
+A meld is a run of three consecutive tiles in one suit or a triplet of identical tiles.
+Runs cannot wrap 9-1 and honors form no runs. The exceptions to the four-melds-and-a-pair
+shape are chiitoitsu (seven distinct pairs) and kokushi musou.
+
+YAKU
+A winning hand needs at least one yaku. Dora is not a yaku: a hand with only dora cannot win.
+Closed only: riichi 1, ippatsu 1, menzen tsumo 1, pinfu 1, iipeiko 1, ryanpeikou 3,
+chiitoitsu 2, and the closed-hand-only yakuman below.
+Any hand: tanyao 1 (no terminals or honors), yakuhai 1 per set of dragons, seat wind, or
+round wind, haitei/houtei 1, rinshan 1, chankan 1, toitoi 2, sanankou 2, sanshoku doukou 2,
+sankantsu 2, honroutou 2, shousangen 2 (plus its yakuhai).
+Losing one han when open: sanshoku doujun 2, ittsuu 2, chanta 2, junchan 3, honitsu 3,
+chinitsu 6.
+Yakuman: kokushi musou, suuankou, daisangen, shousuushii, daisuushii, tsuuiisou,
+chinroutou, ryuuiisou, chuuren poutou, suukantsu.
+A dora indicator is not itself dora; the next tile in its cycle is dora, wrapping 9 to 1,
+E-S-W-N-E, and P-F-C-P. Red fives are each one extra dora.
+
+WAITS
+Ryanmen waits on both ends of two consecutive tiles (8 tiles live). Kanchan waits on the
+inside of a gap and penchan on the one end a 12 or 89 partial run allows (4 tiles each).
+Shanpon holds two pairs and waits to triple either (4 tiles). Tanki waits on a lone tile
+to pair it (3 tiles). A ryanmen that would complete a run only outside 1-9 is still a
+ryanmen. Chiitoitsu is always a tanki wait.
+
+SCORING
+Non-dealer ron: mangan 8000 at 5 han (also 4 han 30 fu and 3 han 60 fu), haneman 12000 at
+6-7, baiman 16000 at 8-10, sanbaiman 24000 at 11-12, yakuman 32000 at 13+.
+Dealer wins pay 1.5x those amounts and the dealer repeats. Each riichi stick on the table
+goes to the winner; each honba adds 300 to a ron and 100 per player to a tsumo.
+Fu below mangan starts at 20, plus 10 for a closed ron, 2 for a tsumo, and 2 for a kanchan,
+penchan or tanki wait. Triplets add 2 open or 4 closed, doubled for terminals and honors,
+and kans add four times the matching triplet. A yakuhai pair adds 2. The total rounds up to
+the next 10. Pinfu is a flat 20 fu on ron and 30 by closed tsumo; chiitoitsu is always 25.
+
+CALLS AND RIICHI
+Chi, pon and open kan reveal the meld and end a closed hand: riichi, menzen tsumo, ippatsu
+and pinfu are then unavailable, and the yaku above marked as losing a han are reduced.
+Chi may only take the discard of the player to your left. Pon and kan may take any discard.
+Closed kan keeps the hand closed. Every kan flips a new dora indicator.
+Riichi requires a closed tenpai hand and 1000 points, and locks your discards: after
+declaring you must discard every tile you draw unless it completes the hand or a closed kan
+that does not change the wait.
+Passing an available ron causes temporary furiten until your next discard, or permanent
+furiten for the rest of the hand if you have declared riichi. You are also permanently
+furiten while any tile of your own wait sits in your own discards.
+
+DRAWS
+When the wall runs out the hand is drawn. Players tenpai at that point are paid by those
+who are not, splitting 3000 between them: one tenpai player takes 3000, two take 1500 each,
+three take 1000 each. The dealer repeats if the dealer was tenpai. A player whose discards
+are all terminals and honours, none of them called, instead scores nagashi mangan.
+The hand also aborts when the first four discards are the same wind, and when a fourth kan
+is declared by more than one player.
+
+THIS PROMPT
 All listed actions are legal. A win option is listed only when the hand may legally win now.
 Structural tenpai and waits do not by themselves guarantee a yaku or legal win.
-Passing an available ron causes temporary furiten, or permanent furiten after riichi.
 Riichi is a two-step action: choose riichi first, then choose a legal discard in the next prompt.
-A standard complete hand has four melds and one pair; listed melds are already complete.
 Reason internally. Reply with exactly one JSON object of the form {"choice": N} and no prose."""
 
 
@@ -125,9 +184,21 @@ def render_state(
             f"melds {meld_text}; discards {discard_text}"
         )
 
+    lines.append(render_hand(player_id, state, events))
+
+    recent = [_event_words(ev) for ev in events[-3:]]
+    if recent:
+        lines.append("Last events: " + "; ".join(recent))
+
+    return "\n".join(lines)
+
+
+def render_hand(player_id: int, state: Any, events: list[dict[str, Any]]) -> str:
+    """`events` need only reach back to this seat's last draw; the meld count comes from
+    the state, so a delta slice renders the same line a full history would."""
+    meld_count = len(state.chis) + len(state.pons) + len(state.minkans) + len(state.ankans)
     hand_tiles = tiles_from_counts(list(state.tehai), list(state.akas_in_hand))
-    meld_count = len(melds[player_id])
-    hand_line = (
+    line = (
         f"Your concealed hand ({len(hand_tiles)} tiles; "
         f"{meld_count} completed melds): "
         f"{_format_tiles(hand_tiles)}"
@@ -139,14 +210,8 @@ def render_state(
     ):
         drawn = state.last_self_tsumo() or events[-1].get("pai")
         if drawn:
-            hand_line += f"; just drew: {_prompt_tile(str(drawn))}"
-    lines.append(hand_line)
-
-    recent = [_event_words(ev) for ev in events[-3:]]
-    if recent:
-        lines.append("Last events: " + "; ".join(recent))
-
-    return "\n".join(lines)
+            line += f"; just drew: {_prompt_tile(str(drawn))}"
+    return line
 
 
 def render_menu(
@@ -188,6 +253,38 @@ def build_user_prompt(
     lines.extend(
         ["", 'Reply with exactly: {"choice": N}'],
     )
+    return "\n".join(lines)
+
+
+def build_followup_prompt(
+    player_id: int,
+    state: Any,
+    new_events: list[dict[str, Any]],
+    menu: list[dict[str, Any]],
+    error_feedback: str | None = None,
+    *,
+    state_hints: bool = False,
+) -> str:
+    """A later turn of a per-kyoku conversation: only what changed since this seat last
+    acted. The opening turn carried the whole board, and the transcript above still holds
+    it, so resending it would only cost tokens and break the cached prefix."""
+    lines = []
+    narrated = [_event_words(ev) for ev in new_events]
+    lines.append("Since your last action: " + ("; ".join(narrated) if narrated else "nothing"))
+    lines.append(render_hand(player_id, state, new_events))
+    if state_hints:
+        lines.extend(_state_hint_lines(state))
+    lines.extend(
+        ["", "Choose your action:", render_menu(menu, state=state, state_hints=state_hints)]
+    )
+    if error_feedback:
+        lines.extend(
+            [
+                "",
+                f"Your previous reply was invalid: {error_feedback}. Reply again, following the format.",
+            ]
+        )
+    lines.extend(["", 'Reply with exactly: {"choice": N}'])
     return "\n".join(lines)
 
 

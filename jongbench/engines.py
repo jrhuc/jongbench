@@ -8,12 +8,29 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from typing import Any
 
 from . import actions, prompts, providers
 
 
 DecisionSink = list[dict[str, Any]] | Callable[[dict[str, Any]], None]
+
+
+@dataclass
+class _Conversation:
+    """One seat's running transcript for one kyoku."""
+
+    kyoku: tuple[Any, ...] | None
+    messages: list[dict[str, Any]] = field(default_factory=list)
+    seen_events: int = 0
+
+
+def _kyoku_id(events: list[dict[str, Any]]) -> tuple[Any, ...] | None:
+    for event in events:
+        if event.get("type") == "start_kyoku":
+            return (event.get("bakaze"), event.get("kyoku"), event.get("honba"))
+    return None
 
 
 class GameAborted(RuntimeError):
@@ -65,7 +82,9 @@ class BaseEngine(ABC):
             raise GameAborted("game aborted")
 
         reactions: list[dict[str, Any] | None] = [None] * len(game_states)
-        jobs: list[tuple[int, int, Any, list[dict[str, Any]], list[actions.MenuItem]]] = []
+        jobs: list[
+            tuple[int, int, int, Any, list[dict[str, Any]], list[actions.MenuItem]]
+        ] = []
 
         for index, game_state in enumerate(game_states):
             game_index = int(game_state.game_index)
@@ -81,19 +100,23 @@ class BaseEngine(ABC):
             elif len(menu) == 1 and self.auto_choose_single_menu:
                 reactions[index] = menu[0]["event"]
             else:
-                jobs.append((index, player_id, game_state.state, events, menu))
+                jobs.append((index, game_index, player_id, game_state.state, events, menu))
 
         if jobs:
             if self.concurrency == 1 or len(jobs) == 1:
-                for index, player_id, state, events, menu in jobs:
-                    reactions[index] = self.decide(player_id, state, events, menu)
+                for index, game_index, player_id, state, events, menu in jobs:
+                    reactions[index] = self.decide(
+                        player_id, state, events, menu, game_index=game_index
+                    )
             else:
                 with ThreadPoolExecutor(max_workers=self.concurrency) as executor:
                     futures = [
-                        executor.submit(self.decide, player_id, state, events, menu)
-                        for _, player_id, state, events, menu in jobs
+                        executor.submit(
+                            self.decide, player_id, state, events, menu, game_index=game_index
+                        )
+                        for _, game_index, player_id, state, events, menu in jobs
                     ]
-                    for (index, _, _, _, _), future in zip(jobs, futures, strict=True):
+                    for (index, *_), future in zip(jobs, futures, strict=True):
                         reactions[index] = future.result()
 
         if self.cancel_event is not None and self.cancel_event.is_set():
@@ -128,6 +151,7 @@ class BaseEngine(ABC):
         state: Any,
         events: list[dict[str, Any]],
         menu: list[actions.MenuItem],
+        game_index: int = 0,
     ) -> dict[str, Any]:
         raise NotImplementedError
 
@@ -152,6 +176,7 @@ class RandomEngine(BaseEngine):
         state: Any,
         events: list[dict[str, Any]],
         menu: list[actions.MenuItem],
+        game_index: int = 0,
     ) -> dict[str, Any]:
         del player_id, state, events
         for item in menu:
@@ -176,6 +201,7 @@ class LLMEngine(BaseEngine):
         concurrency: int = 4,
         state_hints: bool = True,
         reasoning: str | None = None,
+        conversational: bool = True,
     ) -> None:
         super().__init__(name, spectator=spectator, concurrency=concurrency)
         self.spec = providers.parse_spec(spec_str)
@@ -199,7 +225,10 @@ class LLMEngine(BaseEngine):
             "fallbacks": 0,
             "retries": 0,
         }
+        self.conversational = bool(conversational)
         self._log_lock = threading.Lock()
+        self._conversations: dict[int, _Conversation] = {}
+        self._conversation_lock = threading.Lock()
 
     def decide(
         self,
@@ -207,17 +236,24 @@ class LLMEngine(BaseEngine):
         state: Any,
         events: list[dict[str, Any]],
         menu: list[actions.MenuItem],
+        game_index: int = 0,
     ) -> dict[str, Any]:
         started = time.perf_counter()
         labels = [str(item["label"]) for item in menu]
         prompt_events = _prompt_safe_events(events)
-        prompt = prompts.build_user_prompt(
-            player_id,
-            state,
-            prompt_events,
-            menu,
-            state_hints=self.state_hints,
-        )
+        history, opening = self._open_turn(game_index, prompt_events)
+        if opening:
+            prompt = prompts.build_user_prompt(
+                player_id, state, prompt_events, menu, state_hints=self.state_hints
+            )
+        else:
+            prompt = prompts.build_followup_prompt(
+                player_id,
+                state,
+                prompt_events[history.seen_events :],
+                menu,
+                state_hints=self.state_hints,
+            )
         raw_response = ""
         raw_reasoning = ""
         served_by: str | None = None
@@ -227,13 +263,22 @@ class LLMEngine(BaseEngine):
         fallback: str | None = None
         choice: int | None = None
 
-        def complete_once(user_prompt: str) -> providers.Completion:
+        def complete_once(user_prompt: str, *, correcting: bool = False) -> providers.Completion:
             nonlocal calls, raw_response, raw_reasoning, served_by
             calls += 1
+            turns = list(history.messages)
+            if correcting:
+                turns += [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": raw_response or "(no reply)"},
+                ]
+            # The breakpoint rides the newest user turn: everything above it is a stable
+            # append-only prefix, so each turn reads what the previous turn wrote.
+            turns.append({"role": "user", "content": providers.cacheable(user_prompt)})
             result = self.provider.complete(
                 [
                     {"role": "system", "content": providers.cacheable(prompts.SYSTEM)},
-                    {"role": "user", "content": user_prompt},
+                    *turns,
                 ],
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
@@ -260,16 +305,12 @@ class LLMEngine(BaseEngine):
                 choice = prompts.extract_choice(raw_response, len(menu))
             except ValueError as exc:
                 retries = 1
-                retry_prompt = prompts.build_user_prompt(
-                    player_id,
-                    state,
-                    prompt_events,
-                    menu,
-                    error_feedback=str(exc),
-                    state_hints=self.state_hints,
+                retry_prompt = (
+                    f"Your previous reply was invalid: {exc}. "
+                    'Reply again with exactly: {"choice": N}'
                 )
                 try:
-                    complete_once(retry_prompt)
+                    complete_once(retry_prompt, correcting=True)
                     choice = prompts.extract_choice(raw_response, len(menu))
                 except ValueError as retry_exc:
                     fallback = f"invalid_choice:{retry_exc}"
@@ -281,6 +322,10 @@ class LLMEngine(BaseEngine):
             if fallback is None:
                 fallback = "invalid_choice"
 
+        # The transcript records what was actually played, fallbacks included, so the
+        # seat's next turn reasons from the real board rather than an answer it never gave.
+        self._close_turn(history, prompt, choice, len(prompt_events))
+
         latency_ms = (time.perf_counter() - started) * 1000.0
         record = {
             "ts": time.time(),
@@ -289,7 +334,7 @@ class LLMEngine(BaseEngine):
             "menu": labels,
             "choice": choice,
             "choice_label": labels[choice],
-            "prompt_version": 2,
+            "prompt_version": 3,
             "state_hints": self.state_hints,
             "fallback": fallback,
             "raw_response": raw_response[:4000],
@@ -301,6 +346,34 @@ class LLMEngine(BaseEngine):
         }
         self._record_decision(record, calls, usage_total, fallback is not None, retries)
         return menu[choice]["event"]
+
+    def _open_turn(
+        self, game_index: int, events: list[dict[str, Any]]
+    ) -> tuple[_Conversation, bool]:
+        """This seat's live conversation for the current kyoku, and whether it is new.
+        A kyoku is the natural span: the board resets, so carrying the previous hand's
+        transcript would cost tokens and invite the model to reason from a dead board."""
+        kyoku = _kyoku_id(events)
+        if not self.conversational:
+            return _Conversation(kyoku=kyoku), True
+        with self._conversation_lock:
+            history = self._conversations.get(game_index)
+            if history is None or history.kyoku != kyoku:
+                history = _Conversation(kyoku=kyoku)
+                self._conversations[game_index] = history
+            return history, not history.messages
+
+    def _close_turn(
+        self, history: _Conversation, prompt: str, choice: int, seen_events: int
+    ) -> None:
+        if not self.conversational:
+            return
+        with self._conversation_lock:
+            history.messages.append({"role": "user", "content": prompt})
+            history.messages.append(
+                {"role": "assistant", "content": json.dumps({"choice": choice})}
+            )
+            history.seen_events = seen_events
 
     def _record_decision(
         self,
@@ -428,5 +501,6 @@ class HumanEngine(BaseEngine):
         state: Any,
         events: list[dict[str, Any]],
         menu: list[actions.MenuItem],
+        game_index: int = 0,
     ) -> dict[str, Any]:
         return self.io.ask(player_id, state, events, menu)

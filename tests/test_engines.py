@@ -32,7 +32,14 @@ class FakeProvider:
         temperature: float | None = None,
     ) -> providers.Completion:
         del max_tokens, temperature
-        user = next(m["content"] for m in reversed(messages) if m["role"] == "user")
+        content = next(m["content"] for m in reversed(messages) if m["role"] == "user")
+        # The newest turn carries a cache breakpoint, so its content is a block list.
+        # Each turn is checked as it is sent, so checking the newest covers every turn.
+        user = (
+            content
+            if isinstance(content, str)
+            else "".join(block["text"] for block in content)
+        )
         with self._lock:
             self.calls.append(
                 {
@@ -72,6 +79,7 @@ class RecordingLLMEngine(LLMEngine):
         state: Any,
         events: list[dict[str, Any]],
         menu: list[dict[str, Any]],
+        game_index: int = 0,
     ) -> dict[str, Any]:
         copied = copy.deepcopy(events)
         self.event_records.append((player_id, copied))
@@ -79,7 +87,7 @@ class RecordingLLMEngine(LLMEngine):
         _CONTEXT.events_len = len(events)
         _CONTEXT.start_key = _start_key(events)
         try:
-            return super().decide(player_id, state, events, menu)
+            return super().decide(player_id, state, events, menu, game_index=game_index)
         finally:
             for attr in ("player_id", "events_len", "start_key"):
                 try:
@@ -209,7 +217,7 @@ def test_full_game_no_hidden_leak() -> None:
             for record in log
         )
         assert all(record["raw_reasoning"] == "considered the wall" for record in log)
-        assert all(record["prompt_version"] == 2 for record in log)
+        assert all(record["prompt_version"] == 3 for record in log)
         assert all(record["state_hints"] is True for record in log)
         assert all(
             record["choice_label"] == record["menu"][record["choice"]]
