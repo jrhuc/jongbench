@@ -109,6 +109,21 @@ def test_missing_bank_names_the_command_that_builds_one(tmp_path) -> None:
         list(taskset.load())
 
 
+def test_shipped_sample_bank_runs_out_of_the_box() -> None:
+    """The default config needs no bank-building step: 128 committed positions."""
+    from riichi_decision_v1.taskset import SAMPLE_BANK
+
+    taskset = RiichiDecisionTaskset(RiichiDecisionConfig())
+    assert Path(taskset.config.bank) == SAMPLE_BANK
+    tasks = list(taskset.load())
+    assert len(tasks) == 128
+    for task in tasks:
+        assert "Choose your action:" in (task.data.prompt or "")
+        assert len(task.data.menu) == len(task.data.rewards) >= 2
+        assert all(0.0 <= reward <= 1.0 for reward in task.data.rewards)
+        assert task.data.rewards[task.data.best_index] == max(task.data.rewards)
+
+
 def test_a_real_bank_round_trips_through_the_taskset(tmp_path) -> None:
     """The bank the CLI writes must be loadable verbatim: Position -> JSON -> task."""
     position = positions.Position.from_dict(_position())

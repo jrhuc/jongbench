@@ -78,9 +78,14 @@ class FakeAgents:
 
 
 @pytest.fixture(scope="module")
-def played():
+def episode_dir(tmp_path_factory) -> Path:
+    return tmp_path_factory.mktemp("hanchan-episodes")
+
+
+@pytest.fixture(scope="module")
+def played(episode_dir):
     env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
-    env.config = RiichiHanchanEnvConfig()
+    env.config = RiichiHanchanEnvConfig(log_dir=str(episode_dir))
     agents = FakeAgents()
     task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
     asyncio.run(env.run(task, agents))
@@ -131,6 +136,28 @@ def test_each_seat_records_its_own_play(played) -> None:
         assert interaction.trace.info["hanchan"]["seat"] == name
         assert interaction.trace.metrics["decisions"] == len(interaction.prompts)
         assert interaction.trace.metrics["fallbacks"] == 0.0
+
+
+def test_episode_persists_as_a_jongbench_run_dir(played, episode_dir) -> None:
+    import json
+
+    run_dir = episode_dir / "hanchan-00000"
+    logs = list((run_dir / "logs").glob("*.json.gz"))
+    assert len(logs) == 1, "expected the arena to write the mjai log"
+
+    config = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+    assert config["names"] == list(SEATS)
+    assert sorted(config["final"]["placements"].values()) == [1, 2, 3, 4]
+
+    for name, interaction in zip(SEATS, played.interactions, strict=True):
+        lines = [
+            json.loads(line)
+            for line in (run_dir / "decisions" / f"{name}.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        assert len(lines) == len(interaction.prompts)
+        assert all("choice" in record for record in lines)
 
 
 def test_taskset_is_an_infinite_seeded_generator() -> None:

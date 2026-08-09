@@ -202,6 +202,7 @@ def _cmd_watch(args: argparse.Namespace) -> int:
             weights=args.weights,
             no_eval=bool(args.no_eval),
             state_hints=bool(args.state_hints),
+            label=args.label,
         )
         print(f"run: {run_dir}")
         return 0
@@ -373,16 +374,36 @@ def _cmd_positions(args: argparse.Namespace) -> int:
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    written = 0
+    extracted: list[Any] = []
     with out.open("w") as handle:
         for events in logs:
             for position in positions_module.extract_positions(events, engine):
                 handle.write(json.dumps(position.to_dict(), separators=(",", ":")) + "\n")
-                written += 1
+                extracted.append(position)
 
     source = "logs" if args.from_log else args.source
-    print(f"wrote {written} positions from {len(logs)} game(s) ({source}) to {out}")
+    print(f"wrote {len(extracted)} positions from {len(logs)} game(s) ({source}) to {out}")
+    for line in _bank_baselines(extracted):
+        print(line)
     return 0
+
+
+def _bank_baselines(extracted: Sequence[Any]) -> list[str]:
+    """Reference points that make a taskset score on this bank readable: a model's
+    q_advantage only means something relative to guessing."""
+    if not extracted:
+        return []
+    count = len(extracted)
+    mean_options = sum(len(p.rewards) for p in extracted) / count
+    random_reward = sum(sum(p.rewards) / len(p.rewards) for p in extracted) / count
+    random_match = sum(1 / len(p.rewards) for p in extracted) / count
+    first_reward = sum(p.rewards[0] for p in extracted) / count
+    return [
+        f"  mean legal options      {mean_options:.1f}",
+        f"  uniform-random baseline {random_reward:.3f} reward, {random_match:.1%} match",
+        f"  always-first-option     {first_reward:.3f} reward",
+        "  Mortal's own choice     1.000 reward by construction",
+    ]
 
 
 def _cmd_selfcheck(args: argparse.Namespace) -> int:

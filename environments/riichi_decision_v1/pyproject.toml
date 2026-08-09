@@ -2,6 +2,7 @@
 name = "riichi-decision-v1"
 version = "0.1.0"
 description = "Score a model against Mortal on single riichi mahjong decisions"
+readme = "README.md"
 requires-python = ">=3.12"
 license = "AGPL-3.0-or-later"
 dependencies = ["verifiers", "jongbench"]
@@ -12,3 +13,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["riichi_decision_v1"]
+
+[tool.setuptools.package-data]
+riichi_decision_v1 = ["sample_bank.jsonl.gz"]

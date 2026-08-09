@@ -15,12 +15,17 @@ Build a bank with `jongbench positions --out bank.jsonl`; the tasks are pure tra
 scoring, so no runtime and no Mortal checkpoint are needed to evaluate against it.
 """
 
+import gzip
 import json
 from collections.abc import Iterator
 from pathlib import Path
 
 import verifiers.v1 as vf
 from jongbench import positions, prompts
+
+SAMPLE_BANK = Path(__file__).with_name("sample_bank.jsonl.gz")
+"""128 positions from Mortal self-play, shipped so the taskset runs out of the box.
+Uniform-random guessing scores 0.367 reward / 18.9% match on it; Mortal scores 1.0."""
 
 
 class RiichiDecisionData(vf.TaskData):
@@ -66,8 +71,10 @@ class RiichiDecisionTask(vf.Task[RiichiDecisionData]):
 
 
 class RiichiDecisionConfig(vf.TasksetConfig):
-    bank: str = "bank.jsonl"
-    """Path to a position bank, one `jongbench.positions.Position` JSON per line."""
+    bank: str = str(SAMPLE_BANK)
+    """Path to a position bank (`.jsonl` or `.jsonl.gz`), one
+    `jongbench.positions.Position` JSON per line. Defaults to the shipped
+    128-position sample; build a bigger one with `jongbench positions`."""
     state_hints: bool = True
     """Include rule-derived shanten, waits and furiten, as the CLI does by default."""
 
@@ -78,9 +85,11 @@ class RiichiDecisionTaskset(vf.Taskset[RiichiDecisionTask, RiichiDecisionConfig]
         if not path.exists():
             raise FileNotFoundError(
                 f"no position bank at {path}. Build one with "
-                f"`jongbench positions --out {path}`"
+                f"`jongbench positions --out {path}`, or use the shipped sample: "
+                f"{SAMPLE_BANK}"
             )
-        with path.open() as handle:
+        opener = gzip.open if path.suffix == ".gz" else open
+        with opener(path, "rt", encoding="utf-8") as handle:
             for idx, line in enumerate(handle):
                 line = line.strip()
                 if not line:

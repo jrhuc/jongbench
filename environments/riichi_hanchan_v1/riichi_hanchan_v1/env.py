@@ -18,10 +18,14 @@ comparison use riichi-decision-v1, which grades single positions against Mortal.
 """
 
 import asyncio
+import json
 from collections.abc import Iterator
+from datetime import datetime, timezone
 from itertools import count
+from pathlib import Path
 
 from jongbench import arena, bridge, engines, prompts
+from jongbench.artifacts import decision_filename
 
 import verifiers.v1 as vf
 
@@ -48,12 +52,22 @@ class RiichiHanchanEnvConfig(vf.EnvConfig):
     seat3: vf.AgentConfig = vf.AgentConfig(harness={"id": "null"})
     state_hints: bool = True
     """Give seats rule-derived shanten, waits and furiten, as the CLI does by default."""
+    log_dir: str | None = None
+    """Persist each episode as a jongbench run dir - mjai log, per-seat decision logs,
+    config.json - so `jongbench review` and `jongbench reasoning` grade the rollout
+    afterwards with the Mortal checkpoint."""
 
 
 class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
     async def run(self, task, agents) -> None:
         loop = asyncio.get_running_loop()
         seed = int(task.data.info["seed"])
+        episode_dir: Path | None = None
+        if self.config.log_dir:
+            episode_dir = Path(self.config.log_dir) / f"hanchan-{task.data.idx:05d}"
+            (episode_dir / "logs").mkdir(parents=True, exist_ok=True)
+            (episode_dir / "decisions").mkdir(parents=True, exist_ok=True)
+            (episode_dir / "review").mkdir(parents=True, exist_ok=True)
         seat_tasks = [
             vf.Task(
                 vf.TaskData(
@@ -104,10 +118,16 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
             # One hanchan per episode: a single engine driving several games at once would
             # interleave their turns into one conversation.
             summaries = await asyncio.to_thread(
-                arena.run_games, seats, 1, (seed, 1), None
+                arena.run_games,
+                seats,
+                1,
+                (seed, 1),
+                str(episode_dir / "logs") if episode_dir else None,
             )
 
         summary = summaries[0]
+        if episode_dir is not None:
+            _write_episode_artifacts(episode_dir, seed, summary, logs, self.config)
         scores = dict(zip(summary.names, summary.scores, strict=True))
         for index, name in enumerate(SEATS):
             placement = summary.placements[name]
@@ -128,6 +148,44 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
                 "seed": seed,
                 "seat_order": list(summary.names),
             }
+
+
+def _write_episode_artifacts(
+    episode_dir: Path,
+    seed: int,
+    summary: arena.GameSummary,
+    logs: list[list[dict]],
+    config: RiichiHanchanEnvConfig,
+) -> None:
+    for name, decisions in zip(SEATS, logs, strict=True):
+        path = episode_dir / "decisions" / decision_filename(name)
+        with path.open("w", encoding="utf-8") as handle:
+            for record in decisions:
+                handle.write(
+                    json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+                )
+    (episode_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "label": episode_dir.name,
+                "created": datetime.now(timezone.utc).isoformat(),
+                "models": list(SEATS),
+                "names": list(SEATS),
+                "games": 1,
+                "seed_start": [seed, 1],
+                "state_hints": bool(config.state_hints),
+                "final": {
+                    "names": list(summary.names),
+                    "scores": list(summary.scores),
+                    "placements": dict(summary.placements),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
 
 
 class RiichiHanchanTaskset(vf.Taskset[RiichiHanchanTask, RiichiHanchanConfig]):
