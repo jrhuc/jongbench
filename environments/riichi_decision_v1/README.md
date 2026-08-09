@@ -36,6 +36,30 @@ $ jongbench positions --out bank.jsonl --from-log runs/<stamp>/logs/g0.json.gz
 Grading is baked in at build time, so evaluation needs neither a runtime nor the
 Mortal checkpoint — scoring is pure trace.
 
+## Run
+
+From the repo root (the package imports `jongbench`, which runs from the checkout):
+
+```console
+$ PYTHONPATH=".:environments/riichi_decision_v1" .venv/bin/eval riichi_decision_v1 \
+    -m anthropic/claude-sonnet-5 \
+    --client.base-url https://openrouter.ai/api/v1 \
+    --client.api-key-var OPENROUTER_API_KEY \
+    --no-push
+```
+
+`eval` is the verifiers v1 CLI — call it by path, the shell builtin shadows the
+name. `--no-push` keeps the run local instead of uploading it to the Prime
+platform. The package bundles verifiers' plain chat harness as its default, so
+no harness or runtime flags are needed.
+
+The offline integration check (no model, no key) is:
+
+```console
+$ PYTHONPATH=".:environments/riichi_decision_v1" .venv/bin/validate riichi_decision_v1 \
+    --runtime.type subprocess
+```
+
 ## Config
 
 | key           | default             | meaning                                              |

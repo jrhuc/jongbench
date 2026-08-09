@@ -270,6 +270,9 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
   it is then judged on - at one call per graded decision instead of ~1,000 per hanchan.
 - verifiers does not require Prime inference: set `client.base_url` and `client.api_key_var`
   to point its client at OpenRouter like the rest of jongbench.
+- The package re-exports verifiers' null harness (the plain chat loop) via `__all__`,
+  which verifiers takes as the taskset's default — `eval riichi_decision_v1` needs no
+  harness or runtime flags. Verified commands are in the env README.
 
 ### reasoning.py
 - `join(decisions, review, player_id)` pairs each logged decision with Mortal's verdict on

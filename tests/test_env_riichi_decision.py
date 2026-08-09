@@ -124,6 +124,16 @@ def test_shipped_sample_bank_runs_out_of_the_box() -> None:
         assert task.data.rewards[task.data.best_index] == max(task.data.rewards)
 
 
+def test_package_bundles_the_chat_harness_as_its_default() -> None:
+    """`eval riichi_decision_v1` must run the plain chat loop, not a bash agent:
+    verifiers takes a taskset package's exported Harness subclass as the default."""
+    from verifiers.v1.harnesses.null import NullHarness
+    from verifiers.v1.utils.loaders import default_harness_id, harness_class
+
+    assert default_harness_id("riichi_decision_v1") == "riichi_decision_v1"
+    assert harness_class("riichi_decision_v1") is NullHarness
+
+
 def test_a_real_bank_round_trips_through_the_taskset(tmp_path) -> None:
     """The bank the CLI writes must be loadable verbatim: Position -> JSON -> task."""
     position = positions.Position.from_dict(_position())

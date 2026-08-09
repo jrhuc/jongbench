@@ -18,6 +18,27 @@ comparison use `riichi-decision-v1`, which grades single positions against Morta
 an opening board, then per-decision deltas — the same prompt path `jongbench run`
 uses, including the furo toggle and invalid-reply retries.
 
+## Run
+
+From the repo root (the package imports `jongbench`, which runs from the checkout):
+
+```console
+$ PYTHONPATH=".:environments/riichi_hanchan_v1" .venv/bin/eval riichi_hanchan_v1 \
+    --env.seat0.model anthropic/claude-sonnet-5 \
+    --env.seat1.model openai/gpt-5.2 \
+    --env.seat2.model google/gemini-3-pro \
+    --env.seat3.model deepseek/deepseek-v4 \
+    --env.log-dir episodes \
+    --client.base-url https://openrouter.ai/api/v1 \
+    --client.api-key-var OPENROUTER_API_KEY \
+    -n 1 --no-push
+```
+
+`eval` is the verifiers v1 CLI — call it by path, the shell builtin shadows the
+name. `--no-push` keeps the run local instead of uploading it to the Prime
+platform. A seat with no pinned model plays the run's `-m` model — the policy
+under evaluation.
+
 ## Config
 
 | key           | default | meaning                                               |
