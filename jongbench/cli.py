@@ -11,11 +11,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import arena, daemon, evaluate, providers, report
+from . import arena, evaluate, providers, report
 from .artifacts import decision_filename
 from .arena import GameSummary
 from .engines import RandomEngine, TerminalHumanIO, make_engine
-from .spectator import Spectator, TableState, TerminalRenderer
+from .spectator import Spectator, TerminalRenderer
 
 
 def _new_run_dir(runs_root: str | Path, label: str) -> Path:
@@ -410,97 +410,6 @@ def _cmd_selfcheck(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_record(args: argparse.Namespace) -> int:
-    run_dir = Path(args.run_dir)
-    log_path = _select_log(run_dir, args.game)
-    events = evaluate.load_mjai_log(str(log_path))
-    seed = _seed_from_events_or_path(events, log_path)
-    review_path = run_dir / "review" / f"{_seed_label(seed)}.json"
-    review_data = _read_json(review_path) if review_path.exists() else None
-
-    table = TableState()
-    frames = []
-    for seq, event in enumerate(events, start=1):
-        table.apply(event)
-        frames.append(
-            {
-                "seq": seq,
-                "event": event,
-                "snapshot": table.snapshot(),
-            }
-        )
-
-    if isinstance(review_data, dict):
-        names = [str(name) for name in review_data.get("names") or []]
-        scores = [int(score) for score in review_data.get("scores") or []]
-        placements = dict(review_data.get("placements") or {})
-    else:
-        summary = _reconstruct_summary(events, log_path)
-        names = summary.names
-        scores = summary.scores
-        placements = summary.placements
-
-    bundle: dict[str, Any] = {
-        "game": _seed_label(seed),
-        "seed": [seed[0], seed[1]],
-        "names": names,
-        "scores": scores,
-        "placements": placements,
-        "frames": frames,
-    }
-    if isinstance(review_data, dict):
-        bundle["review"] = review_data
-
-    out = Path(args.out) if args.out else run_dir / "demo.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(
-        json.dumps(bundle, ensure_ascii=False, separators=(",", ":")),
-        encoding="utf-8",
-    )
-    print(f"{len(frames)} frames -> {out}")
-    return 0
-
-
-def _cmd_serve(args: argparse.Namespace) -> int:
-    if args.action == "stop":
-        return daemon.stop()
-    if args.action == "restart":
-        return daemon.restart()
-    if args.action == "status":
-        return daemon.status()
-
-    if args.foreground:
-        try:
-            from . import webui
-        except ImportError:
-            print("web UI not built yet", file=sys.stderr)
-            return 1
-        return int(
-            webui.run_server(
-                host=args.host,
-                port=int(args.port),
-                runs_root=args.runs_root,
-                weights=args.weights,
-                demo_path=args.demo,
-            )
-            or 0
-        )
-
-    flags = [
-        "--host",
-        args.host,
-        "--port",
-        str(int(args.port)),
-        "--runs-root",
-        str(Path(args.runs_root).resolve()),
-        "--weights",
-        str(Path(args.weights).resolve()),
-    ]
-    if args.demo:
-        flags += ["--demo", str(Path(args.demo).resolve())]
-    return daemon.start(flags, args.host, int(args.port))
-
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="jongbench")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -577,22 +486,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "would actually face",
     )
     positions_cmd.set_defaults(func=_cmd_positions)
-
-    record = subparsers.add_parser("record")
-    record.add_argument("run_dir")
-    record.add_argument("--game")
-    record.add_argument("--out")
-    record.set_defaults(func=_cmd_record)
-
-    serve = subparsers.add_parser("serve")
-    serve.add_argument("action", nargs="?", choices=["stop", "restart", "status"])
-    serve.add_argument("--foreground", action="store_true")
-    serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=8642)
-    serve.add_argument("--runs-root", default="runs")
-    serve.add_argument("--weights", default="weights/mortal.pth")
-    serve.add_argument("--demo")
-    serve.set_defaults(func=_cmd_serve)
 
     return parser
 
@@ -686,20 +579,6 @@ def _reviews_missing(run_dir: Path) -> bool:
         if not (run_dir / "review" / f"{_seed_label(seed)}.json").exists():
             return True
     return False
-
-
-def _select_log(run_dir: Path, game: str | None) -> Path:
-    logs = sorted((run_dir / "logs").glob("*.json.gz"), key=_log_sort_key)
-    if not logs:
-        raise ValueError(f"no logs found in {run_dir / 'logs'}")
-    if game is None:
-        return logs[0]
-    target = game[:-8] if game.endswith(".json.gz") else game
-    target = target[:-5] if target.endswith(".json") else target
-    for path in logs:
-        if _seed_label(_seed_from_path(path)) == target:
-            return path
-    raise ValueError(f"game not found: {game}")
 
 
 def _seed_from_events_or_path(

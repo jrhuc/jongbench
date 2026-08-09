@@ -79,15 +79,6 @@ export interface SessionState {
   final: { names: string[]; scores: number[]; placements: Record<string, number> } | null;
 }
 
-export interface SessionListItem {
-  run_id: string;
-  status: SessionStatus;
-  names: string[];
-  created: number;
-  human_seat: number | null;
-  final: { names: string[]; scores: number[]; placements: Record<string, number> } | null;
-}
-
 export interface PendingOption {
   choice: number;
   action: string; // "discard" | "riichi"... | "chi" | "pon" | "kan" | "ron" | "tsumo" | "pass"
@@ -101,16 +92,6 @@ export interface Pending {
   state_text: string;
   menu: string[];
   options?: PendingOption[];
-}
-
-export interface DemoBundle {
-  game: string;
-  seed: [number, number];
-  names: string[];
-  scores: number[];
-  placements: Record<string, number>;
-  frames: Frame[];
-  review?: Review;
 }
 
 // --- review (Mortal evaluation) ---

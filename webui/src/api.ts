@@ -1,4 +1,4 @@
-import type { DemoBundle, Frame, Pending, Review, SessionListItem, SessionState } from "./types";
+import type { Frame, Pending, Review, SessionState } from "./types";
 
 async function json<T>(promise: Promise<Response>): Promise<T> {
   let response: Response;
@@ -18,45 +18,16 @@ async function json<T>(promise: Promise<Response>): Promise<T> {
   return (await response.json()) as T;
 }
 
-export interface StartRequest {
-  models: string[];
-  keys: Record<string, string>;
-  seed: number | null;
-  human_seat: number | null;
-  label: string | null;
-  state_hints: boolean;
-  reasoning: (string | null)[];
+export function fetchState(): Promise<SessionState> {
+  return json<SessionState>(fetch("/api/state", { cache: "no-store" }));
 }
 
-export interface StartResponse {
-  run_id: string;
-  names: string[];
-  human_seat: number | null;
+export function fetchPending(): Promise<Pending | null> {
+  return json<Pending | null>(fetch("/api/pending", { cache: "no-store" }));
 }
 
-export function startGame(request: StartRequest): Promise<StartResponse> {
-  const response = fetch("/api/start", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(request),
-  });
-  return json<StartResponse>(response);
-}
-
-export function listSessions(): Promise<SessionListItem[]> {
-  return json<SessionListItem[]>(fetch("/api/sessions", { cache: "no-store" }));
-}
-
-export function fetchState(runId: string): Promise<SessionState> {
-  return json<SessionState>(fetch(`/api/state/${encodeURIComponent(runId)}`, { cache: "no-store" }));
-}
-
-export function fetchPending(runId: string): Promise<Pending | null> {
-  return json<Pending | null>(fetch(`/api/pending/${encodeURIComponent(runId)}`, { cache: "no-store" }));
-}
-
-export function choose(runId: string, generation: number, choice: number): Promise<{ ok: boolean }> {
-  const response = fetch(`/api/choose/${encodeURIComponent(runId)}`, {
+export function choose(generation: number, choice: number): Promise<{ ok: boolean }> {
+  const response = fetch("/api/choose", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ generation, choice }),
@@ -64,41 +35,12 @@ export function choose(runId: string, generation: number, choice: number): Promi
   return json<{ ok: boolean }>(response);
 }
 
-export function abortGame(runId: string): Promise<{ ok: boolean }> {
-  return json<{ ok: boolean }>(fetch(`/api/abort/${encodeURIComponent(runId)}`, { method: "POST" }));
+export function abortGame(): Promise<{ ok: boolean }> {
+  return json<{ ok: boolean }>(fetch("/api/abort", { method: "POST" }));
 }
 
-export function fetchReview(runId: string): Promise<Review> {
-  return json<Review>(fetch(`/api/review/${encodeURIComponent(runId)}`, { cache: "no-store" }));
-}
-
-export function fetchDemo(): Promise<DemoBundle> {
-  return json<DemoBundle>(fetch("/api/demo", { cache: "no-store" }));
-}
-
-export function demoAvailable(): Promise<boolean> {
-  return fetch("/api/demo", { method: "HEAD" }).then((r) => r.ok).catch(() => false);
-}
-
-export function localEndpointsAvailable(): Promise<boolean> {
-  return json<{ local_endpoints: boolean }>(fetch("/api/config"))
-    .then((body) => body.local_endpoints);
-}
-
-export interface ModelEntry {
-  id: string;
-  created: number | null;
-  reasoning: string[];
-}
-
-export function listModels(provider: string, key: string, baseUrl?: string): Promise<ModelEntry[]> {
-  return json<{ models: ModelEntry[] }>(
-    fetch("/api/models", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider, key, base_url: baseUrl }),
-    }),
-  ).then((body) => body.models);
+export function fetchReview(): Promise<Review> {
+  return json<Review>(fetch("/api/review", { cache: "no-store" }));
 }
 
 export interface EventStream {
@@ -106,12 +48,11 @@ export interface EventStream {
 }
 
 export function streamEvents(
-  runId: string,
   since: number,
   onFrame: (frame: Frame) => void,
   onStatus: (state: SessionState) => void,
 ): EventStream {
-  const source = new EventSource(`/api/events/${encodeURIComponent(runId)}?since=${since}`);
+  const source = new EventSource(`/api/events?since=${since}`);
   source.addEventListener("frame", (event) => {
     onFrame(JSON.parse((event as MessageEvent).data) as Frame);
   });

@@ -166,8 +166,6 @@
 .cseat-wind { flex: none; color: var(--bone); font: clamp(11px, 1.35vw, 16px)/1 var(--display); }
 .cseat-dealer .cseat-wind { color: var(--tile-back); }
 .cseat-active .cseat-wind { animation: cseat-turn 1.1s ease-in-out infinite; }
-.cseat-icon { flex: none; display: grid; place-items: center; }
-.cseat-icon svg { width: clamp(9px, 1.1vw, 13px); height: clamp(9px, 1.1vw, 13px); }
 .cseat-name {
   flex: 1;
   min-width: 0;

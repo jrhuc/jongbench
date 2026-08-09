@@ -108,37 +108,6 @@ input::placeholder { color: var(--muted-bone); }
 
 :focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
 
-/* Dropdown: themed <select> replacement (see components/Dropdown.tsx). */
-
-.dropdown { position: relative; }
-.dropdown-button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 10px; text-align: left; }
-.dropdown-open .dropdown-button { border-color: var(--blue); }
-.dropdown-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dropdown-caret { flex: none; color: var(--ink-soft); transition: transform 120ms; }
-.dropdown-open .dropdown-caret { transform: rotate(180deg); }
-.dropdown-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 10;
-  min-width: 100%;
-  max-height: 300px;
-  overflow: auto;
-  padding: 5px;
-  color: var(--ink);
-  background: var(--bone);
-  border: 2px solid var(--ink);
-  border-radius: 10px;
-  box-shadow: 0 4px 0 var(--ink), var(--shadow);
-  animation: dropdown-in 100ms ease-out;
-}
-.dropdown-menu-up { top: auto; bottom: calc(100% + 6px); }
-.dropdown-option { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 6px; white-space: nowrap; cursor: pointer; }
-.dropdown-option-active { background: var(--bone-2); }
-.dropdown-option[aria-selected="true"] { color: var(--red); font-weight: 600; }
-.dropdown-option-disabled { opacity: 0.45; cursor: default; }
-@keyframes dropdown-in { from { opacity: 0; } }
-
 ::selection { background: rgba(194, 55, 46, 0.3); }
 
 /* app shell */
@@ -157,37 +126,21 @@ input::placeholder { color: var(--muted-bone); }
 }
 
 .brand {
-  font-family: var(--display);
-  font-size: 17px;
-  color: var(--bone);
-  text-decoration: none;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.brand-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 27px;
-  height: 30px;
-  border-radius: 6px;
-  background: var(--bone);
-  color: var(--green);
+  font-family: var(--mono);
   font-size: 15px;
-  box-shadow: 0 3px 0 var(--tile-back);
-  transition: background 250ms, color 250ms, box-shadow 250ms;
+  font-weight: 600;
+  color: var(--bone);
 }
 
-/* Hover: the hatsu goes Washizu — one tile in four is glass. */
-.brand:hover .brand-mark {
-  background: rgba(246, 239, 220, 0.14);
-  color: rgba(190, 235, 205, 0.8);
-  box-shadow: 0 3px 0 rgba(217, 165, 49, 0.3), inset 0 0 0 1px rgba(246, 239, 220, 0.4);
+.header-seats {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted-dark);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-
-.run-id { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--muted-dark); }
 
 .run-main { flex: 1; display: flex; min-height: 0; }
 
@@ -212,30 +165,6 @@ input::placeholder { color: var(--muted-bone); }
   animation: spin 0.9s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-
-.toast {
-  position: fixed;
-  z-index: 40;
-  right: 20px;
-  bottom: 20px;
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  max-width: min(440px, calc(100vw - 40px));
-  padding: 13px 15px;
-  border-radius: 10px;
-  color: var(--ink);
-  background: var(--bone);
-  border: 2px solid var(--ink);
-  box-shadow: 0 4px 0 var(--ink), var(--shadow);
-  font-size: 13px;
-  animation: toast-in 180ms ease-out;
-}
-.toast-error { border-color: var(--red-deep); box-shadow: 0 4px 0 var(--red-deep), var(--shadow); color: var(--red-deep); }
-.toast-text { overflow-wrap: anywhere; }
-.toast-dismiss { flex: none; padding: 0 6px; border: 0; background: transparent; box-shadow: none; color: inherit; font-size: 17px; line-height: 1.2; opacity: 0.7; }
-.toast-dismiss:hover { background: transparent; opacity: 1; }
-@keyframes toast-in { from { transform: translateY(8px); opacity: 0; } }
 
 /* Tiles: --tw sets width; height follows the 320x446 sprite ratio. */
 

@@ -1,5 +1,4 @@
 import { useMemo, useState } from "preact/hooks";
-import { ProviderIcon, providerOfName } from "../providers";
 import { TileView } from "../tiles";
 import type { MjaiEvent, PlayerReview, ReviewEntry, Tile } from "../types";
 import "./decisionlog.css";
@@ -104,13 +103,12 @@ export function DecisionLog({ player, onBack }: { player: PlayerReview; onBack()
   }, [player.review.entries]);
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set(groups[0] ? [groups[0].key] : []));
   const [openEntries, setOpenEntries] = useState<Set<string>>(() => new Set());
-  const provider = providerOfName(player.name);
 
   return (
     <section class="dlog">
       <button class="dlog-back" type="button" onClick={onBack}>← Back to summary</button>
       <header class="dlog-header">
-        <h2 class="dlog-player">{provider && <ProviderIcon provider={provider} size={20} />}{player.name}</h2>
+        <h2 class="dlog-player">{player.name}</h2>
         <div class="dlog-stats">
           <span><strong>{(player.review.rating * 100).toFixed(1)}</strong> rating</span>
           <span><strong>{(player.aggregates.match_rate * 100).toFixed(1)}%</strong> match rate</span>

@@ -44,16 +44,6 @@ def test_cli_workflow() -> None:
             assert "review" in player
             assert "aggregates" in player
 
-        code = cli.main(["record", str(run_dir)])
-        assert code == 0
-        demo_path = run_dir / "demo.json"
-        assert demo_path.exists()
-        demo = json.loads(demo_path.read_text(encoding="utf-8"))
-        assert len(demo["frames"]) > 100
-        for frame in demo["frames"]:
-            assert len(frame["snapshot"]["hands"]) == 4
-        assert "review" in demo
-
         old_mtime = review_files[0].stat().st_mtime_ns
         time.sleep(0.05)
         code = cli.main(["review", str(run_dir), "--force"])

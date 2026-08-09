@@ -1,5 +1,4 @@
 import { useMemo, useState } from "preact/hooks";
-import { ProviderIcon, providerOfName } from "../providers";
 import type { MjaiEvent, PlayerReview, Review, SessionState } from "../types";
 import { Action, DecisionLog, formatKyoku } from "./DecisionLog";
 import "./results.css";
@@ -37,11 +36,10 @@ function ordinal(placement: number): string {
 }
 
 function PlayerName({ name }: { name: string }) {
-  const provider = providerOfName(name);
-  return <span class="result-player-name">{provider && <ProviderIcon provider={provider} />}{name}</span>;
+  return <span class="result-player-name">{name}</span>;
 }
 
-export function Results({ session, review, onClose, onNewGame }: { session: SessionState; review: Review | null; onClose(): void; onNewGame(): void }) {
+export function Results({ session, review, onClose }: { session: SessionState; review: Review | null; onClose(): void }) {
   const [showDisagreements, setShowDisagreements] = useState(false);
   const [selectedSeat, setSelectedSeat] = useState<string | null>(null);
   const standings = useMemo(() => {
@@ -153,7 +151,6 @@ export function Results({ session, review, onClose, onNewGame }: { session: Sess
         )}
 
         <footer class="results-footer">
-          <button class="primary" type="button" onClick={onNewGame}>New game</button>
           <button type="button" onClick={onClose}>Close</button>
         </footer>
         </>}

@@ -1,6 +1,5 @@
 import { useState } from "preact/hooks";
 import { MAX_VISIBLE_LOG_ENTRIES } from "../log";
-import { ProviderIcon, providerOfName } from "../providers";
 import { sortTiles, TileView } from "../tiles";
 import type { Discard, Meld, MjaiEvent, Pending, PendingOption, SeatState, SessionState, Snapshot, Tile } from "../types";
 import "./table.css";
@@ -14,7 +13,6 @@ interface TableProps {
   onChoose(generation: number, choice: number): void;
   onAbort(): void;
   onResults?: () => void;
-  replay?: boolean;
 }
 
 const WIND_CHARS: Record<string, string> = { E: "東", S: "南", W: "西", N: "北" };
@@ -92,12 +90,10 @@ function Pond({ discards, size, glowNewest, dora }: { discards: Discard[]; size:
 /* One edge of the autotable's electronic center panel: wind, player identity
    and an LED score readout, oriented along that player's side of the square. */
 function CenterSeat({ seat, side, dealer, active }: { seat: SeatState; side: number; dealer: boolean; active: boolean }) {
-  const provider = providerOfName(seat.name);
   return (
     <div class={`cseat cseat-${side}${dealer ? " cseat-dealer" : ""}${active ? " cseat-active" : ""}`} title={seat.name}>
       <span class="cseat-wind">{WIND_CHARS[seat.wind] ?? seat.wind}</span>
-      {provider && <span class="cseat-icon"><ProviderIcon provider={provider} size={13} /></span>}
-      <span class="cseat-name">{provider ? provider.label : seat.name}</span>
+      <span class="cseat-name">{seat.name}</span>
       {seat.riichi_declared && <span class="cseat-lamp" title="Riichi" />}
       <span class="cseat-score">{seat.score}</span>
     </div>
@@ -216,7 +212,7 @@ function ActionBar({ pending, onChoose }: { pending: Pending; onChoose: (generat
   );
 }
 
-export function Table({ snapshot, lastEvent, session, pending, log, onChoose, onAbort, onResults, replay }: TableProps) {
+export function Table({ snapshot, lastEvent, session, pending, log, onChoose, onAbort, onResults }: TableProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const pov = session.human_seat ?? 0;
   const seatsByNumber = new Map(snapshot.seats.map((seat) => [seat.seat, seat]));
@@ -248,20 +244,21 @@ export function Table({ snapshot, lastEvent, session, pending, log, onChoose, on
         {humanTurn && <ActionBar pending={pending} onChoose={onChoose} />}
       </div>
       <div class="table-controls">
-        <span class={`table-status table-status-${replay ? "replay" : session.status}`}>
+        <span class={`table-status table-status-${session.status}`}>
           <i />
-          {replay ? "replay" : session.status === "evaluating" ? "reviewing" : session.status}
+          {session.status === "evaluating" ? "reviewing" : session.status}
         </span>
         {onResults && <button class="table-results" onClick={onResults}>Results</button>}
-        <button
-          class="danger table-leave"
-          onClick={() => {
-            const active = !replay && session.status !== "done" && session.status !== "error";
-            if (!active || confirm("Leave this game?")) onAbort();
-          }}
-        >
-          {replay ? "Exit replay" : session.status === "done" || session.status === "error" ? "Exit" : "Leave game"}
-        </button>
+        {session.status !== "done" && session.status !== "error" && session.status !== "aborted" && (
+          <button
+            class="danger table-leave"
+            onClick={() => {
+              if (confirm("Abort this game?")) onAbort();
+            }}
+          >
+            Abort
+          </button>
+        )}
       </div>
       <aside class={`drawer${drawerOpen ? " drawer-open" : ""}`}>
         <button class="drawer-toggle" onClick={() => setDrawerOpen((open) => !open)} aria-expanded={drawerOpen}>
