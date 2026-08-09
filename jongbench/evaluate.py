@@ -271,6 +271,9 @@ def review_player(
             for detail in details
         ]
         entry = {
+            # Index into `events` of the decision point, so a caller can replay the log
+            # to this action and rebuild the board without redoing the review.
+            "event_index": i,
             "kyoku": kyoku_review["kyoku"],
             "honba": kyoku_review["honba"],
             "junme": junme,
