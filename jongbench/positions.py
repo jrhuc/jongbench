@@ -62,6 +62,49 @@ class Position:
         return cls(**data)
 
 
+class MortalArenaEngine(engines.BaseEngine):
+    """Mortal as an arena seat, so a bank can be built from boards a strong player would
+    actually reach. `libriichi.mjai.Bot` wants every event in order while the arena only
+    calls an engine at its own decision points, so each seat replays the events it has not
+    seen yet and takes the reaction from the last one."""
+
+    def __init__(self, name: str, engine: Any, **kwargs: Any) -> None:
+        kwargs.pop("concurrency", None)
+        super().__init__(name, spectator=kwargs.get("spectator"), concurrency=1)
+        self._engine = engine
+        self._bots: dict[int, tuple[tuple[Any, ...] | None, Any, int]] = {}
+
+    def decide(
+        self,
+        player_id: int,
+        state: Any,
+        events: list[dict[str, Any]],
+        menu: list[actions.MenuItem],
+        game_index: int = 0,
+    ) -> dict[str, Any]:
+        kyoku = engines._kyoku_id(events)
+        cached = self._bots.get(game_index)
+        if cached is None or cached[0] != kyoku:
+            bot = libriichi.mjai.Bot(self._engine, player_id)
+            fed = 0
+        else:
+            _, bot, fed = cached
+
+        reaction = None
+        for event in events[fed:]:
+            reaction = bot.react(json.dumps(event, separators=(",", ":")))
+        self._bots[game_index] = (kyoku, bot, len(events))
+
+        if reaction is None:
+            return next(
+                (item["event"] for item in menu if item.get("kind") == "none"),
+                menu[0]["event"],
+            )
+        decoded = json.loads(reaction)
+        decoded.pop("meta", None)
+        return decoded
+
+
 def rebuild_state(events: list[dict[str, Any]], player_id: int) -> Any:
     state = libriichi.state.PlayerState(player_id)
     for event in events:

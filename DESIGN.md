@@ -265,6 +265,30 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
   steps through it client-side (play/pause/step/slider/speed), needing no keys. Event labels
   are formatted once and the visible live/replay log is capped at 200 entries.
 
+### positions.py
+- `extract_positions(events, engine) -> list[Position]`: every gradeable decision in a
+  finished game, from each seat's POV. `Position.rewards[i]` is the normalised Q-advantage
+  of menu option i (1.0 = Mortal's choice, 0.0 = its worst), i.e. the per-decision term of
+  the mjai-reviewer rating. Reuses `review_player` rather than re-deriving Mortal's
+  candidate table: review entries carry `event_index`, and the extractor replays the log to
+  that point to rebuild the board and menu. A position Mortal did not price in full is
+  dropped rather than partially scored.
+- `MortalArenaEngine`: Mortal as an arena seat, so a bank can be drawn from boards a strong
+  player would actually reach. `libriichi.mjai.Bot` needs every event in order while the
+  arena only calls an engine at its own decision points, so each seat replays what it has
+  not seen and takes the last reaction. Reset per kyoku, keyed per game.
+- One four-seat game yields ~670 (Mortal) to ~1,050 (random) graded positions.
+
+### environments/riichi_decision_v1/
+- A Prime Intellect verifiers taskset: one decision per task, prompt rendered from the
+  stored position, reward = `rewards[choice]`. Pure trace scoring, so evaluating against a
+  bank needs neither a runtime nor the Mortal checkpoint.
+- Measures the same quantity as the full-game rating, but every model sees byte-identical
+  prompts on identical boards - live play cannot do that, since each model steers the board
+  it is then judged on - at one call per graded decision instead of ~1,000 per hanchan.
+- verifiers does not require Prime inference: set `client.base_url` and `client.api_key_var`
+  to point its client at OpenRouter like the rest of jongbench.
+
 ### report.py
 - `write_report(run_dir)`: single self-contained `report.html` (inline CSS/JS, embedded
   review JSON, inline pai.svg sprite for tile rendering).

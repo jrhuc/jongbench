@@ -44,6 +44,10 @@ $ jongbench serve --foreground          # run blocking in the terminal instead
 
 # re-evaluate / regenerate a report
 $ jongbench review runs/<stamp>/
+
+# build a bank of Mortal-graded single decisions for riichi-decision-v1
+$ jongbench positions --out bank.jsonl --games 4          # from Mortal self-play
+$ jongbench positions --out bank.jsonl --from-log runs/<stamp>/logs/g0.json.gz
 ```
 
 To run `jongbench` without activating the venv, link the entry point onto your PATH:

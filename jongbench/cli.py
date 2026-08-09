@@ -280,6 +280,49 @@ def _cmd_review(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_positions(args: argparse.Namespace) -> int:
+    import gzip
+    import tempfile
+
+    from jongbench import evaluate as evaluate_module
+    from jongbench import positions as positions_module
+
+    engine = evaluate_module.load_engine(args.weights)
+
+    logs: list[list[dict]] = []
+    for path in args.from_log:
+        opener = gzip.open if str(path).endswith(".gz") else open
+        with opener(path, "rt") as handle:
+            logs.append([json.loads(line) for line in handle if line.strip()])
+
+    if not logs:
+        with tempfile.TemporaryDirectory() as tempdir:
+            if args.source == "mortal":
+                seats = [
+                    positions_module.MortalArenaEngine(f"mortal-{i}", engine)
+                    for i in range(4)
+                ]
+            else:
+                seats = [RandomEngine(f"random-{i}", seed=args.seed + i) for i in range(4)]
+            arena.run_games(seats, args.games, seed_start=(args.seed, 1), log_dir=tempdir)
+            for path in sorted(Path(tempdir).glob("*.json.gz")):
+                with gzip.open(path, "rt") as handle:
+                    logs.append([json.loads(line) for line in handle if line.strip()])
+
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    with out.open("w") as handle:
+        for events in logs:
+            for position in positions_module.extract_positions(events, engine):
+                handle.write(json.dumps(position.to_dict(), separators=(",", ":")) + "\n")
+                written += 1
+
+    source = "logs" if args.from_log else args.source
+    print(f"wrote {written} positions from {len(logs)} game(s) ({source}) to {out}")
+    return 0
+
+
 def _cmd_selfcheck(args: argparse.Namespace) -> int:
     run_dir = _new_run_dir(args.runs_root, "selfcheck")
     _prepare_run_dir(run_dir)
@@ -446,6 +489,26 @@ def _build_parser() -> argparse.ArgumentParser:
     selfcheck.add_argument("--runs-root", default="runs")
     selfcheck.add_argument("--weights", default="weights/mortal.pth")
     selfcheck.set_defaults(func=_cmd_selfcheck)
+
+    positions_cmd = subparsers.add_parser("positions")
+    positions_cmd.add_argument("--out", default="bank.jsonl")
+    positions_cmd.add_argument("--games", type=int, default=1)
+    positions_cmd.add_argument("--seed", type=int, default=20260101)
+    positions_cmd.add_argument("--weights", default="weights/mortal.pth")
+    positions_cmd.add_argument(
+        "--from-log",
+        action="append",
+        default=[],
+        help="grade an existing mjai log instead of generating games",
+    )
+    positions_cmd.add_argument(
+        "--source",
+        choices=["random", "mortal"],
+        default="mortal",
+        help="engine used to generate boards; mortal gives positions a strong player "
+        "would actually face",
+    )
+    positions_cmd.set_defaults(func=_cmd_positions)
 
     record = subparsers.add_parser("record")
     record.add_argument("run_dir")
