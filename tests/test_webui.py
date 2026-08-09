@@ -81,26 +81,29 @@ def test_web_starts_reject_custom_endpoints_and_require_request_keys() -> None:
     else:
         raise AssertionError("web start accepted an arbitrary compatibility URL")
 
-    for provider, spec in (
-        ("openai", "openai:test"),
-        ("anthropic", "anthropic:test"),
-        ("google", "google:test"),
-        ("xai", "xai:test"),
-        ("deepseek", "deepseek:test"),
-        ("meta", "meta:test"),
-        ("kimi", "kimi:test"),
-        ("zai", "zai:test"),
-        ("openrouter", "openrouter:test"),
-        ("cerebras", "cerebras:test"),
+    # Every model seat routes through OpenRouter, so one visitor key covers them all
+    # however the spec was written.
+    for spec in (
+        "openai:test",
+        "anthropic:test",
+        "google:test",
+        "xai:test",
+        "deepseek:test",
+        "meta:test",
+        "kimi:test",
+        "zai:test",
+        "openrouter:vendor/test",
+        "cerebras:vendor/test",
+        "vendor/test",
     ):
         try:
             webui._validate_web_start_credentials([spec] + ["random"] * 3, {})
         except ValueError as exc:
-            assert provider in str(exc)
+            assert "openrouter" in str(exc)
         else:
-            raise AssertionError(f"web start accepted missing {provider} request key")
+            raise AssertionError(f"web start accepted missing key for {spec}")
         webui._validate_web_start_credentials(
-            [spec] + ["random"] * 3, {provider: "visitor-key"}
+            [spec] + ["random"] * 3, {"openrouter": "visitor-key"}
         )
 
 
@@ -199,23 +202,25 @@ def test_web_reasoning_validation() -> None:
         else:
             raise AssertionError(f"accepted invalid reasoning: {reasoning!r}")
 
-    try:
-        webui.start_game_session(
-            ["openai:gpt-5.1", "random", "random", "random"],
-            {},
-            1,
-            None,
-            None,
-            runs_root="/tmp/unused-jongbench-test",
-            weights="unused",
-            no_eval=True,
-            delay=0,
-            reasoning=["xhigh", None, None, None],
-        )
-    except ValueError as exc:
-        assert "available: off, low, medium, high" in str(exc)
-    else:
-        raise AssertionError("accepted an unsupported model reasoning level")
+    # Per-model effort support is OpenRouter's to clamp, so any level in the ladder is
+    # accepted for a model seat and only the seat kind is rejected above.
+    for level in ("off", "xhigh", "max"):
+        try:
+            webui.start_game_session(
+                ["openai:gpt-5.1", "random", "random", "random"],
+                {},
+                1,
+                None,
+                None,
+                runs_root="/tmp/unused-jongbench-test",
+                weights="unused",
+                no_eval=True,
+                delay=0,
+                reasoning=[level, None, None, None],
+            )
+        except Exception as exc:
+            # Reaching the credentialed preflight means validation accepted the level.
+            assert "reasoning" not in str(exc), (level, exc)
 
 
 def test_reasoning_propagates_to_names_and_config() -> None:

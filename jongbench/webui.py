@@ -67,11 +67,8 @@ def _prune_model_cache_locked(now: float) -> None:
         del _MODEL_CACHE[entry_key]
 
 
-def _cached_list_models(
-    provider: str, key: str, base_url: str | None = None
-) -> list[dict[str, Any]]:
+def _cached_list_models(key: str, base_url: str | None = None) -> list[dict[str, Any]]:
     cache_key = (
-        provider,
         base_url or "",
         hashlib.sha256(key.encode("utf-8")).hexdigest(),
     )
@@ -80,7 +77,7 @@ def _cached_list_models(
         hit = _MODEL_CACHE.get(cache_key)
         if hit is not None:
             return hit[1]
-    models = providers.list_models(provider, key, base_url)
+    models = providers.list_models(key, base_url)
     with _MODEL_CACHE_LOCK:
         now = time.monotonic()
         _prune_model_cache_locked(now)
@@ -506,20 +503,14 @@ def start_game_session(
             raise ValueError(
                 "reasoning must be a list of 4 supported levels or nulls"
             )
-        allowed_providers = {"anthropic", "openai", "google", *providers.COMPAT_BASE_URLS}
+        # Per-model effort support is OpenRouter's to negotiate: it clamps a level a
+        # model cannot honour, so only the seat kind is checked here.
         for idx, level in enumerate(reasoning):
             if level is None:
                 continue
             provider = parsed[idx].provider
-            if provider not in allowed_providers:
+            if provider in {"random", "human"}:
                 raise ValueError(f"reasoning is not supported for {provider}")
-            supported = providers.reasoning_levels(provider, parsed[idx].model)
-            if provider != "anthropic" and level not in supported:
-                choices = ", ".join(supported) or "none"
-                raise ValueError(
-                    f"{parsed[idx].model} does not support {level} reasoning "
-                    f"(available: {choices})"
-                )
     reasoning_levels = reasoning if reasoning is not None else [None, None, None, None]
 
     seed_tuple = _normalize_seed(seed)
@@ -605,8 +596,10 @@ def _preflight_engines(engines: list[Any]) -> None:
     def check(engine: Any) -> None:
         try:
             engine.provider.complete(
-                "Reply with the word OK.",
-                "OK?",
+                [
+                    {"role": "system", "content": "Reply with the word OK."},
+                    {"role": "user", "content": "OK?"},
+                ],
                 max_tokens=getattr(engine, "max_tokens", 8),
                 temperature=engine.temperature,
             )
@@ -839,7 +832,7 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                     provider = payload.get("provider")
                     key = payload.get("key")
                     base_url = payload.get("base_url")
-                    allowed = {"anthropic", "openai", "google", *providers.COMPAT_BASE_URLS}
+                    allowed = {"openrouter"}
                     if provider == "compat":
                         if not state.allow_local_endpoints or not _is_loopback_url(base_url):
                             raise _HTTPError(HTTPStatus.BAD_REQUEST, "local endpoint must use a loopback URL")
@@ -849,8 +842,10 @@ def _make_handler(state: _ServerState) -> type[BaseHTTPRequestHandler]:
                     if not isinstance(key, str) or (provider != "compat" and not key.strip()):
                         raise _HTTPError(HTTPStatus.BAD_REQUEST, "key must be a non-empty string")
                     try:
-                        models = _cached_list_models(provider, key.strip(), base_url)
-                    except ValueError as exc:
+                        models = _cached_list_models(
+                            key.strip(), base_url if provider == "compat" else None
+                        )
+                    except (ValueError, RuntimeError) as exc:
                         raise _HTTPError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
                     self._send_json(HTTPStatus.OK, {"models": models})
                 elif parsed.path.startswith("/api/abort/"):

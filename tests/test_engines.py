@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 
 import jongbench
 import libriichi
+from jongbench import providers
 from jongbench.engines import LLMEngine, RandomEngine, sanitize_events
 
 
@@ -25,13 +26,13 @@ class FakeProvider:
 
     def complete(
         self,
-        system: str,
-        user: str,
+        messages: list[dict[str, Any]],
         *,
         max_tokens: int = 1200,
-        temperature: float = 0.6,
-    ) -> tuple[str, dict[str, int]]:
-        del system, max_tokens, temperature
+        temperature: float | None = None,
+    ) -> providers.Completion:
+        del max_tokens, temperature
+        user = next(m["content"] for m in reversed(messages) if m["role"] == "user")
         with self._lock:
             self.calls.append(
                 {
@@ -41,7 +42,11 @@ class FakeProvider:
                     "prompt": user,
                 }
             )
-        return '{"choice": 0}', {"input_tokens": 10, "output_tokens": 5}
+        return providers.Completion(
+            text='{"choice": 0}',
+            reasoning="considered the wall",
+            usage={"input_tokens": 10, "output_tokens": 5},
+        )
 
 
 class RecordingLLMEngine(LLMEngine):
@@ -193,7 +198,17 @@ def test_full_game_no_hidden_leak() -> None:
         assert engine.totals["output_tokens"] == len(log) * 5
         assert engine.totals["fallbacks"] == 0
         assert engine.totals["retries"] == 0
-        assert all(record["usage"] == {"input_tokens": 10, "output_tokens": 5} for record in log)
+        assert all(
+            record["usage"]
+            == {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cached_input_tokens": 0,
+                "reasoning_tokens": 0,
+            }
+            for record in log
+        )
+        assert all(record["raw_reasoning"] == "considered the wall" for record in log)
         assert all(record["prompt_version"] == 2 for record in log)
         assert all(record["state_hints"] is True for record in log)
         assert all(

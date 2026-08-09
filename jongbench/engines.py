@@ -194,6 +194,8 @@ class LLMEngine(BaseEngine):
             "calls": 0,
             "input_tokens": 0,
             "output_tokens": 0,
+            "cached_input_tokens": 0,
+            "reasoning_tokens": 0,
             "fallbacks": 0,
             "retries": 0,
         }
@@ -217,33 +219,37 @@ class LLMEngine(BaseEngine):
             state_hints=self.state_hints,
         )
         raw_response = ""
+        raw_reasoning = ""
+        served_by: str | None = None
         retries = 0
         calls = 0
-        usage_total = {"input_tokens": 0, "output_tokens": 0}
+        usage_total = _empty_usage()
         fallback: str | None = None
         choice: int | None = None
 
-        def complete_once(user_prompt: str) -> tuple[str, dict[str, int]]:
-            nonlocal calls
+        def complete_once(user_prompt: str) -> providers.Completion:
+            nonlocal calls, raw_response, raw_reasoning, served_by
             calls += 1
-            text, usage = self.provider.complete(
-                prompts.SYSTEM,
-                user_prompt,
+            result = self.provider.complete(
+                [
+                    {"role": "system", "content": providers.cacheable(prompts.SYSTEM)},
+                    {"role": "user", "content": user_prompt},
+                ],
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
             )
-            return text or "", _normalize_usage(usage)
+            raw_response = result.text
+            raw_reasoning = result.reasoning
+            served_by = result.served_by or served_by
+            _add_usage(usage_total, result.usage)
+            return result
 
         try:
-            text, usage = complete_once(prompt)
-            raw_response = text
-            _add_usage(usage_total, usage)
+            complete_once(prompt)
         except Exception:
             retries = 1
             try:
-                text, usage = complete_once(prompt)
-                raw_response = text
-                _add_usage(usage_total, usage)
+                complete_once(prompt)
                 choice = prompts.extract_choice(raw_response, len(menu))
             except ValueError as exc:
                 fallback = f"invalid_choice:{exc}"
@@ -263,9 +269,7 @@ class LLMEngine(BaseEngine):
                     state_hints=self.state_hints,
                 )
                 try:
-                    text, usage = complete_once(retry_prompt)
-                    raw_response = text
-                    _add_usage(usage_total, usage)
+                    complete_once(retry_prompt)
                     choice = prompts.extract_choice(raw_response, len(menu))
                 except ValueError as retry_exc:
                     fallback = f"invalid_choice:{retry_exc}"
@@ -289,6 +293,8 @@ class LLMEngine(BaseEngine):
             "state_hints": self.state_hints,
             "fallback": fallback,
             "raw_response": raw_response[:4000],
+            "raw_reasoning": raw_reasoning[:16000],
+            "served_by": served_by,
             "usage": usage_total,
             "latency_ms": latency_ms,
             "retries": retries,
@@ -306,8 +312,8 @@ class LLMEngine(BaseEngine):
     ) -> None:
         with self._log_lock:
             self.totals["calls"] += calls
-            self.totals["input_tokens"] += usage["input_tokens"]
-            self.totals["output_tokens"] += usage["output_tokens"]
+            for key in _USAGE_KEYS:
+                self.totals[key] += usage.get(key, 0)
             self.totals["fallbacks"] += int(did_fallback)
             self.totals["retries"] += retries
             if callable(self.decision_log):
@@ -328,17 +334,21 @@ def make_engine(name: str, spec_str: str, **kwargs: Any) -> BaseEngine:
     return LLMEngine(name, spec_str, **kwargs)
 
 
-def _normalize_usage(usage: dict[str, Any] | None) -> dict[str, int]:
-    usage = usage or {}
-    return {
-        "input_tokens": int(usage.get("input_tokens", 0) or 0),
-        "output_tokens": int(usage.get("output_tokens", 0) or 0),
-    }
+_USAGE_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cached_input_tokens",
+    "reasoning_tokens",
+)
 
 
-def _add_usage(total: dict[str, int], usage: dict[str, int]) -> None:
-    total["input_tokens"] += usage["input_tokens"]
-    total["output_tokens"] += usage["output_tokens"]
+def _empty_usage() -> dict[str, int]:
+    return dict.fromkeys(_USAGE_KEYS, 0)
+
+
+def _add_usage(total: dict[str, int], usage: dict[str, Any] | None) -> None:
+    for key in _USAGE_KEYS:
+        total[key] += int((usage or {}).get(key, 0) or 0)
 
 
 def _fallback_choice(menu: list[actions.MenuItem]) -> int:

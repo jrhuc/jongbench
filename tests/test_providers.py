@@ -1,222 +1,220 @@
 from types import SimpleNamespace
-from unittest.mock import patch
 
-import openai
+import pytest
 
 from jongbench.providers import (
-    AnthropicProvider,
-    CompatProvider,
-    GoogleProvider,
-    OpenAIProvider,
+    OPENROUTER_BASE_URL,
+    REASONING_LEVELS,
+    Provider,
+    cacheable,
+    list_models,
+    make_provider,
     parse_spec,
     reasoning_levels,
 )
 
 
-class _FakeBadRequest(Exception):
-    pass
+def _chunk(content: str = "", reasoning: str = "", usage=None, provider=None):
+    delta = SimpleNamespace(content=content or None, reasoning=reasoning or None)
+    return SimpleNamespace(
+        choices=[SimpleNamespace(delta=delta)],
+        usage=usage,
+        provider=provider,
+    )
 
 
 class _FakeCompletions:
-    def __init__(self) -> None:
+    def __init__(self, chunks) -> None:
+        self.chunks = chunks
         self.calls: list[dict[str, object]] = []
 
-    def create(self, **params: object) -> SimpleNamespace:
+    def create(self, **params: object):
         self.calls.append(dict(params))
-        if "temperature" in params:
-            raise _FakeBadRequest("Unsupported parameter: temperature")
-        if "max_completion_tokens" in params:
-            raise _FakeBadRequest("Unsupported parameter: max_completion_tokens")
-        return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content='{"choice":0}'))],
-            usage=SimpleNamespace(prompt_tokens=12, completion_tokens=3),
-        )
+        return iter(self.chunks)
 
 
-def test_openai_compatibility_retries_multiple_unsupported_parameters() -> None:
-    completions = _FakeCompletions()
-    provider = OpenAIProvider("compat-model", base_url="http://localhost/v1")
-    provider._client = SimpleNamespace(
-        chat=SimpleNamespace(completions=completions)
-    )
-
-    with patch.object(openai, "BadRequestError", _FakeBadRequest):
-        text, usage = provider.complete("system", "user", max_tokens=40)
-
-    assert text == '{"choice":0}'
-    assert usage == {"input_tokens": 12, "output_tokens": 3}
-    assert len(completions.calls) == 3
-    assert "temperature" not in completions.calls[-1]
-    assert "max_completion_tokens" not in completions.calls[-1]
-    assert completions.calls[-1]["max_tokens"] == 40
-
-    with patch.object(openai, "BadRequestError", _FakeBadRequest):
-        provider.complete("system", "user", max_tokens=50)
-
-    assert len(completions.calls) == 4
-    assert "temperature" not in completions.calls[-1]
-    assert "max_completion_tokens" not in completions.calls[-1]
-    assert completions.calls[-1]["max_tokens"] == 50
+def _provider(chunks, **kwargs) -> tuple[Provider, _FakeCompletions]:
+    provider = Provider("anthropic/claude-opus-5", OPENROUTER_BASE_URL, **kwargs)
+    completions = _FakeCompletions(chunks)
+    provider._client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    return provider, completions
 
 
-def test_reasoning_levels_match_provider_model_capabilities() -> None:
-    cases = {
-        ("openai", "gpt-5.1"): ["off", "low", "medium", "high"],
-        ("openai", "gpt-5.2"): ["off", "low", "medium", "high", "xhigh"],
-        ("openai", "gpt-5.2-pro"): ["medium", "high", "xhigh"],
-        ("google", "gemini-3-pro-preview"): ["low", "high"],
-        ("google", "gemini-3.1-pro"): ["low", "medium", "high"],
-        ("google", "gemini-3-flash-preview"): [
-            "minimal",
-            "low",
-            "medium",
-            "high",
-        ],
-        ("xai", "grok-3-mini"): ["low", "high"],
-        ("xai", "grok-4.3-fast"): ["off", "low", "medium", "high"],
-        ("deepseek", "deepseek-reasoner"): ["off", "high", "max"],
-        ("cerebras", "gpt-oss-120b"): ["low", "medium", "high"],
-        ("cerebras", "zai-glm-4.7"): ["off"],
-    }
-    for (provider, model), expected in cases.items():
-        assert reasoning_levels(provider, model) == expected
-
-    assert reasoning_levels(
-        "google", "gemini-3-flash-preview", {"thinking": False}
-    ) == []
+def test_spec_forms_all_resolve_to_openrouter() -> None:
+    for spec, model in [
+        ("anthropic/claude-opus-5", "anthropic/claude-opus-5"),
+        ("openrouter:anthropic/claude-opus-5", "anthropic/claude-opus-5"),
+        ("anthropic:claude-opus-5", "anthropic/claude-opus-5"),
+        ("openai:gpt-5.2", "openai/gpt-5.2"),
+        ("google:gemini-3-pro", "google/gemini-3-pro"),
+        ("xai:grok-4.1", "x-ai/grok-4.1"),
+        ("meta:llama-4", "meta-llama/llama-4"),
+        ("kimi:kimi-k2", "moonshotai/kimi-k2"),
+        ("zai:glm-5", "z-ai/glm-5"),
+    ]:
+        parsed = parse_spec(spec)
+        assert parsed.provider == "openrouter", spec
+        assert parsed.model == model, spec
+        assert parsed.base_url == OPENROUTER_BASE_URL
+        assert parsed.pin == ()
 
 
-def test_anthropic_reasoning_levels_use_dynamic_capabilities() -> None:
-    metadata = {
-        "capabilities": {
-            "thinking": {"types": {"disabled": {"supported": True}}},
-            "effort": {
-                "low": {"supported": True},
-                "medium": {"supported": False},
-                "high": {"supported": True},
-                "max": {"supported": True},
-            },
-        }
-    }
-    assert reasoning_levels("anthropic", "future-model", metadata) == [
-        "off",
-        "low",
-        "high",
-        "max",
-    ]
+def test_legacy_inference_provider_prefix_pins_routing() -> None:
+    parsed = parse_spec("cerebras:openai/gpt-oss-120b")
+    assert parsed.model == "openai/gpt-oss-120b"
+    assert parsed.pin == ("cerebras",)
 
-
-class _RecordingCompletions:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
-
-    def create(self, **params: object) -> SimpleNamespace:
-        self.calls.append(dict(params))
-        return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="OK"))],
-            usage=SimpleNamespace(prompt_tokens=2, completion_tokens=1),
-        )
-
-
-def _openai_client(completions: _RecordingCompletions) -> SimpleNamespace:
-    return SimpleNamespace(chat=SimpleNamespace(completions=completions))
-
-
-def test_openai_off_is_sent_without_downgrade() -> None:
-    completions = _RecordingCompletions()
-    provider = OpenAIProvider("gpt-5.2", reasoning="off")
-    provider._client = _openai_client(completions)
-
-    provider.complete("system", "user")
-
-    assert completions.calls == [
-        {
-            "model": "gpt-5.2",
-            "messages": [
-                {"role": "system", "content": "system"},
-                {"role": "user", "content": "user"},
-            ],
-            "max_completion_tokens": 1200,
-            "temperature": 0.6,
-            "reasoning_effort": "none",
-        }
-    ]
-
-
-def test_deepseek_off_uses_native_thinking_body() -> None:
-    completions = _RecordingCompletions()
-    provider = CompatProvider(
-        "deepseek-chat",
-        "https://api.deepseek.com",
-        reasoning="off",
-        reasoning_style="deepseek",
-    )
-    provider._client = _openai_client(completions)
-
-    provider.complete("system", "user")
-
-    assert completions.calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
-    assert "reasoning_effort" not in completions.calls[0]
-
-
-def test_anthropic_adaptive_reasoning_sends_effort() -> None:
-    calls: list[dict[str, object]] = []
-
-    def create(**params: object) -> SimpleNamespace:
-        calls.append(dict(params))
-        return SimpleNamespace(
-            content=[SimpleNamespace(type="text", text="OK")],
-            usage=SimpleNamespace(input_tokens=2, output_tokens=1),
-        )
-
-    provider = AnthropicProvider("claude-opus-4-6", reasoning="xhigh")
-    provider._client = SimpleNamespace(messages=SimpleNamespace(create=create))
-
-    provider.complete("system", "user")
-
-    assert calls[0]["thinking"] == {"type": "adaptive"}
-    assert calls[0]["output_config"] == {"effort": "xhigh"}
-    assert "temperature" not in calls[0]
-
-
-def test_google_reasoning_uses_levels_and_legacy_budgets() -> None:
-    calls: list[dict[str, object]] = []
-
-    def generate_content(**params: object) -> SimpleNamespace:
-        calls.append(dict(params))
-        return SimpleNamespace(text="OK", usage_metadata=None)
-
-    client = SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
-    medium = GoogleProvider("gemini-3-flash-preview", reasoning="medium")
-    medium._client = client
-    high = GoogleProvider("gemini-2.5-pro", reasoning="high")
-    high._client = client
-
-    medium.complete("system", "user")
-    high.complete("system", "user")
-
-    medium_config = calls[0]["config"]
-    high_config = calls[1]["config"]
-    assert str(medium_config.thinking_config.thinking_level).lower().endswith("medium")
-    assert high_config.thinking_config.thinking_budget == 16_000
-    assert high_config.max_output_tokens == 17_200
+    with pytest.raises(ValueError, match="full OpenRouter id"):
+        parse_spec("cerebras:gpt-oss-120b")
 
 
 def test_compat_spec_preserves_url_ports() -> None:
-    spec = parse_spec("compat:http://127.0.0.1:8080/v1:model-name")
-    assert spec.base_url == "http://127.0.0.1:8080/v1"
-    assert spec.model == "model-name"
+    parsed = parse_spec("compat:http://127.0.0.1:8080/v1:model-name")
+    assert parsed.provider == "compat"
+    assert parsed.base_url == "http://127.0.0.1:8080/v1"
+    assert parsed.model == "model-name"
 
 
-def test_openai_compatible_presets() -> None:
-    expected = {
-        "meta": "https://api.meta.ai/v1",
-        "kimi": "https://api.moonshot.ai/v1",
-        "zai": "https://api.z.ai/api/paas/v4",
-        "openrouter": "https://openrouter.ai/api/v1",
-        "cerebras": "https://api.cerebras.ai/v1",
+def test_random_and_human_seats_are_not_providers() -> None:
+    for seat in ("random", "human"):
+        assert parse_spec(seat).provider == seat
+        with pytest.raises(ValueError, match="handled separately"):
+            make_provider(parse_spec(seat))
+
+
+def test_rejects_unqualified_model_ids() -> None:
+    for spec in ("claude-opus-5", "openrouter:claude-opus-5", ""):
+        with pytest.raises(ValueError):
+            parse_spec(spec)
+
+
+def test_streams_text_and_reasoning_with_usage() -> None:
+    usage = SimpleNamespace(
+        prompt_tokens=2500,
+        completion_tokens=40,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=2372),
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=30),
+    )
+    provider, completions = _provider(
+        [
+            _chunk(reasoning="weigh ", provider="anthropic"),
+            _chunk(reasoning="the discard"),
+            _chunk(content='{"choice"'),
+            _chunk(content=": 3}"),
+            _chunk(usage=usage),
+        ]
+    )
+
+    result = provider.complete(
+        [{"role": "user", "content": "go"}], max_tokens=40, temperature=0.6
+    )
+
+    assert result.text == '{"choice": 3}'
+    assert result.reasoning == "weigh the discard"
+    assert result.served_by == "anthropic"
+    assert result.usage == {
+        "input_tokens": 2500,
+        "output_tokens": 40,
+        "cached_input_tokens": 2372,
+        "reasoning_tokens": 30,
     }
-    for provider, base_url in expected.items():
-        spec = parse_spec(f"{provider}:model")
-        assert spec.provider == provider
-        assert spec.base_url == base_url
+    assert completions.calls[0]["stream"] is True
+    assert completions.calls[0]["stream_options"] == {"include_usage": True}
+    assert completions.calls[0]["temperature"] == 0.6
+
+
+def test_usage_absent_details_defaults_to_zero() -> None:
+    usage = SimpleNamespace(prompt_tokens=10, completion_tokens=1)
+    provider, _ = _provider([_chunk(content="ok"), _chunk(usage=usage)])
+
+    result = provider.complete([{"role": "user", "content": "go"}])
+
+    assert result.usage["cached_input_tokens"] == 0
+    assert result.usage["reasoning_tokens"] == 0
+    assert result.reasoning == ""
+
+
+def test_reasoning_effort_and_provider_pin_ride_extra_body() -> None:
+    provider, completions = _provider([_chunk(content="x")], reasoning="high", pin=("cerebras",))
+    provider.complete([{"role": "user", "content": "go"}])
+
+    extra = completions.calls[0]["extra_body"]
+    assert extra["reasoning"] == {"effort": "high"}
+    assert extra["provider"] == {"order": ["cerebras"], "allow_fallbacks": False}
+
+
+def test_reasoning_none_disables_rather_than_setting_effort() -> None:
+    provider, completions = _provider([_chunk(content="x")], reasoning="none")
+    provider.complete([{"role": "user", "content": "go"}])
+
+    assert completions.calls[0]["extra_body"]["reasoning"] == {"enabled": False}
+
+
+def test_no_extra_body_when_unconfigured() -> None:
+    provider, completions = _provider([_chunk(content="x")])
+    provider.complete([{"role": "user", "content": "go"}])
+
+    assert "extra_body" not in completions.calls[0]
+    assert "temperature" not in completions.calls[0]
+
+
+def test_reasoning_levels_follow_advertised_support() -> None:
+    reasons = {"supported_parameters": ["reasoning", "reasoning_effort", "temperature"]}
+    assert reasoning_levels("anthropic/claude-opus-5", reasons) == list(REASONING_LEVELS)
+
+    # Reasoning without the effort ladder still gets the full list: OpenRouter
+    # translates an effort it cannot pass through.
+    partial = {"supported_parameters": ["reasoning", "temperature"]}
+    assert reasoning_levels("anthropic/claude-haiku-4.5", partial) == list(REASONING_LEVELS)
+
+    assert reasoning_levels("openai/gpt-4o-mini", {"supported_parameters": ["temperature"]}) == []
+    assert reasoning_levels("anything", None) == []
+
+
+def test_list_models_projects_catalogue(monkeypatch) -> None:
+    payload = {
+        "data": [
+            {
+                "id": "openai/gpt-4o-mini",
+                "created": 100,
+                "supported_parameters": ["temperature"],
+            },
+            {
+                "id": "anthropic/claude-opus-5",
+                "name": "Claude Opus 5",
+                "created": 200,
+                "context_length": 1000000,
+                "supported_parameters": ["reasoning", "reasoning_effort", "temperature"],
+            },
+            {"created": 300},
+        ]
+    }
+
+    class _Response:
+        def read(self):
+            import json
+
+            return json.dumps(payload).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        "jongbench.providers.urllib_request.urlopen", lambda *a, **k: _Response()
+    )
+
+    models = list_models()
+
+    assert [m["id"] for m in models] == ["anthropic/claude-opus-5", "openai/gpt-4o-mini"]
+    assert models[0]["reasoning"] == list(REASONING_LEVELS)
+    assert models[0]["supports_temperature"] is True
+    assert models[1]["reasoning"] == []
+
+
+def test_cacheable_marks_an_ephemeral_breakpoint() -> None:
+    assert cacheable("rules") == [
+        {"type": "text", "text": "rules", "cache_control": {"type": "ephemeral"}}
+    ]

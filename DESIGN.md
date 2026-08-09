@@ -123,14 +123,30 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
   shanten, waits, and furiten. `render_menu` keeps raw mode labels free of these annotations.
 
 ### providers.py
-- `parse_spec(s)`: native `anthropic:<model>`, `openai:<model>`, and
-  `google:<model>` providers; fixed OpenAI-compatible presets for xAI, DeepSeek,
-  Meta, Kimi, Z.ai, OpenRouter, and Cerebras; `compat:<base_url>:<model>` for custom
-  endpoints; and `random`.
-- `Provider.complete(system, user, *, max_tokens=1200, temperature=0.6) -> (text, usage_dict)`
-  using official SDKs (`anthropic`, `openai`, `google-genai`), SDK retries enabled,
-  60s timeout. Fail with a clear message when a key is missing.
-- CLI providers read keys from env by default and accept an explicit `api_key` override
+- Every model is reached through OpenRouter over the `openai` SDK. OpenRouter owns
+  provider routing, parameter normalisation (it drops parameters a model does not
+  support instead of erroring), and the unified `reasoning` effort ladder, so jongbench
+  carries no per-vendor adapters or model-capability tables.
+- `parse_spec(s)`: `<vendor>/<model>` or `openrouter:<vendor>/<model>`; the legacy
+  `anthropic:`/`openai:`/`google:`/`xai:`/`deepseek:`/`meta:`/`kimi:`/`zai:` prefixes are
+  rewritten onto the matching OpenRouter vendor so saved run configs keep resolving;
+  `cerebras:<vendor>/<model>` pins routing to an inference provider;
+  `compat:<base_url>:<model>` for local OpenAI-compatible endpoints; `random`; `human`.
+- `Provider.complete(messages, *, max_tokens=1200, temperature=None) -> Completion`.
+  Always streamed (`stream_options.include_usage`), which is what keeps reasoning-heavy
+  seats under the request timeout at 16k-32k `max_tokens`. `Completion` carries text,
+  reasoning, usage (`input/output/cached_input/reasoning` tokens) and `served_by`.
+- `reasoning` maps to OpenRouter's `reasoning` body field: `off` -> `{"enabled": false}`,
+  any other level -> `{"effort": level}`. A pinned spec adds
+  `provider={"order": [...], "allow_fallbacks": false}` so a benchmark run is reproducible
+  against one upstream provider rather than whichever is cheapest that day.
+- `cacheable(text)` returns a `cache_control: ephemeral` content block. OpenRouter
+  forwards it to Anthropic (max 4 breakpoints, 0.1x read / 1.25x write); providers that
+  cache automatically ignore it.
+- `list_models()` is one GET against OpenRouter's catalogue; each entry carries
+  `supported_parameters`, from which `reasoning_levels()` and `supports_temperature` are
+  derived. Per-model capability is never inferred from the model name.
+- CLI reads `OPENROUTER_API_KEY` and accepts an explicit `api_key` override
   (`make_provider(spec, api_key=None)`). The shared web UI requires visitor-supplied keys
   and never falls back to the server process environment; keys live only in that game's
   memory and are never logged or persisted.

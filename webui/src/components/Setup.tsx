@@ -3,8 +3,7 @@ import * as api from "../api";
 import type { ModelEntry } from "../api";
 import { Dropdown } from "./Dropdown";
 import { ModelCombobox } from "./ModelCombobox";
-import { PROVIDERS, ProviderIcon, providerOf, providerOfName } from "../providers";
-import type { ProviderInfo } from "../providers";
+import { PROVIDERS, ProviderIcon, credentialsFor, providerOf, providerOfName } from "../providers";
 import type { SessionListItem } from "../types";
 import "./setup.css";
 
@@ -58,12 +57,13 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
     () => Array.from(new Set(seats.map((seat) => seat.providerId))).map((id) => providerOf(id)),
     [seats],
   );
-  const missingKeyProviders = selectedProviders.filter(
-    (provider) => provider.keyName !== null && !provider.optionalKey && !keys[provider.keyName]?.trim(),
+  const selectedCredentials = useMemo(() => credentialsFor(selectedProviders), [selectedProviders]);
+  const missingCredentials = selectedCredentials.filter(
+    (credential) => !credential.optional && !keys[credential.id]?.trim(),
   );
-  const missingKeysMessage = missingKeyProviders.length === 0
+  const missingKeysMessage = missingCredentials.length === 0
     ? null
-    : `Enter an API key for ${missingKeyProviders.map((provider) => provider.label).join(", ")}.`;
+    : `Enter an API key for ${missingCredentials.map((credential) => credential.label).join(", ")}.`;
   const humanSeat = seats.findIndex((seat) => seat.providerId === "human");
 
   useEffect(() => {
@@ -122,9 +122,7 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
     }
     setSubmitting(true);
     const requestKeys = Object.fromEntries(
-      selectedProviders
-        .filter((provider): provider is ProviderInfo & { keyName: string } => provider.keyName !== null)
-        .map((provider) => [provider.keyName, (keys[provider.keyName] ?? "").trim()]),
+      selectedCredentials.map((credential) => [credential.id, (keys[credential.id] ?? "").trim()]),
     );
     const models = seats.map((seat) => {
       const provider = providerOf(seat.providerId);
@@ -221,13 +219,13 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
           </div>
         </section>
 
-        {selectedProviders.some((provider) => provider.keyName !== null) && (
+        {selectedCredentials.length > 0 && (
           <section class="setup-card keys-panel">
             <div class="section-heading">
               <span class="tile-chip chip-haku" aria-hidden="true"></span>
               <div>
                 <h2>Keys</h2>
-                <p>Configure access for each selected provider. Keys are held in memory for this game only and never logged.</p>
+                <p>Every model is reached through OpenRouter, so one key covers every seat. Keys are held in memory for this game only and never logged.</p>
               </div>
             </div>
             <div class="keys-grid">
@@ -242,16 +240,16 @@ export function Setup({ onStarted }: { onStarted(runId: string): void }) {
                   />
                 </label>
               )}
-              {selectedProviders.filter((provider): provider is ProviderInfo & { keyName: string } => provider.keyName !== null).map((provider) => (
-                <label class="key-field" key={provider.id}>
-                  <span><ProviderIcon provider={provider} /> {provider.label} API key</span>
+              {selectedCredentials.map((credential) => (
+                <label class="key-field" key={credential.id}>
+                  <span>{credential.label} API key</span>
                   <input
                     type="password"
-                    value={keys[provider.keyName] ?? ""}
-                    placeholder={provider.optionalKey ? "Optional" : "Required"}
-                    required={!provider.optionalKey}
-                    aria-invalid={!provider.optionalKey && !keys[provider.keyName]?.trim()}
-                    onInput={(event) => setKeys((current) => ({ ...current, [provider.keyName]: event.currentTarget.value }))}
+                    value={keys[credential.id] ?? ""}
+                    placeholder={credential.optional ? "Optional" : "Required"}
+                    required={!credential.optional}
+                    aria-invalid={!credential.optional && !keys[credential.id]?.trim()}
+                    onInput={(event) => setKeys((current) => ({ ...current, [credential.id]: event.currentTarget.value }))}
                   />
                 </label>
               ))}

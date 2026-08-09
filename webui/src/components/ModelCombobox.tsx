@@ -51,21 +51,30 @@ export function ModelCombobox({ provider, apiKey, baseUrl, value, onChange, onMo
       setError(null);
       return;
     }
-    const cacheKey = `${provider.id}\0${baseUrl ?? ""}\0${key}`;
+    // One catalogue backs every vendor, so the fetch is cached per credential rather
+    // than per brand; the vendor slug only narrows what is shown.
+    const source = provider.id === "local" ? "compat" : "openrouter";
+    const cacheKey = `${source}\0${baseUrl ?? ""}\0${key}`;
     let cancelled = false;
     setLoading(true);
     setError(null);
     const timer = window.setTimeout(() => {
       let pending = modelCache.get(cacheKey);
       if (!pending) {
-        pending = api.listModels(provider.id === "local" ? "compat" : provider.id, key, baseUrl).catch((exc: Error) => {
+        pending = api.listModels(source, key, baseUrl).catch((exc: Error) => {
           modelCache.delete(cacheKey);
           throw exc;
         });
         modelCache.set(cacheKey, pending);
       }
-      pending.then((entries) => {
+      pending.then((all) => {
         if (cancelled) return;
+        const prefix = provider.vendor ? `${provider.vendor}/` : null;
+        const entries = prefix
+          ? all
+              .filter((entry) => entry.id.startsWith(prefix))
+              .map((entry) => ({ ...entry, id: entry.id.slice(prefix.length) }))
+          : all;
         setModels(entries);
         onModelsChangeRef.current(entries);
         setLoading(false);

@@ -4,6 +4,8 @@ export interface ProviderInfo {
   color: string;
   keyName: string | null;
   placeholder: string;
+  /* OpenRouter vendor slug this brand maps to; absent means the whole catalogue. */
+  vendor?: string;
   optionalKey?: boolean;
 }
 
@@ -12,57 +14,65 @@ export const PROVIDERS: ProviderInfo[] = [
     id: "anthropic",
     label: "Anthropic",
     color: "#d97757",
-    keyName: "anthropic",
+    keyName: "openrouter",
     placeholder: "claude-sonnet-5",
+    vendor: "anthropic",
   },
   {
     id: "openai",
     label: "OpenAI",
     color: "#10a37f",
-    keyName: "openai",
+    keyName: "openrouter",
     placeholder: "gpt-5.2",
+    vendor: "openai",
   },
   {
     id: "google",
     label: "Google",
     color: "#4285f4",
-    keyName: "google",
+    keyName: "openrouter",
     placeholder: "gemini-3-pro",
+    vendor: "google",
   },
   {
     id: "xai",
     label: "xAI",
     color: "#43474f",
-    keyName: "xai",
+    keyName: "openrouter",
     placeholder: "grok-4",
+    vendor: "x-ai",
   },
   {
     id: "deepseek",
     label: "DeepSeek",
     color: "#4d6bfe",
-    keyName: "deepseek",
+    keyName: "openrouter",
     placeholder: "deepseek-chat",
+    vendor: "deepseek",
   },
   {
     id: "meta",
     label: "Meta",
     color: "#0866ff",
-    keyName: "meta",
+    keyName: "openrouter",
     placeholder: "muse-spark-1.1",
+    vendor: "meta-llama",
   },
   {
     id: "kimi",
     label: "Kimi",
     color: "#6a51e6",
-    keyName: "kimi",
+    keyName: "openrouter",
     placeholder: "kimi-k2.6",
+    vendor: "moonshotai",
   },
   {
     id: "zai",
     label: "Z.ai",
     color: "#3d63e8",
-    keyName: "zai",
+    keyName: "openrouter",
     placeholder: "glm-5.2",
+    vendor: "z-ai",
   },
   {
     id: "openrouter",
@@ -75,8 +85,8 @@ export const PROVIDERS: ProviderInfo[] = [
     id: "cerebras",
     label: "Cerebras",
     color: "#f15a24",
-    keyName: "cerebras",
-    placeholder: "gpt-oss-120b",
+    keyName: "openrouter",
+    placeholder: "openai/gpt-oss-120b",
   },
   {
     id: "local",
@@ -101,6 +111,25 @@ export const PROVIDERS: ProviderInfo[] = [
     placeholder: "",
   },
 ];
+
+/* A provider is a display identity (brand, icon, spec prefix); a credential is what the
+   visitor actually has to type. Every vendor is reached through OpenRouter, so many
+   providers share one credential. */
+export interface CredentialInfo {
+  id: string;
+  label: string;
+  optional?: boolean;
+}
+
+const CREDENTIALS: Record<string, CredentialInfo> = {
+  openrouter: { id: "openrouter", label: "OpenRouter" },
+  compat: { id: "compat", label: "Local endpoint", optional: true },
+};
+
+export function credentialsFor(providers: ProviderInfo[]): CredentialInfo[] {
+  const ids = new Set(providers.map((p) => p.keyName).filter((id): id is string => id !== null));
+  return Array.from(ids).map((id) => CREDENTIALS[id] ?? { id, label: id });
+}
 
 export function providerOf(spec: string): ProviderInfo {
   const id = spec.split(":", 1)[0];

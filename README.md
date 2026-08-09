@@ -15,9 +15,9 @@ $ cp libriichi/target/release/libriichi.dylib jongbench/libriichi.so
 $ curl -L -o weights/mortal.pth https://huggingface.co/VoidShine/mortal-298k/resolve/main/mortal_298k.pth
 ```
 
-CLI API keys via env: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`.
-The shared web UI never reads server-side provider credentials; each visitor must
-enter the keys used by their game.
+All models are reached through [OpenRouter](https://openrouter.ai); the CLI reads one
+key from `OPENROUTER_API_KEY`. The shared web UI never reads server-side credentials;
+each visitor enters the key used by their game.
 
 ## Usage
 
@@ -26,16 +26,16 @@ enter the keys used by their game.
 $ jongbench selfcheck
 
 # benchmark: N games, summary + HTML report
-$ jongbench run --models anthropic:claude-sonnet-5 openai:gpt-5.2 google:gemini-3-pro random --games 8
+$ jongbench run --models anthropic/claude-sonnet-5 openai/gpt-5.2 google/gemini-3-pro random --games 8
 
 # raw-reasoning mode: omit engine-derived shanten/wait/furiten hints
-$ jongbench run --no-state-hints --models anthropic:claude-sonnet-5 openai:gpt-5.2 google:gemini-3-pro random --games 8
+$ jongbench run --no-state-hints --models anthropic/claude-sonnet-5 openai/gpt-5.2 google/gemini-3-pro random --games 8
 
 # watch one game live in the terminal
-$ jongbench watch --models anthropic:claude-sonnet-5 openai:gpt-5.2 google:gemini-3-pro random
+$ jongbench watch --models anthropic/claude-sonnet-5 openai/gpt-5.2 google/gemini-3-pro random
 
 # watch in the browser (add `human` as a model spec to take a seat yourself)
-$ jongbench watch --ui web --models anthropic:claude-sonnet-5 openai:gpt-5.2 google:gemini-3-pro human
+$ jongbench watch --ui web --models anthropic/claude-sonnet-5 openai/gpt-5.2 google/gemini-3-pro human
 
 # host the web UI in the background (visitors configure seats and bring their own keys)
 $ jongbench serve --host 0.0.0.0 --port 8642
@@ -60,9 +60,11 @@ Win events in the live log and saved mjai log include ron/tsumo, base hand point
 han, fu when relevant below the limit-hand threshold, or yakuman count, plus the
 engine-calculated yaku list.
 
-Model specs: `anthropic:<model>`, `openai:<model>`, `google:<model>`, `xai:<model>`,
-`deepseek:<model>`, `meta:<model>`, `kimi:<model>`, `zai:<model>`,
-`openrouter:<model>`, `cerebras:<model>`, `compat:<base_url>:<model>` (any
+Model specs: `<vendor>/<model>` (an OpenRouter id, e.g. `anthropic/claude-opus-5`) or
+the equivalent `openrouter:<vendor>/<model>`. The legacy prefixes `anthropic:`,
+`openai:`, `google:`, `xai:`, `deepseek:`, `meta:`, `kimi:` and `zai:` still resolve —
+they are rewritten onto the matching OpenRouter vendor. `cerebras:<vendor>/<model>`
+pins routing to that inference provider. Also `compat:<base_url>:<model>` (any
 OpenAI-compatible endpoint from the CLI, loopback-only in the web UI), and `random`.
 
 See `DESIGN.md` for architecture. Licensed AGPL-3.0 (inherits from vendored Mortal
