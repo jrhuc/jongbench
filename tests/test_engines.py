@@ -69,7 +69,7 @@ class RecordingLLMEngine(LLMEngine):
     ) -> None:
         super().__init__(
             name,
-            "openai:fake",
+            "openai/fake",
             decision_log=decision_log,
             concurrency=1,
         )
@@ -285,7 +285,7 @@ if __name__ == "__main__":
 
 
 def _engine_with_conversation(calls_enabled: bool, kyoku=("E", 1, 0)):
-    engine = LLMEngine("toggle", "openai:fake", decision_log=[], concurrency=1)
+    engine = LLMEngine("toggle", "openai/fake", decision_log=[], concurrency=1)
     engine.provider = FakeProvider()
     history = engines_module._Conversation(kyoku=kyoku)
     history.calls_enabled = calls_enabled

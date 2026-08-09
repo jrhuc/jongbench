@@ -66,7 +66,7 @@ def make_bridged_engine(
     """
     engine = engines.LLMEngine(
         name,
-        "openrouter:bridge/callback",
+        "bridge/callback",
         decision_log=decision_log,
         concurrency=1,
         spectator=spectator,

@@ -4,13 +4,10 @@ import pytest
 
 from jongbench.providers import (
     OPENROUTER_BASE_URL,
-    REASONING_LEVELS,
     Provider,
     cacheable,
-    list_models,
     make_provider,
     parse_spec,
-    reasoning_levels,
 )
 
 
@@ -40,32 +37,43 @@ def _provider(chunks, **kwargs) -> tuple[Provider, _FakeCompletions]:
     return provider, completions
 
 
-def test_spec_forms_all_resolve_to_openrouter() -> None:
-    for spec, model in [
-        ("anthropic/claude-opus-5", "anthropic/claude-opus-5"),
-        ("openrouter:anthropic/claude-opus-5", "anthropic/claude-opus-5"),
-        ("anthropic:claude-opus-5", "anthropic/claude-opus-5"),
-        ("openai:gpt-5.2", "openai/gpt-5.2"),
-        ("google:gemini-3-pro", "google/gemini-3-pro"),
-        ("xai:grok-4.1", "x-ai/grok-4.1"),
-        ("meta:llama-4", "meta-llama/llama-4"),
-        ("kimi:kimi-k2", "moonshotai/kimi-k2"),
-        ("zai:glm-5", "z-ai/glm-5"),
-    ]:
-        parsed = parse_spec(spec)
-        assert parsed.provider == "openrouter", spec
-        assert parsed.model == model, spec
-        assert parsed.base_url == OPENROUTER_BASE_URL
-        assert parsed.pin == ()
+def test_bare_openrouter_id_resolves() -> None:
+    parsed = parse_spec("anthropic/claude-opus-5")
+    assert parsed.provider == "openrouter"
+    assert parsed.model == "anthropic/claude-opus-5"
+    assert parsed.base_url == OPENROUTER_BASE_URL
+    assert parsed.pin == ()
+    assert parsed.reasoning is None
+    assert parsed.display_name == "claude-opus-5"
 
 
-def test_legacy_inference_provider_prefix_pins_routing() -> None:
-    parsed = parse_spec("cerebras:openai/gpt-oss-120b")
+def test_variant_ids_keep_their_colon_suffix() -> None:
+    assert parse_spec("meta-llama/llama-3.1-8b-instruct:free").model == (
+        "meta-llama/llama-3.1-8b-instruct:free"
+    )
+
+
+def test_at_suffix_pins_inference_routing() -> None:
+    parsed = parse_spec("openai/gpt-oss-120b@cerebras")
     assert parsed.model == "openai/gpt-oss-120b"
     assert parsed.pin == ("cerebras",)
 
-    with pytest.raises(ValueError, match="full OpenRouter id"):
-        parse_spec("cerebras:gpt-oss-120b")
+    ordered = parse_spec("openai/gpt-oss-120b@cerebras,groq")
+    assert ordered.pin == ("cerebras", "groq")
+
+
+def test_hash_suffix_sets_reasoning_effort() -> None:
+    parsed = parse_spec("openai/gpt-5.2#high")
+    assert parsed.model == "openai/gpt-5.2"
+    assert parsed.reasoning == "high"
+    assert parsed.display_name == "gpt-5.2-high"
+
+    combined = parse_spec("openai/gpt-oss-120b@cerebras#low")
+    assert combined.pin == ("cerebras",)
+    assert combined.reasoning == "low"
+
+    with pytest.raises(ValueError):
+        parse_spec("openai/gpt-5.2#hard")
 
 
 def test_compat_spec_preserves_url_ports() -> None:
@@ -83,7 +91,7 @@ def test_random_and_human_seats_are_not_providers() -> None:
 
 
 def test_rejects_unqualified_model_ids() -> None:
-    for spec in ("claude-opus-5", "openrouter:claude-opus-5", ""):
+    for spec in ("claude-opus-5", "anthropic:claude-opus-5", "anthropic/", ""):
         with pytest.raises(ValueError):
             parse_spec(spec)
 
@@ -158,60 +166,10 @@ def test_no_extra_body_when_unconfigured() -> None:
     assert "temperature" not in completions.calls[0]
 
 
-def test_reasoning_levels_follow_advertised_support() -> None:
-    reasons = {"supported_parameters": ["reasoning", "reasoning_effort", "temperature"]}
-    assert reasoning_levels("anthropic/claude-opus-5", reasons) == list(REASONING_LEVELS)
-
-    # Reasoning without the effort ladder still gets the full list: OpenRouter
-    # translates an effort it cannot pass through.
-    partial = {"supported_parameters": ["reasoning", "temperature"]}
-    assert reasoning_levels("anthropic/claude-haiku-4.5", partial) == list(REASONING_LEVELS)
-
-    assert reasoning_levels("openai/gpt-4o-mini", {"supported_parameters": ["temperature"]}) == []
-    assert reasoning_levels("anything", None) == []
-
-
-def test_list_models_projects_catalogue(monkeypatch) -> None:
-    payload = {
-        "data": [
-            {
-                "id": "openai/gpt-4o-mini",
-                "created": 100,
-                "supported_parameters": ["temperature"],
-            },
-            {
-                "id": "anthropic/claude-opus-5",
-                "name": "Claude Opus 5",
-                "created": 200,
-                "context_length": 1000000,
-                "supported_parameters": ["reasoning", "reasoning_effort", "temperature"],
-            },
-            {"created": 300},
-        ]
-    }
-
-    class _Response:
-        def read(self):
-            import json
-
-            return json.dumps(payload).encode()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-    monkeypatch.setattr(
-        "jongbench.providers.urllib_request.urlopen", lambda *a, **k: _Response()
-    )
-
-    models = list_models()
-
-    assert [m["id"] for m in models] == ["anthropic/claude-opus-5", "openai/gpt-4o-mini"]
-    assert models[0]["reasoning"] == list(REASONING_LEVELS)
-    assert models[0]["supports_temperature"] is True
-    assert models[1]["reasoning"] == []
+def test_spec_reasoning_reaches_the_provider() -> None:
+    provider = make_provider(parse_spec("openai/gpt-5.2#high"))
+    assert provider.reasoning == "high"
+    assert make_provider(parse_spec("openai/gpt-5.2#high"), reasoning="low").reasoning == "low"
 
 
 def test_cacheable_marks_an_ephemeral_breakpoint() -> None:

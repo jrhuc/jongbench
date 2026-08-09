@@ -1,39 +1,19 @@
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass, field
 from typing import Any
-from urllib import error as urllib_error
-from urllib import request as urllib_request
 
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_ENV_KEY = "OPENROUTER_API_KEY"
 
 USAGE = (
-    "Usage: <vendor>/<model> (e.g. anthropic/claude-opus-5), "
-    "openrouter:<vendor>/<model>, compat:<base_url>:<model>, random, or human. "
-    "Legacy prefixes anthropic:, openai:, google:, xai:, deepseek:, meta:, "
-    "kimi:, zai:, cerebras: are accepted and routed via OpenRouter."
+    "Usage: <vendor>/<model> — an OpenRouter id, e.g. anthropic/claude-opus-5 — "
+    "optionally suffixed with @<provider>[,<provider>...] to pin inference routing "
+    "and #<effort> to set reasoning (off, minimal, low, medium, high, xhigh, max). "
+    "Also compat:<base_url>:<model>, random, and human."
 )
-
-# Legacy `<prefix>:<model>` specs, mapped to the OpenRouter vendor namespace so
-# existing run configs and saved reports keep resolving.
-VENDOR_ALIASES = {
-    "anthropic": "anthropic",
-    "openai": "openai",
-    "google": "google",
-    "xai": "x-ai",
-    "deepseek": "deepseek",
-    "meta": "meta-llama",
-    "kimi": "moonshotai",
-    "zai": "z-ai",
-}
-
-# Legacy prefixes naming an OpenRouter inference provider rather than a vendor.
-# These pin routing; the model must already be a full `<vendor>/<model>` id.
-PROVIDER_ALIASES = {"cerebras": "cerebras"}
 
 # jongbench's own vocabulary, kept stable so saved run configs keep resolving.
 # "off" maps to OpenRouter's disable switch rather than an effort level.
@@ -47,12 +27,14 @@ class ProviderSpec:
     model: str
     base_url: str | None = None
     pin: tuple[str, ...] = ()
+    reasoning: str | None = None
 
     @property
     def display_name(self) -> str:
         if self.provider in {"random", "human"}:
             return self.provider
-        return self.model.rpartition("/")[2] or self.model
+        base = self.model.rpartition("/")[2] or self.model
+        return f"{base}-{self.reasoning}" if self.reasoning else base
 
 
 @dataclass
@@ -74,31 +56,22 @@ def parse_spec(s: str) -> ProviderSpec:
             raise ValueError(USAGE)
         return ProviderSpec(provider="compat", model=model, base_url=base_url)
 
-    prefix, sep, rest = s.partition(":")
-    if sep and rest:
-        if prefix == "openrouter":
-            return _openrouter(rest)
-        if prefix in VENDOR_ALIASES:
-            return _openrouter(f"{VENDOR_ALIASES[prefix]}/{rest}")
-        if prefix in PROVIDER_ALIASES:
-            if "/" not in rest:
-                raise ValueError(
-                    f"{prefix}: pins an inference provider, so the model must be a "
-                    f"full OpenRouter id, e.g. {prefix}:openai/gpt-oss-120b"
-                )
-            return _openrouter(rest, pin=(PROVIDER_ALIASES[prefix],))
+    # `#effort` before `@pin`: neither character appears in OpenRouter model ids,
+    # and `:` cannot separate suffixes because ids use it for variants (`:free`).
+    s, _, effort = s.partition("#")
+    if effort and effort not in REASONING_LEVELS:
+        raise ValueError(USAGE)
+    s, _, pinned = s.partition("@")
+    pin = tuple(p for p in pinned.split(",") if p) if pinned else ()
 
-    if "/" in s and not s.startswith("/"):
-        return _openrouter(s)
-
-    raise ValueError(USAGE)
-
-
-def _openrouter(model: str, pin: tuple[str, ...] = ()) -> ProviderSpec:
-    if "/" not in model:
+    if "/" not in s or s.startswith("/") or not s.rpartition("/")[2]:
         raise ValueError(USAGE)
     return ProviderSpec(
-        provider="openrouter", model=model, base_url=OPENROUTER_BASE_URL, pin=pin
+        provider="openrouter",
+        model=s,
+        base_url=OPENROUTER_BASE_URL,
+        pin=pin,
+        reasoning=effort or None,
     )
 
 
@@ -213,7 +186,7 @@ def make_provider(
         spec.base_url,
         api_key=api_key,
         env_key=env_key,
-        reasoning=reasoning,
+        reasoning=reasoning if reasoning is not None else spec.reasoning,
         pin=spec.pin,
     )
 
@@ -246,52 +219,6 @@ def _reasoning_tokens(usage: Any) -> int | None:
     if details is None:
         return None
     return _extra(details, "reasoning_tokens")
-
-
-def reasoning_levels(model: str, metadata: dict[str, Any] | None = None) -> list[str]:
-    """Effort levels offered for `model`, from OpenRouter's advertised
-    `supported_parameters`. OpenRouter clamps a level a model cannot honour, so the
-    full ladder is offered whenever the model reasons at all."""
-    if metadata is None:
-        return []
-    supported = metadata.get("supported_parameters") or []
-    if "reasoning" not in supported:
-        return []
-    return list(REASONING_LEVELS)
-
-
-def list_models(api_key: str | None = None, base_url: str | None = None) -> list[dict[str, Any]]:
-    """The OpenRouter catalogue, newest first. `supported_parameters` rides along so
-    callers can derive reasoning and temperature support without probing."""
-    url = (base_url or OPENROUTER_BASE_URL).rstrip("/") + "/models"
-    request = urllib_request.Request(url, headers={"Accept": "application/json"})
-    if api_key:
-        request.add_header("Authorization", f"Bearer {api_key}")
-    try:
-        with urllib_request.urlopen(request, timeout=30) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (urllib_error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"could not list OpenRouter models: {exc}") from exc
-
-    models = []
-    for entry in payload.get("data", []):
-        model_id = entry.get("id")
-        if not model_id:
-            continue
-        supported = entry.get("supported_parameters") or []
-        models.append(
-            {
-                "id": model_id,
-                "name": entry.get("name") or model_id,
-                "created": int(entry.get("created") or 0),
-                "context_length": entry.get("context_length"),
-                "supported_parameters": supported,
-                "reasoning": reasoning_levels(model_id, entry),
-                "supports_temperature": "temperature" in supported,
-            }
-        )
-    models.sort(key=lambda m: (-m["created"], m["id"]))
-    return models
 
 
 def cacheable(text: str) -> list[dict[str, Any]]:

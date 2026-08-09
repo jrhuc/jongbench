@@ -252,7 +252,8 @@ class LLMEngine(BaseEngine):
     ) -> None:
         super().__init__(name, spectator=spectator, concurrency=concurrency)
         self.spec = providers.parse_spec(spec_str)
-        self.reasoning = reasoning
+        self.reasoning = reasoning if reasoning is not None else self.spec.reasoning
+        reasoning = self.reasoning
         self.provider = providers.make_provider(
             self.spec, api_key=api_key, reasoning=reasoning
         )
