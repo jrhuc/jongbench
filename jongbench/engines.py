@@ -24,6 +24,12 @@ class _Conversation:
     kyoku: tuple[Any, ...] | None
     messages: list[dict[str, Any]] = field(default_factory=list)
     seen_events: int = 0
+    calls_enabled: bool = True
+
+
+# Reaction kinds a declined-calls seat may skip. `hora` is deliberately absent: the furo
+# toggle must never cost a seat a win, and neither may it touch its own turn.
+_DECLINABLE = {"none", "chi", "pon", "daiminkan"}
 
 
 def _kyoku_id(events: list[dict[str, Any]]) -> tuple[Any, ...] | None:
@@ -95,10 +101,13 @@ class BaseEngine(ABC):
 
             events = sanitize_events(raw_events, player_id)
             menu = actions.build_menu(game_state.state)
+            auto = self.auto_reaction(game_state.state, menu, events, game_index)
             if not menu:
                 reactions[index] = {"type": "none"}
             elif len(menu) == 1 and self.auto_choose_single_menu:
                 reactions[index] = menu[0]["event"]
+            elif auto is not None:
+                reactions[index] = auto
             else:
                 jobs.append((index, game_index, player_id, game_state.state, events, menu))
 
@@ -128,6 +137,16 @@ class BaseEngine(ABC):
                 raise RuntimeError("missing reaction")
             encoded.append(json.dumps(reaction, separators=(",", ":")))
         return encoded
+
+    def auto_reaction(
+        self,
+        state: Any,
+        menu: list[actions.MenuItem],
+        events: list[dict[str, Any]],
+        game_index: int,
+    ) -> dict[str, Any] | None:
+        """An action to play without consulting the engine, or None to decide normally."""
+        return None
 
     def start_game(self, game_idx: int) -> None:
         pass
@@ -224,6 +243,8 @@ class LLMEngine(BaseEngine):
             "reasoning_tokens": 0,
             "fallbacks": 0,
             "retries": 0,
+            "calls_declined": 0,
+            "call_policy_changes": 0,
         }
         self.conversational = bool(conversational)
         self._log_lock = threading.Lock()
@@ -242,9 +263,16 @@ class LLMEngine(BaseEngine):
         labels = [str(item["label"]) for item in menu]
         prompt_events = _prompt_safe_events(events)
         history, opening = self._open_turn(game_index, prompt_events)
+        own_turn = bool(state.last_cans.can_discard)
+        calls_enabled = history.calls_enabled if own_turn else None
         if opening:
             prompt = prompts.build_user_prompt(
-                player_id, state, prompt_events, menu, state_hints=self.state_hints
+                player_id,
+                state,
+                prompt_events,
+                menu,
+                state_hints=self.state_hints,
+                calls_enabled=calls_enabled,
             )
         else:
             prompt = prompts.build_followup_prompt(
@@ -253,6 +281,7 @@ class LLMEngine(BaseEngine):
                 prompt_events[history.seen_events :],
                 menu,
                 state_hints=self.state_hints,
+                calls_enabled=calls_enabled,
             )
         raw_response = ""
         raw_reasoning = ""
@@ -322,6 +351,12 @@ class LLMEngine(BaseEngine):
             if fallback is None:
                 fallback = "invalid_choice"
 
+        requested = prompts.extract_call_policy(raw_response) if own_turn else None
+        if requested is not None and requested != history.calls_enabled:
+            history.calls_enabled = requested
+            with self._log_lock:
+                self.totals["call_policy_changes"] += 1
+
         # The transcript records what was actually played, fallbacks included, so the
         # seat's next turn reasons from the real board rather than an answer it never gave.
         self._close_turn(history, prompt, choice, len(prompt_events))
@@ -336,6 +371,7 @@ class LLMEngine(BaseEngine):
             "choice_label": labels[choice],
             "prompt_version": 3,
             "state_hints": self.state_hints,
+            "calls_enabled": history.calls_enabled,
             "fallback": fallback,
             "raw_response": raw_response[:4000],
             "raw_reasoning": raw_reasoning[:16000],
@@ -346,6 +382,34 @@ class LLMEngine(BaseEngine):
         }
         self._record_decision(record, calls, usage_total, fallback is not None, retries)
         return menu[choice]["event"]
+
+    def auto_reaction(
+        self,
+        state: Any,
+        menu: list[actions.MenuItem],
+        events: list[dict[str, Any]],
+        game_index: int,
+    ) -> dict[str, Any] | None:
+        """Pass on a call the seat has already said it does not want. This only fires on
+        a pure chi/pon/open-kan reaction: a menu offering a win, or anything on the
+        seat's own turn, is always put to the model."""
+        if not menu or bool(state.last_cans.can_discard):
+            return None
+        kinds = {str(item.get("kind")) for item in menu}
+        if not kinds <= _DECLINABLE:
+            return None
+        with self._conversation_lock:
+            history = self._conversations.get(game_index)
+            if history is None or history.kyoku != _kyoku_id(events):
+                return None
+            if history.calls_enabled:
+                return None
+        pass_item = next((item for item in menu if item.get("kind") == "none"), None)
+        if pass_item is None:
+            return None
+        with self._log_lock:
+            self.totals["calls_declined"] += 1
+        return pass_item["event"]
 
     def _open_turn(
         self, game_index: int, events: list[dict[str, Any]]

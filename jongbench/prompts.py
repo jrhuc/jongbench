@@ -125,6 +125,13 @@ are all terminals and honours, none of them called, instead scores nagashi manga
 The hand also aborts when the first four discards are the same wind, and when a fourth kan
 is declared by more than one player.
 
+CALL POLICY
+On your own turn you may set whether you are willing to call on other players' discards,
+the way a client's furo toggle works. Add "calls":"off" to your reply to stop being
+offered chi, pon and open kan, or "calls":"on" to resume. It stays as you set it until
+you change it or the hand ends, and it never affects winning: ron and tsumo are always
+offered, as are your own draws, closed kan and added kan.
+
 THIS PROMPT
 All listed actions are legal. A win option is listed only when the hand may legally win now.
 Structural tenpai and waits do not by themselves guarantee a yaku or legal win.
@@ -236,13 +243,16 @@ def build_user_prompt(
     error_feedback: str | None = None,
     *,
     state_hints: bool = False,
+    calls_enabled: bool | None = None,
 ) -> str:
     lines = [
         render_state(player_id, state, events, state_hints=state_hints),
-        "",
-        "Choose your action:",
-        render_menu(menu, state=state, state_hints=state_hints),
     ]
+    if calls_enabled is not None:
+        lines.append(call_policy_line(calls_enabled))
+    lines.extend(
+        ["", "Choose your action:", render_menu(menu, state=state, state_hints=state_hints)]
+    )
     if error_feedback:
         lines.extend(
             [
@@ -264,6 +274,7 @@ def build_followup_prompt(
     error_feedback: str | None = None,
     *,
     state_hints: bool = False,
+    calls_enabled: bool | None = None,
 ) -> str:
     """A later turn of a per-kyoku conversation: only what changed since this seat last
     acted. The opening turn carried the whole board, and the transcript above still holds
@@ -274,6 +285,8 @@ def build_followup_prompt(
     lines.append(render_hand(player_id, state, new_events))
     if state_hints:
         lines.extend(_state_hint_lines(state))
+    if calls_enabled is not None:
+        lines.append(call_policy_line(calls_enabled))
     lines.extend(
         ["", "Choose your action:", render_menu(menu, state=state, state_hints=state_hints)]
     )
@@ -286,6 +299,26 @@ def build_followup_prompt(
         )
     lines.extend(["", 'Reply with exactly: {"choice": N}'])
     return "\n".join(lines)
+
+
+def call_policy_line(calls_enabled: bool) -> str:
+    state = "accepting" if calls_enabled else "declining"
+    other = "off" if calls_enabled else "on"
+    return (
+        f'Call policy: currently {state} calls on other players\' discards. '
+        f'Add "calls":"{other}" to your reply to change it; ron and tsumo are unaffected.'
+    )
+
+
+def extract_call_policy(text: str) -> bool | None:
+    """The seat's requested furo setting, or None if it did not ask to change one.
+    Conflicting settings in one reply are ignored rather than guessed at."""
+    found = set()
+    for match in re.finditer(r'"calls"\s*:\s*"(on|off)"', text, flags=re.IGNORECASE):
+        found.add(match.group(1).lower() == "on")
+    if len(found) != 1:
+        return None
+    return found.pop()
 
 
 def extract_choice(text: str, n_options: int) -> int:

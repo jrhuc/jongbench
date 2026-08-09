@@ -88,6 +88,24 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
   else prompts the model (prompts.py), expects `{"choice": <int>}` (tolerate reasoning text
   around one unambiguous JSON choice). Invalid or conflicting choices → one retry with the
   error appended.
+- Conversational by default: one transcript per seat per kyoku, keyed by `game_index` so
+  concurrent games do not share one. The opening turn carries the whole board; later turns
+  send only the events since that seat last acted, plus its hand and the menu. Assistant
+  turns are stored as the bare `{"choice": N}` so reasoning never re-enters context, and
+  the stored answer is always what was *played* (fallbacks included). Append-only, with the
+  cache breakpoint on the newest user turn, so each turn reads what the previous wrote.
+  `conversational=False` restores one self-contained prompt per decision — which is also
+  what a replayed-position taskset wants.
+- Furo toggle: on its own turn a seat may add `"calls":"off"` (or `"on"`) to its reply.
+  While declined, `auto_reaction` passes chi/pon/daiminkan reactions without a model call.
+  It resets to accepting at each kyoku, and it can never suppress a win or an own-turn
+  action — `auto_reaction` bails unless the menu's kinds are a subset of
+  `{none, chi, pon, daiminkan}` and `can_discard` is false. The pass is still written to
+  the game log, so Mortal grades it exactly as if it had been asked for.
+  Measured over 4 games with every seat declining: 578 reactions skipped but only 2.7%
+  fewer model calls overall, because a seat that stops calling keeps hands closed, which
+  lengthens kyoku and adds back own-turn decisions. It is an agency and play-quality
+  feature, not a cost lever.
   Final fallback: tsumogiri/none. Records every decision to a .jsonl sink:
   `{game_seed, kyoku, honba, player_id, menu, choice, fallback, raw_response, usage, latency_ms}`.
 - Engines never see Mortal, EV tables, hidden tiles, safety rankings, or a recommended move.
@@ -113,8 +131,21 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
   face-down): the server masks `snapshot()` hands for seats != pov before sending.
 
 ### prompts.py
-- `SYSTEM`: concise riichi rules reminder + "you are playing a benchmark game" + strict
-  output contract (exactly one JSON `{"choice": N}` object and no prose).
+- `SYSTEM`: a rules reference (notation, hand structure, yaku with open/closed han, waits,
+  scoring and fu, call and riichi mechanics, furiten, draws) + the furo-toggle contract +
+  strict output contract (exactly one JSON `{"choice": N}` object and no prose).
+  Rules only, deliberately no strategy: coaching the seats would change what is measured.
+  Its length is load-bearing — at ~1.1k tokens it clears the minimum cacheable prefix
+  (512 on Opus 5, 1024 on Sonnet 5 / Opus 4.8). The old ~310-token version was below every
+  model's floor and so never cached at all, whatever markers were placed. The draw rules
+  are written against libriichi, not from memory: nagashi mangan and the four-wind and
+  four-kan aborts exist; there is no kyuushu kyuuhai, so none is claimed.
+- `build_followup_prompt(...)` renders a later conversational turn: events since this seat
+  last acted, its hand, optional hints, the menu. `render_hand` takes meld counts from
+  `PlayerState` rather than replaying events, so a delta slice renders what a full history
+  would (verified equal across 4,755 decisions, 51 of them involving a kakan).
+- `extract_call_policy(text)` reads the furo toggle; a reply naming both settings is
+  ambiguous either way round and is ignored rather than guessed at.
 - `render_state(player_id, state, events, state_hints=...) -> str`: text block built from PlayerState
   getters + parsed kyoku events: round/honba/kyotaku, seat winds, scores, dora indicators,
   own hand as separately counted tiles (`5p(red)`, never numeric `0p`) + drawn tile, own melds,

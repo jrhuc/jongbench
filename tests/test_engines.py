@@ -12,7 +12,10 @@ if str(ROOT) not in sys.path:
 
 import jongbench
 import libriichi
-from jongbench import providers
+from types import SimpleNamespace
+
+from jongbench import engines as engines_module
+from jongbench import prompts, providers
 from jongbench.engines import LLMEngine, RandomEngine, sanitize_events
 
 
@@ -279,3 +282,76 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def _engine_with_conversation(calls_enabled: bool, kyoku=("E", 1, 0)):
+    engine = LLMEngine("toggle", "openai:fake", decision_log=[], concurrency=1)
+    engine.provider = FakeProvider()
+    history = engines_module._Conversation(kyoku=kyoku)
+    history.calls_enabled = calls_enabled
+    engine._conversations[0] = history
+    return engine
+
+
+_REACTION_EVENTS = [{"type": "start_kyoku", "bakaze": "E", "kyoku": 1, "honba": 0}]
+
+
+def _state(can_discard: bool):
+    return SimpleNamespace(last_cans=SimpleNamespace(can_discard=can_discard))
+
+
+def test_extract_call_policy() -> None:
+    assert prompts.extract_call_policy('{"choice": 2, "calls": "off"}') is False
+    assert prompts.extract_call_policy('{"choice": 2, "calls":"on"}') is True
+    assert prompts.extract_call_policy('{"choice": 2, "calls": "OFF"}') is False
+    assert prompts.extract_call_policy('{"choice": 2}') is None
+    # A reply naming both settings is ambiguous whichever end you read from.
+    assert prompts.extract_call_policy('{"calls":"on"} ... {"calls":"off"}') is None
+
+
+def test_declining_calls_skips_only_pure_call_reactions() -> None:
+    engine = _engine_with_conversation(calls_enabled=False)
+    menu = [
+        {"kind": "none", "label": "pass", "event": {"type": "none"}},
+        {"kind": "chi", "label": "chi", "event": {"type": "chi"}},
+    ]
+    assert engine.auto_reaction(_state(False), menu, _REACTION_EVENTS, 0) == {"type": "none"}
+    assert engine.totals["calls_declined"] == 1
+
+
+def test_declining_calls_never_suppresses_a_win() -> None:
+    engine = _engine_with_conversation(calls_enabled=False)
+    menu = [
+        {"kind": "none", "label": "pass", "event": {"type": "none"}},
+        {"kind": "hora", "label": "ron", "event": {"type": "hora"}},
+    ]
+    assert engine.auto_reaction(_state(False), menu, _REACTION_EVENTS, 0) is None
+    assert engine.totals["calls_declined"] == 0
+
+
+def test_declining_calls_never_touches_your_own_turn() -> None:
+    engine = _engine_with_conversation(calls_enabled=False)
+    menu = [
+        {"kind": "discard", "label": "1m", "event": {"type": "dahai"}},
+        {"kind": "ankan", "label": "ankan", "event": {"type": "ankan"}},
+    ]
+    assert engine.auto_reaction(_state(True), menu, _REACTION_EVENTS, 0) is None
+
+
+def test_calls_are_accepted_again_in_a_new_kyoku() -> None:
+    engine = _engine_with_conversation(calls_enabled=False, kyoku=("E", 1, 0))
+    menu = [
+        {"kind": "none", "label": "pass", "event": {"type": "none"}},
+        {"kind": "pon", "label": "pon", "event": {"type": "pon"}},
+    ]
+    later = [{"type": "start_kyoku", "bakaze": "E", "kyoku": 2, "honba": 0}]
+    assert engine.auto_reaction(_state(False), menu, later, 0) is None
+
+
+def test_accepting_calls_asks_the_model() -> None:
+    engine = _engine_with_conversation(calls_enabled=True)
+    menu = [
+        {"kind": "none", "label": "pass", "event": {"type": "none"}},
+        {"kind": "pon", "label": "pon", "event": {"type": "pon"}},
+    ]
+    assert engine.auto_reaction(_state(False), menu, _REACTION_EVENTS, 0) is None
