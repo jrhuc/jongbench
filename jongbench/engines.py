@@ -249,6 +249,7 @@ class LLMEngine(BaseEngine):
         state_hints: bool = True,
         reasoning: str | None = None,
         conversational: bool = True,
+        auto_pass_reactions: bool = False,
     ) -> None:
         super().__init__(name, spectator=spectator, concurrency=concurrency)
         self.spec = providers.parse_spec(spec_str)
@@ -276,6 +277,7 @@ class LLMEngine(BaseEngine):
             "call_policy_changes": 0,
         }
         self.conversational = bool(conversational)
+        self.auto_pass_reactions = bool(auto_pass_reactions)
         self._log_lock = threading.Lock()
         self._conversations: dict[int, _Conversation] = {}
         self._conversation_lock = threading.Lock()
@@ -422,20 +424,22 @@ class LLMEngine(BaseEngine):
         events: list[dict[str, Any]],
         game_index: int,
     ) -> dict[str, Any] | None:
-        """Pass on a call the seat has already said it does not want. This only fires on
-        a pure chi/pon/open-kan reaction: a menu offering a win, or anything on the
-        seat's own turn, is always put to the model."""
+        """Pass on a call the seat has declined — through the furo toggle, or engine-wide
+        with `auto_pass_reactions` (a cost mode: ~15% of decisions are pure reactions).
+        This only fires on a pure chi/pon/open-kan reaction: a menu offering a win, or
+        anything on the seat's own turn, is always put to the model."""
         if not menu or bool(state.last_cans.can_discard):
             return None
         kinds = {str(item.get("kind")) for item in menu}
         if not kinds <= _DECLINABLE:
             return None
-        with self._conversation_lock:
-            history = self._conversations.get(game_index)
-            if history is None or history.kyoku != _kyoku_id(events):
-                return None
-            if history.calls_enabled:
-                return None
+        if not self.auto_pass_reactions:
+            with self._conversation_lock:
+                history = self._conversations.get(game_index)
+                if history is None or history.kyoku != _kyoku_id(events):
+                    return None
+                if history.calls_enabled:
+                    return None
         pass_item = next((item for item in menu if item.get("kind") == "none"), None)
         if pass_item is None:
             return None

@@ -164,6 +164,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             concurrency=int(args.concurrency),
             temperature=float(args.temperature),
             state_hints=bool(args.state_hints),
+            auto_pass_reactions=bool(args.auto_pass_reactions),
         )
         for name, spec in zip(names, specs, strict=True)
     ]
@@ -450,6 +451,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="include engine-derived shanten, waits, and furiten facts in model prompts",
+    )
+    run.add_argument(
+        "--auto-pass-reactions",
+        action="store_true",
+        help="pass pure chi/pon/kan reactions without a model call (~15%% fewer calls; "
+        "the seats never call on others' discards)",
     )
     run.set_defaults(func=_cmd_run)
 

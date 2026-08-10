@@ -355,3 +355,29 @@ def test_accepting_calls_asks_the_model() -> None:
         {"kind": "pon", "label": "pon", "event": {"type": "pon"}},
     ]
     assert engine.auto_reaction(_state(False), menu, _REACTION_EVENTS, 0) is None
+
+
+def test_auto_pass_reactions_skips_calls_without_any_conversation() -> None:
+    """The engine-wide cost mode passes pure reactions even where the furo toggle
+    would not fire: no conversation opened, calls never declined by the model."""
+    engine = LLMEngine(
+        "cheap", "openai/fake", decision_log=[], concurrency=1, auto_pass_reactions=True
+    )
+    engine.provider = FakeProvider()
+    menu = [
+        {"kind": "none", "label": "pass", "event": {"type": "none"}},
+        {"kind": "chi", "label": "chi", "event": {"type": "chi"}},
+    ]
+    assert engine.auto_reaction(_state(False), menu, _REACTION_EVENTS, 0) == {"type": "none"}
+    assert engine.totals["calls_declined"] == 1
+
+    win = [
+        {"kind": "none", "label": "pass", "event": {"type": "none"}},
+        {"kind": "hora", "label": "ron", "event": {"type": "hora"}},
+    ]
+    assert engine.auto_reaction(_state(False), win, _REACTION_EVENTS, 0) is None
+    own_turn = [
+        {"kind": "discard", "label": "1m", "event": {"type": "dahai"}},
+        {"kind": "pon", "label": "pon", "event": {"type": "pon"}},
+    ]
+    assert engine.auto_reaction(_state(True), own_turn, _REACTION_EVENTS, 0) is None
