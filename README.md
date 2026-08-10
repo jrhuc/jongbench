@@ -101,6 +101,8 @@ gitignored). It is both the live spectator and the replay viewer, and the built
 page is a single self-contained file: host it anywhere static (GitHub Pages)
 with a `replay.json` beside it and it plays that game on load — or open it with
 `#replay` for a file picker that takes any `--out` bundle.
+`.github/workflows/pages.yml` deploys exactly that: the built page plus the
+showcase game in `assets/showcase-replay.json.gz`.
 
 See `DESIGN.md` for architecture. Licensed AGPL-3.0 (inherits from vendored Mortal
 code). The Mortal weights are the community-trained
