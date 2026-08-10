@@ -43,15 +43,22 @@ export function fetchReview(): Promise<Review> {
   return json<Review>(fetch("/api/review", { cache: "no-store" }));
 }
 
+export interface FoundReplay {
+  bundle: ReplayBundle;
+  source: "api" | "static";
+}
+
 /** A replay bundle when one is being served — by `jongbench replay` at /api/replay, or
  * as a static replay.json next to the page — else null, meaning live-watch mode. */
-export async function findReplay(): Promise<ReplayBundle | null> {
+export async function findReplay(): Promise<FoundReplay | null> {
   for (const url of ["/api/replay", "replay.json"]) {
     try {
       const response = await fetch(url, { cache: "no-store" });
       if (!response.ok) continue;
       const bundle = (await response.json()) as ReplayBundle;
-      if (Array.isArray(bundle.frames) && bundle.frames.length > 0) return bundle;
+      if (Array.isArray(bundle.frames) && bundle.frames.length > 0) {
+        return { bundle, source: url === "/api/replay" ? "api" : "static" };
+      }
     } catch {}
   }
   return null;

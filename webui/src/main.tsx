@@ -4,6 +4,7 @@ import "./theme.css";
 import * as api from "./api";
 import { formatEvent, MAX_VISIBLE_LOG_ENTRIES } from "./log";
 import type { Frame, MjaiEvent, Pending, Review, SessionState, Snapshot } from "./types";
+import { Landing } from "./components/Landing";
 import { Replay } from "./components/Replay";
 import { Shell } from "./components/Shell";
 import { Table } from "./components/Table";
@@ -153,10 +154,16 @@ function App() {
 }
 
 // A served or co-hosted replay bundle takes over the page (that server has no live
-// session to watch); #replay opens the viewer's file picker even without one, which
-// is what a static deployment of this page links to.
+// session to watch). `jongbench replay` was asked for playback, so /api/replay plays
+// immediately; a static replay.json is the public deployment, which opens on a landing
+// page instead. #replay skips the landing and doubles as a file picker without a bundle.
 const root = document.getElementById("app")!;
-api.findReplay().then((bundle) => {
-  if (bundle || location.hash === "#replay") render(<Replay initial={bundle} />, root);
-  else render(<App />, root);
+api.findReplay().then((found) => {
+  if (found?.source === "static" && location.hash !== "#replay") {
+    render(<Landing bundle={found.bundle} />, root);
+  } else if (found || location.hash === "#replay") {
+    render(<Replay initial={found?.bundle ?? null} />, root);
+  } else {
+    render(<App />, root);
+  }
 });

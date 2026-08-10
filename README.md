@@ -100,8 +100,9 @@ The web table is a TypeScript app in `webui/`; build it once with
 `cd webui && bun install && bun run build` (emits `jongbench/webui_page.html`,
 gitignored). It is both the live spectator and the replay viewer, and the built
 page is a single self-contained file: host it anywhere static (GitHub Pages)
-with a `replay.json` beside it and it plays that game on load — or open it with
-`#replay` for a file picker that takes any `--out` bundle.
+with a `replay.json` beside it and it opens on a landing page with that game
+ready to watch — or open it with `#replay` to skip straight to the replay,
+which doubles as a file picker for any `--out` bundle.
 `.github/workflows/pages.yml` deploys exactly that: the built page plus the
 showcase game in `assets/showcase-replay.json.gz`.
 

@@ -1,0 +1,81 @@
+.landing-main {
+  position: relative;
+  overflow: hidden;
+}
+
+.landing-board {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  pointer-events: none;
+  user-select: none;
+  filter: brightness(0.7) saturate(0.85) blur(1.5px);
+}
+
+.landing-board .table-controls,
+.landing-board .drawer {
+  display: none;
+}
+
+.landing-card {
+  position: relative;
+  z-index: 5;
+  margin: auto;
+  max-width: min(560px, calc(100vw - 32px));
+  background: var(--bone);
+  color: var(--text-dark);
+  border: 3px solid var(--lacquer);
+  border-radius: 14px;
+  padding: 26px 30px 28px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  text-align: center;
+}
+
+.landing-card h1 {
+  font-size: 34px;
+  color: var(--red);
+  margin-bottom: 12px;
+}
+
+.landing-card p {
+  margin: 0 0 12px;
+  line-height: 1.55;
+}
+
+.landing-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 3px;
+  margin: 16px 0;
+}
+
+.landing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.landing-repo {
+  font: inherit;
+  color: var(--ink);
+  background: var(--bone);
+  border: 2px solid var(--ink);
+  border-radius: 9px;
+  padding: 5px 14px;
+  text-decoration: none;
+  box-shadow: 0 3px 0 var(--ink);
+  transition: transform 80ms, box-shadow 80ms, background 120ms;
+}
+
+.landing-repo:hover {
+  background: #fffaeb;
+}
+
+.landing-repo:active {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 var(--ink);
+}
