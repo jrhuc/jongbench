@@ -15,13 +15,17 @@ at one call per graded decision instead of ~1,000 per hanchan.
 A 128-position sample bank from Mortal self-play ships with the package and is the
 default, so the taskset runs out of the box. Reference points on it:
 
-| policy                    | reward | match  |
-|---------------------------|--------|--------|
-| always first option       | 0.341  | —      |
-| uniform random            | 0.367  | 18.9%  |
-| deepseek/deepseek-v4-flash| 0.649  | 39.8%  |
-| openai/gpt-5-mini         | 0.727  | 45.3%  |
-| Mortal's own choice       | 1.000  | 100%   |
+| policy                       | reward | match  |
+|------------------------------|--------|--------|
+| always first option          | 0.341  | —      |
+| uniform random               | 0.367  | 18.9%  |
+| gpt-5-mini, no state hints   | 0.638  | 41.4%  |
+| deepseek/deepseek-v4-flash   | 0.649  | 39.8%  |
+| openai/gpt-5-mini            | 0.727  | 45.3%  |
+| Mortal's own choice          | 1.000  | 100%   |
+
+State hints (on by default, 23% of a full-game prompt budget) are worth ~+0.09
+reward to gpt-5-mini on this bank — real value, so they stay the default.
 
 (mean 8.8 legal options per position; `jongbench positions` prints the same
 baselines for any bank it builds. deepseek-v4-flash returned a parseable legal
