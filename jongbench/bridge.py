@@ -29,10 +29,14 @@ class CallbackProvider:
     """Provider-shaped adapter that hands the newest user turn to `ask`.
 
     Only the newest turn is passed on: the consumer owns the transcript, so resending the
-    history jongbench also tracks would duplicate it.
+    history jongbench also tracks would duplicate it. `fresh` marks a kyoku-opening turn
+    (the engine's transcript holds a single user message), so the consumer can start a
+    fresh conversation instead of dragging finished kyoku through every later request.
     """
 
-    def __init__(self, ask: Callable[[str], str], name: str = "callback") -> None:
+    def __init__(
+        self, ask: Callable[[str, bool], str], name: str = "callback"
+    ) -> None:
         self.ask = ask
         self.model = name
         self.reasoning = None
@@ -48,16 +52,20 @@ class CallbackProvider:
         temperature: float | None = None,
     ) -> providers.Completion:
         del max_tokens, temperature
-        return providers.Completion(text=self.ask(newest_user_text(messages)) or "")
+        fresh = sum(1 for m in messages if m["role"] == "user") == 1
+        return providers.Completion(
+            text=self.ask(newest_user_text(messages), fresh) or ""
+        )
 
 
 def make_bridged_engine(
     name: str,
-    ask: Callable[[str], str],
+    ask: Callable[[str, bool], str],
     *,
     decision_log: engines.DecisionSink | None = None,
     state_hints: bool = True,
     spectator: Any | None = None,
+    auto_pass_reactions: bool = False,
 ) -> engines.LLMEngine:
     """An `LLMEngine` whose calls are answered by `ask`.
 
@@ -72,6 +80,7 @@ def make_bridged_engine(
         spectator=spectator,
         state_hints=state_hints,
         conversational=True,
+        auto_pass_reactions=auto_pass_reactions,
     )
     engine.provider = CallbackProvider(ask, name=name)
     return engine

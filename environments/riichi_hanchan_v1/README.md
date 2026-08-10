@@ -14,9 +14,12 @@ comparison use `riichi-decision-v1`, which grades single positions against Morta
 
 ## Agents
 
-`seat0`..`seat3`, each a `vf.AgentConfig`. A seat holds one conversation per kyoku:
-an opening board, then per-decision deltas — the same prompt path `jongbench run`
-uses, including the furo toggle and invalid-reply retries.
+`seat0`..`seat3`, each a `vf.AgentConfig`. A seat holds one conversation — and one
+verifiers interaction — per kyoku: an opening board, then per-decision deltas, the
+same prompt path `jongbench run` uses, including the furo toggle and invalid-reply
+retries. Finished kyoku never ride along in later requests (dragging them measured
+at ~3x the input tokens), and every kyoku trace is a bounded training sample
+carrying the seat's final placement.
 
 ## Run
 
@@ -41,18 +44,22 @@ under evaluation.
 
 ## Config
 
-| key           | default | meaning                                               |
-|---------------|---------|-------------------------------------------------------|
-| `state_hints` | `true`  | rule-derived shanten/waits/furiten in prompts          |
-| `log_dir`     | `None`  | persist each episode as a jongbench run dir (below)    |
+| key                   | default | meaning                                                       |
+|-----------------------|---------|---------------------------------------------------------------|
+| `state_hints`         | `true`  | rule-derived shanten/waits/furiten in prompts                  |
+| `auto_pass_reactions` | `false` | pass pure chi/pon/kan reactions without a model call (~15% of decisions; the seats then never call on discards) |
+| `log_dir`             | `None`  | persist each episode as a jongbench run dir (below)            |
 
 ## Rewards and metrics
 
-Per seat trace:
+A seat produces one trace per kyoku; every one of them carries the same seat-level
+signals:
 
-- `placement` (reward) — 1st → 1.0, 4th → 0.0, zero-sum across the table.
-- `final_score`, `decisions`, `fallbacks`, `calls_declined` (metrics).
-- `trace.info["hanchan"]` — seat, placement, score, seed, seat order.
+- `placement` (reward) — 1st → 1.0, 4th → 0.0. A seat's mean reward is exactly its
+  placement reward, and the four seats' rewards sum to 2.0 — zero-sum however the
+  models play.
+- `final_score`, `decisions`, `fallbacks`, `calls_declined` (metrics, seat totals).
+- `trace.info["hanchan"]` — seat, placement, score, seed, seat order, kyoku index.
 
 ## Post-hoc Mortal grading
 

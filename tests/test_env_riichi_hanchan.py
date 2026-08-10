@@ -40,41 +40,57 @@ class FakeTrace:
 class FakeInteraction:
     """Answers every turn with the first legal option, recording what it was asked."""
 
-    def __init__(self) -> None:
+    def __init__(self, task) -> None:
+        self.task = task
         self.trace = FakeTrace()
         self.prompts: list[str] = []
         self.thread_ids: set[int] = set()
+        self.closed = False
 
     async def turn(self, message: str) -> SimpleNamespace:
         import threading
 
+        assert not self.closed, "turn() on a closed interaction"
         self.prompts.append(message)
         self.thread_ids.add(threading.get_ident())
         return SimpleNamespace(last_reply='{"choice": 0}', terminated=False)
 
 
 class FakeAgent:
-    def __init__(self, interaction: FakeInteraction) -> None:
-        self._interaction = interaction
+    """Hands out a fresh interaction per `interaction(task)` call, one per kyoku."""
+
+    def __init__(self) -> None:
+        self.interactions: list[FakeInteraction] = []
 
     def interaction(self, task):
         agent = self
 
         class _Ctx:
             async def __aenter__(self):
-                return agent._interaction
+                inter = FakeInteraction(task)
+                agent.interactions.append(inter)
+                return inter
 
             async def __aexit__(self, *exc):
+                agent.interactions[-1].closed = True
                 return False
 
         return _Ctx()
 
+    @property
+    def prompts(self) -> list[str]:
+        return [p for inter in self.interactions for p in inter.prompts]
+
+    @property
+    def thread_ids(self) -> set[int]:
+        return {t for inter in self.interactions for t in inter.thread_ids}
+
 
 class FakeAgents:
     def __init__(self) -> None:
-        self.interactions = [FakeInteraction() for _ in SEATS]
-        for name, interaction in zip(SEATS, self.interactions, strict=True):
-            setattr(self, name, FakeAgent(interaction))
+        self.seats = [FakeAgent() for _ in SEATS]
+        for name, agent in zip(SEATS, self.seats, strict=True):
+            setattr(self, name, agent)
 
 
 @pytest.fixture(scope="module")
@@ -93,32 +109,42 @@ def played(episode_dir):
 
 
 def test_a_full_hanchan_is_played_through_the_interactions(played) -> None:
-    for interaction in played.interactions:
-        assert len(interaction.prompts) > 50, len(interaction.prompts)
+    for seat in played.seats:
+        assert len(seat.prompts) > 50, len(seat.prompts)
     # Turns are marshalled back onto the event loop, not run on the arena's thread.
-    assert all(len(i.thread_ids) == 1 for i in played.interactions)
-    assert len({tuple(i.thread_ids) for i in played.interactions}) == 1
+    assert all(len(seat.thread_ids) == 1 for seat in played.seats)
+    assert len({tuple(seat.thread_ids) for seat in played.seats}) == 1
 
 
-def test_seats_get_an_opening_board_then_deltas(played) -> None:
-    for interaction in played.interactions:
-        openings = [p for p in interaction.prompts if p.startswith("Round:")]
-        deltas = [p for p in interaction.prompts if p.startswith("Since your last action:")]
-        assert openings, "expected a full board at the start of each kyoku"
-        assert deltas, "expected delta turns after the opening"
-        assert len(openings) + len(deltas) == len(interaction.prompts)
-        # One opening per kyoku this seat acted in, not one per decision.
-        assert len(openings) < len(deltas)
+def test_each_kyoku_gets_a_fresh_interaction(played) -> None:
+    """A kyoku opens with a full board and never drags earlier kyoku along: one
+    interaction per kyoku, opening turn first, delta turns after."""
+    for seat in played.seats:
+        assert len(seat.interactions) > 1, "expected one interaction per kyoku"
+        for inter in seat.interactions:
+            assert inter.prompts, "an interaction was opened without a turn"
+            assert inter.prompts[0].startswith("Round:")
+            for later in inter.prompts[1:]:
+                assert later.startswith("Since your last action:")
+            assert inter.closed
 
 
 def test_placement_rewards_are_zero_sum_and_ranked(played) -> None:
-    rewards = [i.trace.rewards["placement"] for i in played.interactions]
+    def seat_traces(seat):
+        return [inter.trace for inter in seat.interactions]
+
+    # Every kyoku trace of a seat carries the seat's final placement reward.
+    for seat in played.seats:
+        assert len({t.rewards["placement"] for t in seat_traces(seat)}) == 1
+
+    rewards = [seat_traces(seat)[-1].rewards["placement"] for seat in played.seats]
     assert sorted(rewards) == pytest.approx([0.0, 1 / 3, 2 / 3, 1.0])
     assert sum(rewards) == pytest.approx(2.0)
 
-    placements = [i.trace.info["hanchan"]["placement"] for i in played.interactions]
+    infos = [seat_traces(seat)[-1].info["hanchan"] for seat in played.seats]
+    placements = [info["placement"] for info in infos]
     assert sorted(placements) == [1, 2, 3, 4]
-    scores = [i.trace.info["hanchan"]["score"] for i in played.interactions]
+    scores = [info["score"] for info in infos]
     assert sum(scores) == 100000
 
     # Equal scores are broken by seat, so only the strict ordering is guaranteed.
@@ -128,14 +154,18 @@ def test_placement_rewards_are_zero_sum_and_ranked(played) -> None:
                 assert placements[i] < placements[j], (scores, placements)
 
     best = max(range(4), key=lambda s: scores[s])
-    assert played.interactions[best].trace.rewards["placement"] == pytest.approx(1.0)
+    assert rewards[best] == pytest.approx(1.0)
 
 
 def test_each_seat_records_its_own_play(played) -> None:
-    for name, interaction in zip(SEATS, played.interactions, strict=True):
-        assert interaction.trace.info["hanchan"]["seat"] == name
-        assert interaction.trace.metrics["decisions"] == len(interaction.prompts)
-        assert interaction.trace.metrics["fallbacks"] == 0.0
+    for name, seat in zip(SEATS, played.seats, strict=True):
+        last = seat.interactions[-1].trace
+        assert last.info["hanchan"]["seat"] == name
+        assert last.info["hanchan"]["kyoku_count"] == len(seat.interactions)
+        assert last.metrics["decisions"] == len(seat.prompts)
+        assert last.metrics["fallbacks"] == 0.0
+        kyoku = [inter.trace.info["hanchan"]["kyoku"] for inter in seat.interactions]
+        assert kyoku == list(range(len(seat.interactions)))
 
 
 def test_episode_persists_as_a_jongbench_run_dir(played, episode_dir) -> None:
@@ -149,14 +179,14 @@ def test_episode_persists_as_a_jongbench_run_dir(played, episode_dir) -> None:
     assert config["names"] == list(SEATS)
     assert sorted(config["final"]["placements"].values()) == [1, 2, 3, 4]
 
-    for name, interaction in zip(SEATS, played.interactions, strict=True):
+    for name, seat in zip(SEATS, played.seats, strict=True):
         lines = [
             json.loads(line)
             for line in (run_dir / "decisions" / f"{name}.jsonl")
             .read_text(encoding="utf-8")
             .splitlines()
         ]
-        assert len(lines) == len(interaction.prompts)
+        assert len(lines) == len(seat.prompts)
         assert all("choice" in record for record in lines)
 
 

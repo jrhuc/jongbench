@@ -52,6 +52,10 @@ class RiichiHanchanEnvConfig(vf.EnvConfig):
     seat3: vf.AgentConfig = vf.AgentConfig(harness={"id": "null"})
     state_hints: bool = True
     """Give seats rule-derived shanten, waits and furiten, as the CLI does by default."""
+    auto_pass_reactions: bool = False
+    """Pass pure chi/pon/open-kan reactions without a model call (~15% of decisions).
+    A cost mode: the seats never call on others' discards, which changes what is
+    measured. Wins and own-turn decisions always reach the model."""
     log_dir: str | None = None
     """Persist each episode as a jongbench run dir - mjai log, per-seat decision logs,
     config.json - so `jongbench review` and `jongbench reasoning` grade the rollout
@@ -68,55 +72,71 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
             (episode_dir / "logs").mkdir(parents=True, exist_ok=True)
             (episode_dir / "decisions").mkdir(parents=True, exist_ok=True)
             (episode_dir / "review").mkdir(parents=True, exist_ok=True)
-        seat_tasks = [
-            vf.Task(
+
+        # One interaction per seat PER KYOKU: the engine opens each kyoku with a full
+        # board render, so earlier kyoku add nothing but cost and context pressure —
+        # measured on a real hanchan, dragging them along triples the input tokens.
+        # Rewards are only known at the end, so kyoku traces are collected as they
+        # close and placement is recorded on all of them afterwards.
+        seat_agents = [agents.seat0, agents.seat1, agents.seat2, agents.seat3]
+        open_cms: list = [None, None, None, None]
+        current: list = [None, None, None, None]
+        seat_traces: list[list] = [[] for _ in SEATS]
+
+        def _seat_task(index: int) -> vf.Task:
+            return vf.Task(
                 vf.TaskData(
                     idx=task.data.idx,
-                    name=name,
-                    prompt=None,  # each seat converses through its interaction
+                    name=f"{SEATS[index]}-k{len(seat_traces[index])}",
+                    prompt=None,  # each kyoku converses through its interaction
                     system_prompt=prompts.SYSTEM,
                 )
             )
-            for name in SEATS
+
+        async def _close_current(index: int) -> None:
+            if open_cms[index] is None:
+                return
+            seat_traces[index].append(current[index].trace)
+            cm, open_cms[index], current[index] = open_cms[index], None, None
+            await cm.__aexit__(None, None, None)
+
+        async def _seat_turn(index: int, prompt: str, fresh: bool):
+            if fresh or current[index] is None:
+                await _close_current(index)
+                cm = seat_agents[index].interaction(_seat_task(index))
+                current[index] = await cm.__aenter__()
+                open_cms[index] = cm
+            return await current[index].turn(prompt)
+
+        def ask_from(index: int):
+            def ask(prompt: str, fresh: bool) -> str:
+                # Called on the arena's worker thread; hand the turn back to the loop
+                # and block this seat until the model answers, as the arena expects.
+                future = asyncio.run_coroutine_threadsafe(
+                    _seat_turn(index, prompt, fresh), loop
+                )
+                segment = future.result()
+                if segment.terminated:
+                    raise engines.GameAborted(f"{SEATS[index]} ended its rollout")
+                return segment.last_reply
+
+            return ask
+
+        logs: list[list[dict]] = [[] for _ in SEATS]
+        seats = [
+            bridge.make_bridged_engine(
+                name,
+                ask_from(index),
+                decision_log=logs[index],
+                state_hints=self.config.state_hints,
+                auto_pass_reactions=self.config.auto_pass_reactions,
+            )
+            for index, name in enumerate(SEATS)
         ]
 
-        async with (
-            agents.seat0.interaction(seat_tasks[0]) as seat0,
-            agents.seat1.interaction(seat_tasks[1]) as seat1,
-            agents.seat2.interaction(seat_tasks[2]) as seat2,
-            agents.seat3.interaction(seat_tasks[3]) as seat3,
-        ):
-            interactions = [seat0, seat1, seat2, seat3]
-
-            def ask_from(index: int):
-                interaction = interactions[index]
-
-                def ask(prompt: str) -> str:
-                    # Called on the arena's worker thread; hand the turn back to the loop
-                    # and block this seat until the model answers, as the arena expects.
-                    future = asyncio.run_coroutine_threadsafe(
-                        interaction.turn(prompt), loop
-                    )
-                    segment = future.result()
-                    if segment.terminated:
-                        raise engines.GameAborted(f"{SEATS[index]} ended its rollout")
-                    return segment.last_reply
-
-                return ask
-
-            logs: list[list[dict]] = [[] for _ in SEATS]
-            seats = [
-                bridge.make_bridged_engine(
-                    name,
-                    ask_from(index),
-                    decision_log=logs[index],
-                    state_hints=self.config.state_hints,
-                )
-                for index, name in enumerate(SEATS)
-            ]
-
-            # One hanchan per episode: a single engine driving several games at once would
-            # interleave their turns into one conversation.
+        try:
+            # One hanchan per episode: a single engine driving several games at once
+            # would interleave their turns into one conversation.
             summaries = await asyncio.to_thread(
                 arena.run_games,
                 seats,
@@ -124,6 +144,9 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
                 (seed, 1),
                 str(episode_dir / "logs") if episode_dir else None,
             )
+        finally:
+            for index in range(len(SEATS)):
+                await _close_current(index)
 
         summary = summaries[0]
         if episode_dir is not None:
@@ -131,23 +154,27 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
         scores = dict(zip(summary.names, summary.scores, strict=True))
         for index, name in enumerate(SEATS):
             placement = summary.placements[name]
-            trace = interactions[index].trace
-            # 1st -> 1.0, 4th -> 0.0. Placements are a permutation of 1-4, so the four
-            # rewards always sum to 2.0 however the models play.
-            trace.record_reward("placement", (4 - placement) / 3)
-            trace.record_metric("final_score", float(scores[name]))
-            trace.record_metric("decisions", float(len(logs[index])))
-            trace.record_metric("fallbacks", float(seats[index].totals["fallbacks"]))
-            trace.record_metric(
-                "calls_declined", float(seats[index].totals["calls_declined"])
-            )
-            trace.info["hanchan"] = {
-                "seat": name,
-                "placement": placement,
-                "score": scores[name],
-                "seed": seed,
-                "seat_order": list(summary.names),
-            }
+            for kyoku, trace in enumerate(seat_traces[index]):
+                # 1st -> 1.0, 4th -> 0.0. Every kyoku trace carries the seat's final
+                # placement, so a seat's mean reward IS its placement reward.
+                trace.record_reward("placement", (4 - placement) / 3)
+                trace.record_metric("final_score", float(scores[name]))
+                trace.record_metric("decisions", float(len(logs[index])))
+                trace.record_metric(
+                    "fallbacks", float(seats[index].totals["fallbacks"])
+                )
+                trace.record_metric(
+                    "calls_declined", float(seats[index].totals["calls_declined"])
+                )
+                trace.info["hanchan"] = {
+                    "seat": name,
+                    "placement": placement,
+                    "score": scores[name],
+                    "seed": seed,
+                    "seat_order": list(summary.names),
+                    "kyoku": kyoku,
+                    "kyoku_count": len(seat_traces[index]),
+                }
 
 
 def _write_episode_artifacts(

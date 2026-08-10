@@ -110,6 +110,11 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
   fewer model calls overall, because a seat that stops calling keeps hands closed, which
   lengthens kyoku and adds back own-turn decisions. It is an agency and play-quality
   feature, not a cost lever.
+- `auto_pass_reactions` (engine kwarg, `run --auto-pass-reactions`, hanchan env config) is
+  the cost lever: pass every pure chi/pon/open-kan reaction without a model call, ~15% of
+  decisions on a measured hanchan. Same guard as the furo toggle — never a win, never the
+  seat's own turn — but engine-wide and model-independent, so it changes what is measured:
+  the seats simply never call on discards.
   Final fallback: tsumogiri/none. Records every decision to a .jsonl sink:
   `{game_seed, kyoku, honba, player_id, menu, choice, fallback, raw_response, usage, latency_ms}`.
 - Engines never see Mortal, EV tables, hidden tiles, safety rankings, or a recommended move.
@@ -302,6 +307,13 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
 ### environments/riichi_hanchan_v1/
 - A verifiers multi-agent `Env`: one episode is one hanchan, each seat a live interaction
   (`seat0`..`seat3` as `AgentConfig` fields), refereed by the vendored arena.
+- One interaction per seat PER KYOKU, not per episode: the harness replays a trace's whole
+  branch on every model call, and the engine reopens each kyoku with a full board render
+  anyway, so a single episode-long conversation would drag dead kyoku through every later
+  request (~3x the input tokens, measured). The bridge marks kyoku-opening turns
+  (`ask(prompt, fresh)`); the env closes the old interaction and opens the next, and after
+  the game records the seat's final placement on every kyoku trace — a seat's mean reward
+  IS its placement reward, and each trace stays a valid training sample.
 - The arena is a synchronous Rust loop and `Env.run` is async, so the arena runs in a
   worker thread (`asyncio.to_thread`) and each decision is marshalled back onto the loop
   with `run_coroutine_threadsafe`, blocking that seat until the model answers. Same shape
