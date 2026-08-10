@@ -12,7 +12,7 @@ USAGE = (
     "Usage: <vendor>/<model> — an OpenRouter id, e.g. anthropic/claude-opus-5 — "
     "optionally suffixed with @<provider>[,<provider>...] to pin inference routing "
     "and #<effort> to set reasoning (off, minimal, low, medium, high, xhigh, max). "
-    "Also compat:<base_url>:<model>, random, and human."
+    "Also compat:<base_url>:<model>, mortal, random, and human."
 )
 
 # jongbench's own vocabulary, kept stable so saved run configs keep resolving.
@@ -23,7 +23,7 @@ _REASONING_OFF = {"off", "none"}
 
 @dataclass(frozen=True)
 class ProviderSpec:
-    provider: str  # openrouter | compat | random | human
+    provider: str  # openrouter | compat | mortal | random | human
     model: str
     base_url: str | None = None
     pin: tuple[str, ...] = ()
@@ -31,7 +31,7 @@ class ProviderSpec:
 
     @property
     def display_name(self) -> str:
-        if self.provider in {"random", "human"}:
+        if self.provider in {"mortal", "random", "human"}:
             return self.provider
         base = self.model.rpartition("/")[2] or self.model
         return f"{base}-{self.reasoning}" if self.reasoning else base
@@ -46,7 +46,7 @@ class Completion:
 
 
 def parse_spec(s: str) -> ProviderSpec:
-    if s in {"random", "human"}:
+    if s in {"mortal", "random", "human"}:
         return ProviderSpec(provider=s, model=s)
 
     if s.startswith("compat:"):
@@ -176,7 +176,7 @@ class Provider:
 def make_provider(
     spec: ProviderSpec, api_key: str | None = None, reasoning: str | None = None
 ) -> Provider:
-    if spec.provider in {"random", "human"}:
+    if spec.provider in {"mortal", "random", "human"}:
         raise ValueError(f"{spec.provider} seats are handled separately")
     if spec.base_url is None:
         raise ValueError(f"{spec.provider} provider requires base_url")

@@ -402,6 +402,88 @@ def test_finished_journal_replays_the_episode_for_free(
     assert replayed["final"] == original["final"]
 
 
+WEIGHTS = ROOT / "weights" / "mortal.pth"
+mortal_weights = pytest.mark.skipif(
+    not WEIGHTS.exists(), reason="needs weights/mortal.pth"
+)
+
+
+def _mortal_config(log_dir: Path) -> RiichiHanchanEnvConfig:
+    return RiichiHanchanEnvConfig(
+        seat3=vf.AgentConfig(harness={"id": "null"}, model="mortal"),
+        log_dir=str(log_dir),
+        weights=str(WEIGHTS),
+    )
+
+
+@pytest.fixture(scope="module")
+def played_mortal(tmp_path_factory):
+    root = tmp_path_factory.mktemp("hanchan-mortal")
+    env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
+    env.config = _mortal_config(root)
+    agents = FakeAgents()
+    task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
+    asyncio.run(env.run(task, agents))
+    return agents, root / "hanchan-00000"
+
+
+@mortal_weights
+def test_mortal_control_seat_opens_no_interactions(played_mortal) -> None:
+    agents, _ = played_mortal
+    assert agents.seat3.interactions == []
+    steps = (0.0, 1 / 3, 2 / 3, 1.0)
+    rewards = []
+    for seat in agents.seats[:3]:
+        assert len(seat.prompts) > 50
+        per_kyoku = {inter.trace.rewards["placement"] for inter in seat.interactions}
+        assert len(per_kyoku) == 1
+        rewards.append(per_kyoku.pop())
+    assert len(set(rewards)) == 3
+    assert all(any(r == pytest.approx(s) for s in steps) for r in rewards)
+
+
+@mortal_weights
+def test_mortal_seat_leaves_no_decisions_or_journal_rows(played_mortal) -> None:
+    import json
+
+    _, run_dir = played_mortal
+    assert (run_dir / "decisions" / "seat3.jsonl").read_text(encoding="utf-8") == ""
+    lines = (run_dir / "journal.jsonl").read_text(encoding="utf-8").splitlines()
+    header = json.loads(lines[0])
+    assert header["models"][3] == "mortal"
+    rows = [json.loads(line) for line in lines[1:]]
+    assert rows[-1] == {"end": True}
+    assert rows[:-1] and all(row["seat"] != "seat3" for row in rows[:-1])
+    config = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+    assert sorted(config["final"]["placements"].values()) == [1, 2, 3, 4]
+
+
+@mortal_weights
+def test_mortal_seat_replays_deterministically(played_mortal, tmp_path_factory) -> None:
+    """The journal holds only the bridged seats' choices; a replay recomputes the
+    mortal seat live, which reproduces the game only if its engine is deterministic."""
+    import json
+
+    _, run_dir = played_mortal
+    replay_root = tmp_path_factory.mktemp("hanchan-mortal-replay")
+    new_run = replay_root / "hanchan-00000"
+    new_run.mkdir()
+    (new_run / "journal.jsonl").write_text(
+        (run_dir / "journal.jsonl").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
+    env.config = _mortal_config(replay_root)
+    agents = FakeAgents()
+    task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
+    asyncio.run(env.run(task, agents))
+
+    assert all(seat.interactions == [] for seat in agents.seats)
+    original = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+    replayed = json.loads((new_run / "config.json").read_text(encoding="utf-8"))
+    assert replayed["final"] == original["final"]
+
+
 def test_taskset_is_an_infinite_seeded_generator() -> None:
     taskset = RiichiHanchanTaskset(RiichiHanchanConfig())
     assert taskset.INFINITE

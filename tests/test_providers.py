@@ -83,8 +83,8 @@ def test_compat_spec_preserves_url_ports() -> None:
     assert parsed.model == "model-name"
 
 
-def test_random_and_human_seats_are_not_providers() -> None:
-    for seat in ("random", "human"):
+def test_special_seats_are_not_providers() -> None:
+    for seat in ("mortal", "random", "human"):
         assert parse_spec(seat).provider == seat
         with pytest.raises(ValueError, match="handled separately"):
             make_provider(parse_spec(seat))

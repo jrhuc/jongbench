@@ -76,6 +76,10 @@ class RiichiHanchanEnvConfig(vf.EnvConfig):
     """Persist each episode as a jongbench run dir - mjai log, per-seat decision logs,
     config.json - so `jongbench review` and `jongbench reasoning` grade the rollout
     afterwards with the Mortal checkpoint."""
+    weights: str = "weights/mortal.pth"
+    """Checkpoint for any seat whose model is `mortal` - the Mortal NN playing as a
+    control seat. Such a seat runs on CPU, produces no traces, and earns no reward;
+    the LLM seats' placements are measured against it."""
 
 
 class _Journal:
@@ -249,8 +253,13 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
 
             return sink
 
+        # A `mortal` seat is the Mortal NN itself playing as a control: no bridge, no
+        # interactions, no traces. Its engine is deterministic (argmax over Q), so on
+        # resume it recomputes the same choices live and needs no journal of its own.
         seats = [
-            bridge.make_bridged_engine(
+            engines.make_engine(name, "mortal", weights=self.config.weights)
+            if getattr(self.config, name).model == "mortal"
+            else bridge.make_bridged_engine(
                 name,
                 ask_from(index),
                 decision_log=_sink_for(index),

@@ -50,6 +50,27 @@ under evaluation.
 | `auto_pass_reactions` | `false` | pass pure chi/pon/kan reactions without a model call (~15% of decisions; the seats then never call on discards) |
 | `tools`               | `false` | board-query tools instead of inline hints (below)              |
 | `log_dir`             | `None`  | persist each episode as a jongbench run dir (below)            |
+| `weights`             | `weights/mortal.pth` | Mortal checkpoint for a `mortal` control seat (below) |
+
+## Mortal as a control seat
+
+Setting a seat's model to the bare spec `mortal` seats the Mortal NN itself:
+
+```console
+    --env.seat3.model mortal
+```
+
+The control seat plays deterministically and locally — no API calls, no
+interactions, no traces, and an empty decision log. It exists to anchor the
+table: the LLM seats' placements are now measured against a known-strength
+opponent instead of only each other, and `jongbench review` grades everyone
+with the same model that is sitting at the table. With only three seats
+earning rewards the 2.0 reward sum no longer holds — by design; the control
+absorbs whatever placement it wins.
+
+Crash recovery still works: the journal records only the bridged seats, and
+the control seat recomputes its choices live on replay, reproducing the
+identical game.
 
 ## Tool-using seats
 

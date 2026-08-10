@@ -549,6 +549,7 @@ class LLMEngine(BaseEngine):
 
 def make_engine(name: str, spec_str: str, **kwargs: Any) -> BaseEngine:
     spec = providers.parse_spec(spec_str)
+    weights = kwargs.pop("weights", "weights/mortal.pth")
     if spec.provider == "human":
         human_io = kwargs.get("human_io")
         if human_io is None:
@@ -556,6 +557,13 @@ def make_engine(name: str, spec_str: str, **kwargs: Any) -> BaseEngine:
         return HumanEngine(name, human_io, spectator=kwargs.get("spectator"))
     if spec.provider == "random":
         return RandomEngine(name, **kwargs)
+    if spec.provider == "mortal":
+        # Imported lazily: positions imports this module, and evaluate pulls in torch.
+        from . import evaluate, positions
+
+        return positions.MortalArenaEngine(
+            name, evaluate.load_engine(str(weights)), spectator=kwargs.get("spectator")
+        )
     return LLMEngine(name, spec_str, **kwargs)
 
 

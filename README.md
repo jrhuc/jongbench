@@ -89,7 +89,8 @@ Model specs are OpenRouter ids: `<vendor>/<model>`, optionally suffixed with
 `@<provider>` to pin inference routing (reproducibility against one upstream) and
 `#<effort>` to set reasoning (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`,
 `max`) — e.g. `openai/gpt-oss-120b@cerebras#high`. Also `compat:<base_url>:<model>`
-for any local OpenAI-compatible endpoint, `random`, and `human`.
+for any local OpenAI-compatible endpoint, `random`, `human`, and `mortal` — the
+Mortal NN itself as a deterministic control seat.
 
 State hints are on by default: rule-derived shanten, waits, furiten and
 discard-result structure, with no EV, safety ranking, or recommended move. Engines

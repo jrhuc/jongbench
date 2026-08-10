@@ -381,3 +381,18 @@ def test_auto_pass_reactions_skips_calls_without_any_conversation() -> None:
         {"kind": "pon", "label": "pon", "event": {"type": "pon"}},
     ]
     assert engine.auto_reaction(_state(True), own_turn, _REACTION_EVENTS, 0) is None
+
+
+def test_make_engine_mortal_loads_the_checkpoint(monkeypatch) -> None:
+    from jongbench import evaluate, positions
+
+    loaded: list[str] = []
+    monkeypatch.setattr(
+        evaluate, "load_engine", lambda weights: loaded.append(weights) or object()
+    )
+    engine = engines_module.make_engine(
+        "seat3", "mortal", weights="w.pth", decision_log=[], temperature=0.7
+    )
+    assert isinstance(engine, positions.MortalArenaEngine)
+    assert engine.name == "seat3"
+    assert loaded == ["w.pth"]

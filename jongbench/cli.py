@@ -165,6 +165,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             temperature=float(args.temperature),
             state_hints=bool(args.state_hints),
             auto_pass_reactions=bool(args.auto_pass_reactions),
+            weights=args.weights,
         )
         for name, spec in zip(names, specs, strict=True)
     ]
@@ -237,6 +238,7 @@ def _cmd_watch(args: argparse.Namespace) -> int:
         kwargs: dict[str, Any] = {
             "spectator": spectator,
             "state_hints": bool(args.state_hints),
+            "weights": args.weights,
         }
         if _is_human_spec(spec):
             kwargs["human_io"] = TerminalHumanIO()
