@@ -97,9 +97,14 @@
   border-radius: 50%;
   background: var(--red);
 }
+.pond .tile { transition: box-shadow 300ms ease-out; }
 .pond-newest .tile {
   animation: tile-drop 200ms ease-out;
-  box-shadow: 0 2px 0 #b9a67f, 0 0 13px rgba(31, 138, 85, 0.7);
+  box-shadow:
+    0 calc(var(--tw) * 0.08) 0 var(--bone-3),
+    0 calc(var(--tw) * 0.16) 0 var(--tile-back),
+    0 calc(var(--tw) * 0.22) calc(var(--tw) * 0.2) rgba(10, 24, 17, 0.45),
+    0 0 13px rgba(31, 138, 85, 0.7);
 }
 
 /* Center: the autotable's electronic panel. Each player's wind, identity and
