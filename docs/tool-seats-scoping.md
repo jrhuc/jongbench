@@ -1,8 +1,9 @@
 # Scoping: tool-using seats (riichi as an agentic env)
 
-Status: scoping only, nothing built. Follows the prime-agent idea — programs over
-data instead of tokens over data (https://www.primeintellect.ai/blog/prime-agent) —
-mapped onto the hanchan env.
+Status: stages 1 and 2 built (`tools: true` on riichi-hanchan-v1 — toolset, minimal
+turns, notes persistence). Follows the prime-agent idea — programs over data instead
+of tokens over data (https://www.primeintellect.ai/blog/prime-agent) — mapped onto
+the hanchan env.
 
 ## The idea
 
@@ -35,22 +36,30 @@ Deliberately absent: safety oracles, EV tables, anything Mortal — same rule as
 state hints today. `safety(tile)` derived purely from public discards (genbutsu)
 is defensible but starts to coach; decide when building.
 
-## Architecture (all existing machinery)
+## Architecture (as built)
 
 - verifiers `Task.toolsets()` returns FastMCP-backed `vf.Toolset`s; the null
   harness already speaks MCP (`SUPPORTS_MCP`), advertises the tools and runs the
-  call loop. No harness work.
-- `ToolsetConfig(colocated=True)` runs the toolset in the env process, so tools
-  read a live per-seat state registry the bridge updates at each decision point
-  (the seat is blocked inside `ask()` while its tools answer — same thread shape
-  as WebHumanIO).
-- Notes live in the env, keyed by seat, injected nowhere: the model must call
-  `notes()` (or we append them to each kyoku-opening turn — decide by experiment;
-  injection is cheaper, retrieval is more honest agency).
+  call loop. No harness work. `SeatToolsTask` in the env carries the toolset.
+- Correction from the original sketch: `colocated=True` means "same runtime", not
+  "same process" — the framework always launches a toolset as `python -m
+  riichi_hanchan_v1.tools` in its own process, so tools can never touch the live
+  Rust `PlayerState`. Instead the engine precomputes every possible answer at the
+  decision point (`prompts.decision_snapshot`: board render, discard rows, shape
+  summary, per-discard simulate results — all rule-derived) and publishes it
+  before the model call; the env writes it to `trace.state`, which the
+  interception serves to the toolset over the rollout's state channel
+  (GET/PUT `/state`). `simulate()` is a dict lookup by the time the model calls it.
+- Notes live in `SeatState.notes`: `note()` pushes them back through the state
+  channel, the env reads them off `trace.state` after each turn and seeds them
+  into the next kyoku's rollout state. Retrieval-only (`notes()`), no injection —
+  the honest-agency arm; injection remains an A/B if retrieval never fires.
 - Per-kyoku interactions stay: tool results append to the kyoku transcript, so
   keeping results terse matters more than today.
 - Config knob on the existing env (`tools: true` prompts minimal + toolsets on),
   not a separate env package, until it earns one.
+- One toolset process per seat per kyoku (~48 launches per episode). Fine for a
+  spike; measure the overhead before scaling episode counts.
 
 ## What it costs
 
@@ -65,12 +74,13 @@ bug. The interesting readouts, all cheap to log per seat:
 
 ## Staged plan
 
-1. **Spike** — `board()` + `simulate()` + `waits()` toolset, `tools: true` knob,
-   minimal turn prompt. One smoke episode with cheap models. Exit question: do
-   models call tools at all under the strict output contract, and does the
-   choice-JSON contract survive tool-call turns?
-2. **Notes** — `note()`/`notes()`, persistence across kyoku, injection vs
-   retrieval A/B.
+1. **Spike** — DONE: `board()`/`discards()`/`simulate()`/`waits()` toolset,
+   `tools: true` knob, minimal turn prompt, offline tests plus a live MCP
+   launch probe. Remaining exit question needs a live episode: do models call
+   tools at all under the strict output contract, and does the choice-JSON
+   contract survive tool-call turns?
+2. **Notes** — BUILT (`note()`/`notes()`, persistence across kyoku, retrieval
+   arm); the injection A/B is unbuilt and waits on evidence retrieval is used.
 3. **The comparison** — same lineup, 4-8 episodes each: hints-on vs hints-off vs
    tools. Rating, cost, query patterns. This is the writeup artifact.
 4. **RL tie-in (later)** — a tool-surface env is the more interesting RL target:

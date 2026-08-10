@@ -326,6 +326,15 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
 - `log_dir` persists each episode as a jongbench run dir (mjai log, per-seat decision
   logs, config.json), so `jongbench review` / `jongbench reasoning` grade the same
   rollout post-hoc — placement and Mortal-rated decision quality from one game.
+- `tools: true` inverts the hints design: turns go minimal (no inline hints) and each
+  seat gets board-query MCP tools — `board()`, `discards()`, `waits()`, `simulate()` —
+  plus a `note()`/`notes()` scratchpad the env carries across kyoku resets, the one
+  thing per-kyoku interactions deliberately drop. The framework runs a toolset as its
+  own process, so it cannot reach the live Rust state: the engine precomputes every
+  answer at the decision point (`prompts.decision_snapshot`, published before the model
+  call) and the env serves it on the rollout's state channel (`trace.state`), reading
+  notes back after each turn. Same information boundary as the hints path — rule-derived
+  only, nothing from Mortal. See docs/tool-seats-scoping.md for what this changes.
 - Expensive by nature (~1,000 model calls per episode) and every seat sees a board the
   other three steered. riichi-decision-v1 is the cheap, separable comparison.
 
