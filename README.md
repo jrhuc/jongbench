@@ -38,8 +38,8 @@ separable, or in full self-steered play.
   or environment state to game — the failure mode long-horizon game evals usually
   suffer.
 - **Headroom.** On the shipped decision bank, uniform-random guessing scores 0.367
-  reward (18.9% match) and Mortal scores 1.0 by construction; current models land
-  well inside that gap.
+  reward (18.9% match) and Mortal scores 1.0 by construction; measured models land
+  well inside that gap (deepseek-v4-flash 0.649, gpt-5-mini 0.727).
 
 ## Setup
 

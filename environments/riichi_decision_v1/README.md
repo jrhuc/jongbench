@@ -15,14 +15,18 @@ at one call per graded decision instead of ~1,000 per hanchan.
 A 128-position sample bank from Mortal self-play ships with the package and is the
 default, so the taskset runs out of the box. Reference points on it:
 
-| policy                | reward | match  |
-|-----------------------|--------|--------|
-| uniform random        | 0.367  | 18.9%  |
-| always first option   | 0.341  | —      |
-| Mortal's own choice   | 1.000  | 100%   |
+| policy                    | reward | match  |
+|---------------------------|--------|--------|
+| always first option       | 0.341  | —      |
+| uniform random            | 0.367  | 18.9%  |
+| deepseek/deepseek-v4-flash| 0.649  | 39.8%  |
+| openai/gpt-5-mini         | 0.727  | 45.3%  |
+| Mortal's own choice       | 1.000  | 100%   |
 
 (mean 8.8 legal options per position; `jongbench positions` prints the same
-baselines for any bank it builds)
+baselines for any bank it builds. deepseek-v4-flash returned a parseable legal
+choice on only 85% of replies — the `answered` metric — and an unanswered task
+scores 0, which is part of its gap to gpt-5-mini.)
 
 For a serious ranking, build a bigger bank from Mortal self-play or grade an
 existing mjai log — banks are one `jongbench.positions.Position` JSON per line,
