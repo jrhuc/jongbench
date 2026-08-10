@@ -94,6 +94,27 @@ $ jongbench reasoning episodes/hanchan-00000  # each seat's reasoning joined to 
 So placement (the env reward) and decision quality (Mortal's grading) come from the
 same rollout without spending a second one.
 
+## Measured
+
+A four-episode flash-tier batch (2026-08-09; seeds 20260000–3, auto-pass-reactions
+on, reasoning effort low, 16k max completion tokens — $2.73 of API for all four
+hanchan, reviewed post-hoc as above):
+
+| model                        | placements | avg  | Mortal rating | match | cost  |
+|------------------------------|------------|------|---------------|-------|-------|
+| qwen/qwen3.7-flash           | 1 3 1 3    | 2.00 | 69.2          | 54.5% | $0.32 |
+| google/gemini-3.5-flash-lite | 3 2 3 1    | 2.25 | 65.7          | 50.3% | $0.96 |
+| deepseek/deepseek-v4-flash   | 2 1 4 4    | 2.75 | 73.5          | 59.3% | $1.30 |
+| openai/gpt-5.6-luna          | 4 4 2 2    | 3.00 | 63.4          | 51.7% | $0.15 |
+
+The two signals disagree at this sample size, and that is the point of reporting
+both: Mortal grades deepseek's decisions best in every game, but zero-sum placement
+over four hanchan is noisy enough to leave it third — the per-decision rating
+converges orders of magnitude faster than the outcome. Spend tracks reasoning
+depth, not rank: at effort `low` luna answered in ~190 completion tokens per
+decision while deepseek spent a median ~6.8k (and produced the batch's only
+fallbacks, 10 decisions truncated at the 16k cap).
+
 ## Crash recovery
 
 With `log_dir` set, every decision is also journaled to `hanchan-<idx>/journal.jsonl`
