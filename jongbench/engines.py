@@ -250,6 +250,7 @@ class LLMEngine(BaseEngine):
         reasoning: str | None = None,
         conversational: bool = True,
         auto_pass_reactions: bool = False,
+        snapshot_decisions: bool = False,
     ) -> None:
         super().__init__(name, spectator=spectator, concurrency=concurrency)
         self.spec = providers.parse_spec(spec_str)
@@ -278,9 +279,12 @@ class LLMEngine(BaseEngine):
         }
         self.conversational = bool(conversational)
         self.auto_pass_reactions = bool(auto_pass_reactions)
+        self.snapshot_decisions = bool(snapshot_decisions)
         self._log_lock = threading.Lock()
         self._conversations: dict[int, _Conversation] = {}
         self._conversation_lock = threading.Lock()
+        self._snapshots: dict[int, dict[str, Any]] = {}
+        self._snapshot_lock = threading.Lock()
 
     def decide(
         self,
@@ -293,6 +297,10 @@ class LLMEngine(BaseEngine):
         started = time.perf_counter()
         labels = [str(item["label"]) for item in menu]
         prompt_events = _prompt_safe_events(events)
+        if self.snapshot_decisions:
+            snapshot = prompts.decision_snapshot(player_id, state, prompt_events, menu)
+            with self._snapshot_lock:
+                self._snapshots[game_index] = snapshot
         history, opening = self._open_turn(game_index, prompt_events)
         own_turn = bool(state.last_cans.can_discard)
         calls_enabled = history.calls_enabled if own_turn else None
@@ -416,6 +424,11 @@ class LLMEngine(BaseEngine):
         }
         self._record_decision(record, calls, usage_total, fallback is not None, retries)
         return menu[choice]["event"]
+
+    def decision_snapshot(self, game_index: int = 0) -> dict[str, Any] | None:
+        """The latest published decision snapshot, or None before the first decision."""
+        with self._snapshot_lock:
+            return self._snapshots.get(game_index)
 
     def auto_reaction(
         self,

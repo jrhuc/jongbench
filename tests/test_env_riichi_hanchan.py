@@ -59,7 +59,8 @@ class FakeInteraction:
 class FakeAgent:
     """Hands out a fresh interaction per `interaction(task)` call, one per kyoku."""
 
-    def __init__(self) -> None:
+    def __init__(self, interaction_cls=FakeInteraction) -> None:
+        self.interaction_cls = interaction_cls
         self.interactions: list[FakeInteraction] = []
 
     def interaction(self, task):
@@ -67,7 +68,7 @@ class FakeAgent:
 
         class _Ctx:
             async def __aenter__(self):
-                inter = FakeInteraction(task)
+                inter = agent.interaction_cls(task)
                 agent.interactions.append(inter)
                 return inter
 
@@ -87,8 +88,8 @@ class FakeAgent:
 
 
 class FakeAgents:
-    def __init__(self) -> None:
-        self.seats = [FakeAgent() for _ in SEATS]
+    def __init__(self, interaction_cls=FakeInteraction) -> None:
+        self.seats = [FakeAgent(interaction_cls) for _ in SEATS]
         for name, agent in zip(SEATS, self.seats, strict=True):
             setattr(self, name, agent)
 
@@ -188,6 +189,96 @@ def test_episode_persists_as_a_jongbench_run_dir(played, episode_dir) -> None:
         ]
         assert len(lines) == len(seat.prompts)
         assert all("choice" in record for record in lines)
+
+
+class ToolUsingInteraction(FakeInteraction):
+    """Records the SeatState served for each turn and saves one note per turn, the way
+    a note() tool push would."""
+
+    def __init__(self, task) -> None:
+        super().__init__(task)
+        self.states: list = []
+
+    async def turn(self, message: str) -> SimpleNamespace:
+        state = self.trace.state
+        self.states.append(state)
+        state.notes.append(f"note-{len(state.notes)}")
+        return await super().turn(message)
+
+
+@pytest.fixture(scope="module")
+def played_tools():
+    env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
+    env.config = RiichiHanchanEnvConfig(tools=True)
+    agents = FakeAgents(ToolUsingInteraction)
+    task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
+    asyncio.run(env.run(task, agents))
+    return agents
+
+
+def test_tools_mode_serves_the_decision_snapshot(played_tools) -> None:
+    from riichi_hanchan_v1.env import SeatToolsTask
+    from riichi_hanchan_v1.tools import SeatState, SeatToolset
+
+    toolsets = SeatToolsTask.toolsets(None)
+    assert len(toolsets) == 1
+    assert isinstance(toolsets[0], SeatToolset)
+    assert toolsets[0].config.colocated
+
+    for seat in played_tools.seats:
+        for inter in seat.interactions:
+            assert isinstance(inter.task, SeatToolsTask)
+            assert "TOOLS" in inter.task.data.system_prompt
+            for state in inter.states:
+                assert isinstance(state, SeatState)
+                assert state.board.startswith("Round:")
+                assert set(state.discards) == {"P0", "P1", "P2", "P3"}
+                assert state.waits
+        assert any(state.simulate for inter in seat.interactions for state in inter.states)
+        assert not any("Engine-derived state hints" in p for p in seat.prompts)
+
+
+def test_notes_survive_kyoku_resets(played_tools) -> None:
+    for seat in played_tools.seats:
+        assert len(seat.interactions) > 1
+        seeded = [len(inter.states[0].notes) - 1 for inter in seat.interactions]
+        assert seeded[0] == 0
+        turns_before = 0
+        for inter, seen in zip(seat.interactions, seeded, strict=True):
+            assert seen == turns_before
+            turns_before += len(inter.states)
+        assert seat.interactions[-1].trace.metrics["notes_saved"] == turns_before
+
+
+def test_seat_toolset_answers_from_its_state() -> None:
+    from riichi_hanchan_v1.tools import SeatState, SeatToolset, normalize_tile
+
+    toolset = SeatToolset(vf.ToolsetConfig(colocated=True))
+    toolset._inert_state = SeatState(
+        board="Round: East 1 (honba 0), kyotaku 0, dealer P0",
+        discards={f"P{i}": "riichi no; discards -" for i in range(4)},
+        waits="current structure: tenpai (0-shanten); waits: 3p; furiten: no",
+        simulate={"1m": "1-shanten", "5p(red)": "tenpai (0-shanten); waits 3p; furiten no"},
+    )
+
+    assert toolset.board().startswith("Round: East 1")
+    assert toolset.discards(2) == "P2: riichi no; discards -"
+    assert toolset.discards(7) == "player must be 0, 1, 2 or 3"
+    assert toolset.waits().startswith("current structure")
+    assert toolset.simulate("0p") == "after discarding 5p(red): tenpai (0-shanten); waits 3p; furiten no"
+    assert toolset.simulate("5pr").startswith("after discarding 5p(red)")
+    assert "not a legal discard now" in toolset.simulate("9s")
+    assert "1m 5p(red)" in toolset.simulate("9s")
+
+    assert toolset.notes() == "no notes saved"
+    assert toolset.note("P2 folds early") == "saved (1 notes)"
+    assert toolset.note("  ") == "empty note ignored"
+    assert toolset.notes() == "0: P2 folds early"
+
+    assert normalize_tile("e") == "E"
+    assert normalize_tile("0m") == "5m(red)"
+    assert normalize_tile("5Sr") == "5s(red)"
+    assert normalize_tile(" 3p ") == "3p"
 
 
 def test_taskset_is_an_infinite_seeded_generator() -> None:

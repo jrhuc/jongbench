@@ -301,6 +301,51 @@ def build_followup_prompt(
     return "\n".join(lines)
 
 
+TOOLS_APPENDIX = """
+TOOLS
+Board-query tools replace inline state hints; call them when you need information.
+board() re-renders the full table. discards(player) is one player's discard row.
+waits() is your own shape: shanten, waits and furiten. simulate(tile) is the shape
+after discarding that tile from your hand now. note(text) saves a private note that
+survives into later hands of this match; notes() returns everything you have saved.
+Tool results describe the current decision point only.
+Call any tools first, then end with the same single JSON object reply."""
+
+
+def decision_snapshot(
+    player_id: int,
+    state: Any,
+    events: list[dict[str, Any]],
+    menu: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Everything the board-query tools may be asked at this decision point, precomputed.
+    The toolset answering the model runs in another process and cannot reach the live
+    Rust state, so each answer is rendered here — from exactly the information the
+    prompt path may use — and served from the rollout's state channel."""
+    discard_rows, riichi = _discards_and_riichi(events)
+    discards = {
+        f"P{seat}": (
+            f"riichi {'yes' if riichi[seat] else 'no'}; discards "
+            + (" ".join(discard_rows[seat]) if discard_rows[seat] else "-")
+        )
+        for seat in range(4)
+    }
+    simulate: dict[str, str] = {}
+    for item in menu:
+        event = item.get("event")
+        if not isinstance(event, dict) or event.get("type") != "dahai":
+            continue
+        summary = _after_summary(state, event)
+        if summary:
+            simulate[_prompt_tile(str(event.get("pai", "?")))] = summary
+    return {
+        "board": render_state(player_id, state, events),
+        "discards": discards,
+        "waits": shape_summary(state),
+        "simulate": simulate,
+    }
+
+
 def call_policy_line(calls_enabled: bool) -> str:
     state = "accepting" if calls_enabled else "declining"
     other = "off" if calls_enabled else "on"
@@ -531,6 +576,14 @@ def _prompt_action_label(label: str) -> str:
 
 
 def _state_hint_lines(state: Any) -> list[str]:
+    return [
+        "Engine-derived state hints (structural only; no EV or recommendation):",
+        "- " + shape_summary(state),
+    ]
+
+
+def shape_summary(state: Any) -> str:
+    """The seat's own shape: shanten, waits when tenpai, furiten. One line of text."""
     shanten = _real_time_shanten(state)
     furiten = bool(getattr(state, "at_furiten", False))
     can_discard = bool(getattr(getattr(state, "last_cans", None), "can_discard", False))
@@ -544,31 +597,33 @@ def _state_hint_lines(state: Any) -> list[str]:
     if shanten == 0 and not can_discard:
         details.append("waits: " + (" ".join(waits) if waits else "none (dead wait)"))
     details.append(f"furiten: {'yes' if furiten else 'no'}")
-    return [
-        "Engine-derived state hints (structural only; no EV or recommendation):",
-        "- " + "; ".join(details),
-    ]
+    return "; ".join(details)
 
 
 def _action_hint(state: Any, item: dict[str, Any]) -> str:
-    event = item.get("event")
+    summary = _after_summary(state, item.get("event"))
+    return f" [after: {summary}]" if summary else ""
+
+
+def _after_summary(state: Any, event: Any) -> str | None:
+    """Shanten/waits/furiten after playing a discard event, or None when unavailable."""
     if not isinstance(event, dict) or event.get("type") != "dahai":
-        return ""
+        return None
     summarize = getattr(state, "reaction_summary", None)
     if not callable(summarize):
-        return ""
+        return None
     try:
         shanten, waits_mask, furiten = summarize(
             json.dumps(event, separators=(",", ":"))
         )
     except Exception:
-        return ""
+        return None
     parts = [_shanten_text(int(shanten))]
-    waits = _wait_tiles(waits_mask) if int(shanten) == 0 else []
     if int(shanten) == 0:
+        waits = _wait_tiles(waits_mask)
         parts.append("waits " + (" ".join(waits) if waits else "none (dead wait)"))
         parts.append(f"furiten {'yes' if furiten else 'no'}")
-    return " [after: " + "; ".join(parts) + "]"
+    return "; ".join(parts)
 
 
 def _real_time_shanten(state: Any) -> int:

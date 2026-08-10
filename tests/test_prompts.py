@@ -10,6 +10,7 @@ from jongbench.prompts import (
     _melds_by_player,
     _scores_and_kyotaku,
     build_user_prompt,
+    decision_snapshot,
     extract_choice,
 )
 
@@ -20,6 +21,24 @@ def assert_raises(fn, exc_type):
     except exc_type:
         return
     raise AssertionError(f"expected {exc_type.__name__}")
+
+
+START_KYOKU = {
+    "type": "start_kyoku",
+    "bakaze": "E",
+    "kyoku": 1,
+    "honba": 0,
+    "kyotaku": 0,
+    "oya": 0,
+    "dora_marker": "3p",
+    "scores": [25000, 25000, 25000, 25000],
+    "tehais": [
+        ["1m", "2m", "3m", "4p", "5p", "6p", "7s", "8s", "9s", "E", "E", "5s", "6s"],
+        ["4m", "5m", "6m", "7m", "8m", "9m", "1p", "2p", "4p", "5m", "6m", "7m", "8m"],
+        ["1s", "2s", "3s", "4s", "5s", "6s", "7p", "8p", "9p", "S", "S", "W", "W"],
+        ["N", "N", "P", "P", "F", "F", "C", "C", "1m", "2m", "3m", "7p", "8p"],
+    ],
+}
 
 
 def test_prompt_contract():
@@ -176,5 +195,28 @@ def test_prompt_contract():
     print("OK")
 
 
+def test_decision_snapshot():
+    st = libriichi.state.PlayerState(0)
+    events = [START_KYOKU, {"type": "tsumo", "actor": 0, "pai": "5pr"}]
+    for ev in events:
+        st.update(json.dumps(ev))
+    menu = [
+        {"label": "Discard 1m", "event": {"type": "dahai", "actor": 0, "pai": "1m", "tsumogiri": False}, "kind": "discard"},
+        {"label": "Discard 0p", "event": {"type": "dahai", "actor": 0, "pai": "5pr", "tsumogiri": True}, "kind": "discard"},
+        {"label": "Riichi", "event": {"type": "reach", "actor": 0}, "kind": "riichi"},
+    ]
+
+    snap = decision_snapshot(0, st, events, menu)
+    assert snap["board"].startswith("Round: East 1")
+    assert "Engine-derived state hints" not in snap["board"]
+    assert set(snap["discards"]) == {"P0", "P1", "P2", "P3"}
+    assert all(row.startswith("riichi no; discards") for row in snap["discards"].values())
+    assert "shanten" in snap["waits"] or "tenpai" in snap["waits"]
+    assert set(snap["simulate"]) == {"1m", "5p(red)"}
+    for answer in snap["simulate"].values():
+        assert "shanten" in answer or "tenpai" in answer
+
+
 if __name__ == "__main__":
     test_prompt_contract()
+    test_decision_snapshot()

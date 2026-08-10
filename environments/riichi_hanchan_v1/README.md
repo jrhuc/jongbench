@@ -26,7 +26,7 @@ carrying the seat's final placement.
 From the repo root (the package imports `jongbench`, which runs from the checkout):
 
 ```console
-$ PYTHONPATH=".:environments/riichi_hanchan_v1" .venv/bin/eval riichi_hanchan_v1 \
+$ PYTHONPATH="$PWD:$PWD/environments/riichi_hanchan_v1" .venv/bin/eval riichi_hanchan_v1 \
     --env.seat0.model anthropic/claude-sonnet-5 \
     --env.seat1.model openai/gpt-5.2 \
     --env.seat2.model google/gemini-3-pro \
@@ -48,7 +48,27 @@ under evaluation.
 |-----------------------|---------|---------------------------------------------------------------|
 | `state_hints`         | `true`  | rule-derived shanten/waits/furiten in prompts                  |
 | `auto_pass_reactions` | `false` | pass pure chi/pon/kan reactions without a model call (~15% of decisions; the seats then never call on discards) |
+| `tools`               | `false` | board-query tools instead of inline hints (below)              |
 | `log_dir`             | `None`  | persist each episode as a jongbench run dir (below)            |
+
+## Tool-using seats
+
+`--env.tools true` inverts the prompt design: turns stay minimal — delta and menu, no
+inline state hints — and each seat gets MCP tools it calls when it actually wants
+information. `board()` re-renders the full table, `discards(player)` one discard row,
+`waits()` the seat's own shape, `simulate(tile)` the shape after a legal discard. On
+top of those, `note(text)`/`notes()` is a private scratchpad that survives kyoku
+resets — the one thing the per-kyoku design otherwise throws away — so opponent reads
+and standings plans can outlive the board. `notes_saved` joins the metrics.
+
+The tools answer from exactly the information the hints path may use — rule-derived
+only, nothing from Mortal — precomputed at each decision point and served from the
+rollout's state channel. This measures something different on purpose: information
+seeking and memory management become part of the skill, and a tool call is a full model
+roundtrip, so an over-querying seat costs more than always-on hints would have.
+
+The toolset launches as its own process from a different working directory, so tools
+mode needs the `PYTHONPATH` entries to be absolute (`$PWD` as above, not `.`).
 
 ## Rewards and metrics
 

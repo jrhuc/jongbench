@@ -26,6 +26,7 @@ from pathlib import Path
 
 from jongbench import arena, bridge, engines, prompts
 from jongbench.artifacts import decision_filename
+from riichi_hanchan_v1.tools import SeatState, SeatToolset
 
 import verifiers.v1 as vf
 
@@ -39,6 +40,15 @@ class RiichiHanchanData(vf.TaskData):
 
 class RiichiHanchanTask(vf.Task[RiichiHanchanData]):
     pass
+
+
+class SeatToolsTask(vf.Task):
+    """A seat's per-kyoku task in tools mode: same rollout, plus the board-query
+    toolset, colocated so it shares the host and reads this rollout's state channel."""
+
+    @classmethod
+    def toolsets(cls, config) -> list[vf.Toolset]:
+        return [SeatToolset(vf.ToolsetConfig(colocated=True))]
 
 
 class RiichiHanchanConfig(vf.TasksetConfig):
@@ -56,6 +66,11 @@ class RiichiHanchanEnvConfig(vf.EnvConfig):
     """Pass pure chi/pon/open-kan reactions without a model call (~15% of decisions).
     A cost mode: the seats never call on others' discards, which changes what is
     measured. Wins and own-turn decisions always reach the model."""
+    tools: bool = False
+    """Give each seat board-query tools instead of inline state hints: board(),
+    discards(), waits(), simulate(), plus a note()/notes() scratchpad that survives
+    kyoku resets. Information-seeking and memory management become part of what is
+    measured — a different benchmark, not a cheaper rendering of this one."""
     log_dir: str | None = None
     """Persist each episode as a jongbench run dir - mjai log, per-seat decision logs,
     config.json - so `jongbench review` and `jongbench reasoning` grade the rollout
@@ -82,14 +97,18 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
         open_cms: list = [None, None, None, None]
         current: list = [None, None, None, None]
         seat_traces: list[list] = [[] for _ in SEATS]
+        tools = bool(self.config.tools)
+        seat_notes: list[list[str]] = [[] for _ in SEATS]
+        system_prompt = prompts.SYSTEM + (prompts.TOOLS_APPENDIX if tools else "")
 
         def _seat_task(index: int) -> vf.Task:
-            return vf.Task(
+            task_cls = SeatToolsTask if tools else vf.Task
+            return task_cls(
                 vf.TaskData(
                     idx=task.data.idx,
                     name=f"{SEATS[index]}-k{len(seat_traces[index])}",
                     prompt=None,  # each kyoku converses through its interaction
-                    system_prompt=prompts.SYSTEM,
+                    system_prompt=system_prompt,
                 )
             )
 
@@ -106,7 +125,17 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
                 cm = seat_agents[index].interaction(_seat_task(index))
                 current[index] = await cm.__aenter__()
                 open_cms[index] = cm
-            return await current[index].turn(prompt)
+            if tools:
+                snapshot = seats[index].decision_snapshot(0) or {}
+                current[index].trace.state = SeatState(
+                    **snapshot, notes=list(seat_notes[index])
+                )
+            segment = await current[index].turn(prompt)
+            if tools:
+                notes = getattr(current[index].trace.state, "notes", None)
+                if notes is not None:
+                    seat_notes[index] = list(notes)
+            return segment
 
         def ask_from(index: int):
             def ask(prompt: str, fresh: bool) -> str:
@@ -128,8 +157,9 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
                 name,
                 ask_from(index),
                 decision_log=logs[index],
-                state_hints=self.config.state_hints,
+                state_hints=self.config.state_hints and not tools,
                 auto_pass_reactions=self.config.auto_pass_reactions,
+                snapshot_decisions=tools,
             )
             for index, name in enumerate(SEATS)
         ]
@@ -166,6 +196,8 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
                 trace.record_metric(
                     "calls_declined", float(seats[index].totals["calls_declined"])
                 )
+                if tools:
+                    trace.record_metric("notes_saved", float(len(seat_notes[index])))
                 trace.info["hanchan"] = {
                     "seat": name,
                     "placement": placement,
@@ -201,6 +233,7 @@ def _write_episode_artifacts(
                 "games": 1,
                 "seed_start": [seed, 1],
                 "state_hints": bool(config.state_hints),
+                "tools": bool(config.tools),
                 "final": {
                     "names": list(summary.names),
                     "scores": list(summary.scores),
