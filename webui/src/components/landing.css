@@ -23,7 +23,7 @@
   margin: auto;
   max-width: min(560px, calc(100vw - 32px));
   background: var(--bone);
-  color: var(--text-dark);
+  color: var(--ink);
   border: 3px solid var(--lacquer);
   border-radius: 14px;
   padding: 26px 30px 28px;
