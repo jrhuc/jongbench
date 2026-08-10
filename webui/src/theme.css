@@ -220,8 +220,8 @@ input::placeholder { color: var(--muted-bone); }
   outline-offset: 3px;
 }
 @keyframes tile-drop {
-  from { transform: translateY(-6px) scale(1.06); opacity: 0.4; }
-  to { transform: none; opacity: 1; }
+  from { transform: translateY(-6px) scale(1.06); }
+  to { transform: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
