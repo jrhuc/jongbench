@@ -228,10 +228,17 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
   (one tile per line); ascii tiles with suit colors, aka in red; `--glyphs` for Unicode
   glyphs. Event ticker below the board. Throttle/step delay configurable.
 
-### webui.py (watch --ui web)
+### webui.py (watch --ui web, replay)
 - A local spectator for one game — one server, one session, started by the CLI. There
   is no hosted/multi-session mode: configuration lives on the CLI and the key comes
   from the environment like every other run.
+- The same page is the replay viewer. `jongbench replay <run_dir>` builds a bundle
+  (`cli.build_replay_bundle`: every mjai event paired with the TableState snapshot
+  after it, plus standings and the Mortal review) and serves it read-only
+  (`GET /` + `GET /api/replay`); `--out` writes the bundle as JSON instead. On load
+  the page probes `/api/replay`, then a `replay.json` next to it, then falls back to
+  live-watch mode — so the built page hosts as a static deployment (GitHub Pages)
+  with a bundle beside it, and `#replay` opens a file picker for any `--out` bundle.
 - Stdlib `http.server.ThreadingHTTPServer`, no framework. Serves `webui_page.html`, a single
   self-contained page built from `webui/` (Preact + TypeScript via Bun; SVG sprite tiles from
   assets/pai.svg inlined; canonical text tile notation remains in the game and analysis layers).
@@ -361,6 +368,8 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
 - `watch  --models A B C D [--seed S] [--delay MS] [--glyphs] [--ui term|web] [--no-state-hints]`
   (games=1 + spectator + report; any seat may be `human` — the UI then switches to that
   seat's POV and prompts for choices; terminal uses TerminalHumanIO, web uses WebHumanIO)
+- `replay <run_dir> [--game G] [--out FILE] [--port N] [--no-open]`  (finished game on
+  the web table; `--out` writes the static bundle instead of serving)
 - `review <run_dir | log.json.gz> [--out FILE]`  (re-evaluate + regenerate report)
 - `selfcheck`  (4 random engines, 1 game, evaluate, report — no API keys needed)
 - Models: provider specs from providers.py; `random` allowed for filling seats.

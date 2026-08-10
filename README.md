@@ -79,6 +79,10 @@ $ jongbench reasoning runs/<stamp>/ --worst 5
 # a seat spec of `human` puts you at the table)
 $ jongbench watch --models anthropic/claude-sonnet-5 openai/gpt-5.2 google/gemini-3-pro random
 $ jongbench watch --ui web --models ... human
+
+# replay a finished game on the web table, results overlay included
+$ jongbench replay runs/<stamp>/
+$ jongbench replay runs/<stamp>/ --out replay.json   # static bundle for hosting
 ```
 
 Model specs are OpenRouter ids: `<vendor>/<model>`, optionally suffixed with
@@ -91,9 +95,12 @@ State hints are on by default: rule-derived shanten, waits, furiten and
 discard-result structure, with no EV, safety ranking, or recommended move. Engines
 never see hidden tiles or Mortal.
 
-The web spectator is a TypeScript app in `webui/`; build it once with
+The web table is a TypeScript app in `webui/`; build it once with
 `cd webui && bun install && bun run build` (emits `jongbench/webui_page.html`,
-gitignored).
+gitignored). It is both the live spectator and the replay viewer, and the built
+page is a single self-contained file: host it anywhere static (GitHub Pages)
+with a `replay.json` beside it and it plays that game on load — or open it with
+`#replay` for a file picker that takes any `--out` bundle.
 
 See `DESIGN.md` for architecture. Licensed AGPL-3.0 (inherits from vendored Mortal
 code). The Mortal weights are the community-trained

@@ -68,6 +68,16 @@ export interface Frame {
   snapshot: Snapshot;
 }
 
+export interface ReplayBundle {
+  game: string;
+  seed: [number, number];
+  names: string[];
+  scores: number[];
+  placements: Record<string, number>;
+  frames: Frame[];
+  review?: Review;
+}
+
 export type SessionStatus = "starting" | "running" | "evaluating" | "done" | "error" | "aborted";
 
 export interface SessionState {

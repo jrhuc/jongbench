@@ -296,6 +296,34 @@ class _Server:
         return frames
 
 
+def test_replay_server_serves_the_bundle() -> None:
+    bundle = {
+        "game": "1_1",
+        "seed": [1, 1],
+        "names": ["p0", "p1", "p2", "p3"],
+        "scores": [25000, 25000, 25000, 25000],
+        "placements": {"p0": 1, "p1": 2, "p2": 3, "p3": 4},
+        "frames": [{"seq": 1, "event": {"type": "start_game"}, "snapshot": {}}],
+    }
+    httpd, url = webui.serve_replay(bundle, "127.0.0.1", 0)
+    port = int(urlparse(url).port or 0)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+        conn.request("GET", "/api/replay")
+        response = conn.getresponse()
+        assert response.status == 200
+        assert json.loads(response.read()) == bundle
+        conn.close()
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+        conn.request("GET", "/api/state")
+        assert conn.getresponse().status == 404
+        conn.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 def test_watch_server_workflow() -> None:
     with tempfile.TemporaryDirectory(prefix="jongbench-webui-") as tempdir:
         session = webui.start_session(

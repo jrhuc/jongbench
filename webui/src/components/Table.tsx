@@ -13,6 +13,7 @@ interface TableProps {
   onChoose(generation: number, choice: number): void;
   onAbort(): void;
   onResults?: () => void;
+  replay?: boolean;
 }
 
 const WIND_CHARS: Record<string, string> = { E: "東", S: "南", W: "西", N: "北" };
@@ -212,7 +213,7 @@ function ActionBar({ pending, onChoose }: { pending: Pending; onChoose: (generat
   );
 }
 
-export function Table({ snapshot, lastEvent, session, pending, log, onChoose, onAbort, onResults }: TableProps) {
+export function Table({ snapshot, lastEvent, session, pending, log, onChoose, onAbort, onResults, replay }: TableProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const pov = session.human_seat ?? 0;
   const seatsByNumber = new Map(snapshot.seats.map((seat) => [seat.seat, seat]));
@@ -244,9 +245,9 @@ export function Table({ snapshot, lastEvent, session, pending, log, onChoose, on
         {humanTurn && <ActionBar pending={pending} onChoose={onChoose} />}
       </div>
       <div class="table-controls">
-        <span class={`table-status table-status-${session.status}`}>
+        <span class={`table-status table-status-${replay ? "replay" : session.status}`}>
           <i />
-          {session.status === "evaluating" ? "reviewing" : session.status}
+          {replay ? "replay" : session.status === "evaluating" ? "reviewing" : session.status}
         </span>
         {onResults && <button class="table-results" onClick={onResults}>Results</button>}
         {session.status !== "done" && session.status !== "error" && session.status !== "aborted" && (

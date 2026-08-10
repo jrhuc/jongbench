@@ -54,6 +54,18 @@ def test_cli_workflow() -> None:
         regenerated_review = json.loads(regenerated[0].read_text(encoding="utf-8"))
         assert regenerated_review["scores"] == original_scores
 
+        bundle_path = run_dir / "replay.json"
+        code = cli.main(["replay", str(run_dir), "--out", str(bundle_path)])
+        assert code == 0
+        bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+        assert bundle["scores"] == original_scores
+        assert bundle["review"]["scores"] == original_scores
+        assert len(bundle["frames"]) > 50
+        first = bundle["frames"][0]
+        assert first["seq"] == 1
+        assert first["event"]["type"] == "start_game"
+        assert "seats" in first["snapshot"]
+
     print("OK")
 
 

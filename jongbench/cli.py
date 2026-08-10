@@ -269,6 +269,25 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_replay(args: argparse.Namespace) -> int:
+    from . import webui
+
+    bundle = build_replay_bundle(Path(args.run_dir), args.game)
+    if args.out:
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            json.dumps(bundle, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        print(f"{len(bundle['frames'])} frames -> {out}")
+        return 0
+    webui.run_replay_server(
+        bundle, host=args.host, port=args.port, open_browser=not args.no_open
+    )
+    return 0
+
+
 def _cmd_review(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
     if args.force:
@@ -478,6 +497,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     watch.set_defaults(func=_cmd_watch)
 
+    replay_cmd = subparsers.add_parser("replay")
+    replay_cmd.add_argument("run_dir")
+    replay_cmd.add_argument("--game")
+    replay_cmd.add_argument("--out", help="write the bundle as JSON instead of serving it")
+    replay_cmd.add_argument("--host", default="127.0.0.1")
+    replay_cmd.add_argument("--port", type=int, default=8642)
+    replay_cmd.add_argument("--no-open", action="store_true")
+    replay_cmd.set_defaults(func=_cmd_replay)
+
     review_cmd = subparsers.add_parser("review")
     review_cmd.add_argument("run_dir")
     review_cmd.add_argument("--weights", default="weights/mortal.pth")
@@ -646,6 +674,58 @@ def _log_sort_key(path: Path) -> tuple[int, int, str]:
     except ValueError:
         return 0, 0, path.name
     return seed[0], seed[1], path.name
+
+
+def _select_log(run_dir: Path, game: str | None) -> Path:
+    logs = sorted((run_dir / "logs").glob("*.json.gz"), key=_log_sort_key)
+    if not logs:
+        raise ValueError(f"no logs found in {run_dir / 'logs'}")
+    if game is None:
+        return logs[0]
+    target = game[:-8] if game.endswith(".json.gz") else game
+    target = target[:-5] if target.endswith(".json") else target
+    for path in logs:
+        if _seed_label(_seed_from_path(path)) == target:
+            return path
+    raise ValueError(f"game not found: {game}")
+
+
+def build_replay_bundle(run_dir: Path, game: str | None = None) -> dict[str, Any]:
+    """One game as the web replay viewer wants it: every mjai event paired with the
+    table snapshot after it, plus standings and the Mortal review when present."""
+    from .spectator import TableState
+
+    log_path = _select_log(run_dir, game)
+    events = evaluate.load_mjai_log(str(log_path))
+    seed = _seed_from_events_or_path(events, log_path)
+    review_path = run_dir / "review" / f"{_seed_label(seed)}.json"
+    review_data = _read_json(review_path) if review_path.exists() else None
+
+    table = TableState()
+    frames = []
+    for seq, event in enumerate(events, start=1):
+        table.apply(event)
+        frames.append({"seq": seq, "event": event, "snapshot": table.snapshot()})
+
+    if isinstance(review_data, dict):
+        names = [str(name) for name in review_data.get("names") or []]
+        scores = [int(score) for score in review_data.get("scores") or []]
+        placements = dict(review_data.get("placements") or {})
+    else:
+        summary = _reconstruct_summary(events, log_path)
+        names, scores, placements = summary.names, summary.scores, summary.placements
+
+    bundle: dict[str, Any] = {
+        "game": _seed_label(seed),
+        "seed": [seed[0], seed[1]],
+        "names": names,
+        "scores": scores,
+        "placements": placements,
+        "frames": frames,
+    }
+    if isinstance(review_data, dict):
+        bundle["review"] = review_data
+    return bundle
 
 
 def _print_summary(summary: dict[str, Any]) -> None:

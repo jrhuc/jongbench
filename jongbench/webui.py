@@ -375,17 +375,96 @@ def serve_session(
 ) -> tuple[ThreadingHTTPServer, str]:
     httpd = ThreadingHTTPServer((host, int(port)), _make_handler(session))
     httpd.daemon_threads = True
+    return httpd, _server_url(httpd, host)
+
+
+def _server_url(httpd: ThreadingHTTPServer, host: str) -> str:
     actual_port = int(httpd.server_address[1])
     url_host = "127.0.0.1" if host == "0.0.0.0" else host
     if ":" in url_host and not url_host.startswith("["):
         url_host = f"[{url_host}]"
-    return httpd, f"http://{url_host}:{actual_port}/"
+    return f"http://{url_host}:{actual_port}/"
+
+
+class _BaseHandler(BaseHTTPRequestHandler):
+    server_version = "jongbench-webui/0.1"
+
+    def log_message(self, format: str, *args: Any) -> None:
+        return
+
+    def _send_headers(
+        self, status: int, content_type: str, length: int | None = None
+    ) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
+        if length is not None:
+            self.send_header("Content-Length", str(length))
+        self.end_headers()
+
+    def _send_bytes(self, status: int, body: bytes, content_type: str) -> None:
+        self._send_headers(status, content_type, len(body))
+        self.wfile.write(body)
+
+    def _send_json(self, status: int, payload: Any) -> None:
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        self._send_bytes(status, body, "application/json; charset=utf-8")
+
+
+def _make_replay_handler(bundle: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
+    body = json.dumps(bundle, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+    class ReplayHandler(_BaseHandler):
+        def do_GET(self) -> None:
+            try:
+                path = urlparse(self.path).path
+                if path == "/":
+                    self._send_bytes(
+                        HTTPStatus.OK, _page_bytes(), "text/html; charset=utf-8"
+                    )
+                elif path == "/api/replay":
+                    self._send_bytes(
+                        HTTPStatus.OK, body, "application/json; charset=utf-8"
+                    )
+                else:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    return ReplayHandler
+
+
+def serve_replay(
+    bundle: dict[str, Any], host: str = "127.0.0.1", port: int = 0
+) -> tuple[ThreadingHTTPServer, str]:
+    httpd = ThreadingHTTPServer((host, int(port)), _make_replay_handler(bundle))
+    httpd.daemon_threads = True
+    return httpd, _server_url(httpd, host)
+
+
+def run_replay_server(
+    bundle: dict[str, Any],
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8642,
+    open_browser: bool = True,
+) -> None:
+    httpd, url = serve_replay(bundle, host, port)
+    print(f"replay at {url}", flush=True)
+    if open_browser:
+        webbrowser.open(url)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()
 
 
 def _make_handler(session: GameSession) -> type[BaseHTTPRequestHandler]:
-    class Handler(BaseHTTPRequestHandler):
-        server_version = "jongbench-webui/0.1"
-
+    class Handler(_BaseHandler):
         def do_GET(self) -> None:
             try:
                 parsed = urlparse(self.path)
@@ -435,9 +514,6 @@ def _make_handler(session: GameSession) -> type[BaseHTTPRequestHandler]:
             except Exception as exc:
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
-        def log_message(self, format: str, *args: Any) -> None:
-            return
-
         def _read_json_body(self) -> dict[str, Any]:
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -455,22 +531,6 @@ def _make_handler(session: GameSession) -> type[BaseHTTPRequestHandler]:
             if not isinstance(loaded, dict):
                 raise _HTTPError(HTTPStatus.BAD_REQUEST, "JSON body must be an object")
             return loaded
-
-        def _send_headers(self, status: int, content_type: str, length: int | None = None) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Cache-Control", "no-store")
-            if length is not None:
-                self.send_header("Content-Length", str(length))
-            self.end_headers()
-
-        def _send_bytes(self, status: int, body: bytes, content_type: str) -> None:
-            self._send_headers(status, content_type, len(body))
-            self.wfile.write(body)
-
-        def _send_json(self, status: int, payload: Any) -> None:
-            body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-            self._send_bytes(status, body, "application/json; charset=utf-8")
 
         def _send_events(self, session: GameSession, since: int) -> None:
             self.send_response(HTTPStatus.OK)

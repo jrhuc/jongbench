@@ -1,10 +1,11 @@
 import { render } from "preact";
-import type { ComponentChildren } from "preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import "./theme.css";
 import * as api from "./api";
 import { formatEvent, MAX_VISIBLE_LOG_ENTRIES } from "./log";
 import type { Frame, MjaiEvent, Pending, Review, SessionState, Snapshot } from "./types";
+import { Replay } from "./components/Replay";
+import { Shell } from "./components/Shell";
 import { Table } from "./components/Table";
 import { Results } from "./components/Results";
 
@@ -151,16 +152,11 @@ function App() {
   );
 }
 
-function Shell({ names, children }: { names?: string[]; children: ComponentChildren }) {
-  return (
-    <>
-      <header class="app-header">
-        <span class="brand">jongbench</span>
-        {names && <span class="header-seats">{names.join(" · ")}</span>}
-      </header>
-      {children}
-    </>
-  );
-}
-
-render(<App />, document.getElementById("app")!);
+// A served or co-hosted replay bundle takes over the page (that server has no live
+// session to watch); #replay opens the viewer's file picker even without one, which
+// is what a static deployment of this page links to.
+const root = document.getElementById("app")!;
+api.findReplay().then((bundle) => {
+  if (bundle || location.hash === "#replay") render(<Replay initial={bundle} />, root);
+  else render(<App />, root);
+});

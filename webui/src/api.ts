@@ -1,4 +1,4 @@
-import type { Frame, Pending, Review, SessionState } from "./types";
+import type { Frame, Pending, ReplayBundle, Review, SessionState } from "./types";
 
 async function json<T>(promise: Promise<Response>): Promise<T> {
   let response: Response;
@@ -41,6 +41,20 @@ export function abortGame(): Promise<{ ok: boolean }> {
 
 export function fetchReview(): Promise<Review> {
   return json<Review>(fetch("/api/review", { cache: "no-store" }));
+}
+
+/** A replay bundle when one is being served — by `jongbench replay` at /api/replay, or
+ * as a static replay.json next to the page — else null, meaning live-watch mode. */
+export async function findReplay(): Promise<ReplayBundle | null> {
+  for (const url of ["/api/replay", "replay.json"]) {
+    try {
+      const response = await fetch(url, { cache: "no-store" });
+      if (!response.ok) continue;
+      const bundle = (await response.json()) as ReplayBundle;
+      if (Array.isArray(bundle.frames) && bundle.frames.length > 0) return bundle;
+    } catch {}
+  }
+  return null;
 }
 
 export interface EventStream {
