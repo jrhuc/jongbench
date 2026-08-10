@@ -19,6 +19,7 @@ comparison use riichi-decision-v1, which grades single positions against Mortal.
 
 import asyncio
 import json
+import threading
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from itertools import count
@@ -77,6 +78,83 @@ class RiichiHanchanEnvConfig(vf.EnvConfig):
     afterwards with the Mortal checkpoint."""
 
 
+class _Journal:
+    """Crash journal for one episode: a header line naming what the recording is of,
+    then every decision as it happens. The arena is deterministic given seed + actions,
+    so a rerun replays the journal's complete hands without a single model call and
+    goes live from the first unrecorded hand."""
+
+    def __init__(self, path: Path, header: dict) -> None:
+        self._lock = threading.Lock()
+        self._handle = path.open("w", encoding="utf-8")
+        self._write(header)
+
+    def append(self, seat: str, record: dict) -> None:
+        self._write({"seat": seat, **record})
+
+    def finish(self) -> None:
+        self._write({"end": True})
+
+    def close(self) -> None:
+        with self._lock:
+            self._handle.close()
+
+    def _write(self, row: dict) -> None:
+        line = json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
+        with self._lock:
+            self._handle.write(line)
+            self._handle.flush()
+
+
+def _journal_header(seed: int, config: RiichiHanchanEnvConfig) -> dict:
+    return {
+        "journal": 1,
+        "seed": seed,
+        "models": [getattr(config, name).model for name in SEATS],
+        "state_hints": bool(config.state_hints),
+        "auto_pass_reactions": bool(config.auto_pass_reactions),
+        "tools": bool(config.tools),
+    }
+
+
+def _read_journal(path: Path, header: dict) -> list[dict]:
+    """The journal's replayable records: nothing on a missing file or a header that
+    names a different game, and - unless the episode finished - nothing from the last
+    recorded hand, which may have been cut mid-write and is re-run live instead."""
+    if not path.exists():
+        return []
+    finished = False
+    records: list[dict] = []
+    with path.open(encoding="utf-8") as handle:
+        for index, line in enumerate(handle):
+            try:
+                row = json.loads(line)
+            except ValueError:
+                break
+            if index == 0:
+                if row != header:
+                    return []
+                continue
+            if row.get("end") is True:
+                finished = True
+                break
+            if not isinstance(row, dict) or not {
+                "seat",
+                "menu",
+                "choice",
+                "kyoku",
+                "honba",
+            } <= row.keys():
+                break
+            records.append(row)
+    if not records:
+        return []
+    if not finished:
+        last = max((row["kyoku"], row["honba"]) for row in records)
+        records = [row for row in records if (row["kyoku"], row["honba"]) < last]
+    return records
+
+
 class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
     async def run(self, task, agents) -> None:
         loop = asyncio.get_running_loop()
@@ -106,7 +184,7 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
             return task_cls(
                 vf.TaskData(
                     idx=task.data.idx,
-                    name=f"{SEATS[index]}-k{len(seat_traces[index])}",
+                    name=f"{SEATS[index]}-k{hands_replayed + len(seat_traces[index])}",
                     prompt=None,  # each kyoku converses through its interaction
                     system_prompt=system_prompt,
                 )
@@ -152,14 +230,34 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
             return ask
 
         logs: list[list[dict]] = [[] for _ in SEATS]
+        journal: _Journal | None = None
+        replayed: dict[str, list[dict]] = {name: [] for name in SEATS}
+        hands_replayed = 0
+        if episode_dir is not None:
+            header = _journal_header(seed, self.config)
+            past = _read_journal(episode_dir / "journal.jsonl", header)
+            hands_replayed = len({(row["kyoku"], row["honba"]) for row in past})
+            for row in past:
+                replayed[row.pop("seat")].append(row)
+            journal = _Journal(episode_dir / "journal.jsonl", header)
+
+        def _sink_for(index: int):
+            def sink(record: dict) -> None:
+                logs[index].append(record)
+                if journal is not None:
+                    journal.append(SEATS[index], record)
+
+            return sink
+
         seats = [
             bridge.make_bridged_engine(
                 name,
                 ask_from(index),
-                decision_log=logs[index],
+                decision_log=_sink_for(index),
                 state_hints=self.config.state_hints and not tools,
                 auto_pass_reactions=self.config.auto_pass_reactions,
                 snapshot_decisions=tools,
+                replay=replayed[name],
             )
             for index, name in enumerate(SEATS)
         ]
@@ -174,10 +272,17 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
                 (seed, 1),
                 str(episode_dir / "logs") if episode_dir else None,
             )
+        except BaseException:
+            if journal is not None:
+                journal.close()
+            raise
         finally:
             for index in range(len(SEATS)):
                 await _close_current(index)
 
+        if journal is not None:
+            journal.finish()
+            journal.close()
         summary = summaries[0]
         if episode_dir is not None:
             _write_episode_artifacts(episode_dir, seed, summary, logs, self.config)
@@ -204,8 +309,8 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
                     "score": scores[name],
                     "seed": seed,
                     "seat_order": list(summary.names),
-                    "kyoku": kyoku,
-                    "kyoku_count": len(seat_traces[index]),
+                    "kyoku": hands_replayed + kyoku,
+                    "kyoku_count": hands_replayed + len(seat_traces[index]),
                 }
 
 

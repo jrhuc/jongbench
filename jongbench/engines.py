@@ -6,6 +6,7 @@ import random
 import threading
 import time
 from abc import ABC, abstractmethod
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -69,6 +70,12 @@ def _kyoku_id(events: list[dict[str, Any]]) -> tuple[Any, ...] | None:
 
 class GameAborted(RuntimeError):
     pass
+
+
+class ReplayDiverged(RuntimeError):
+    """A journal record does not match the menu the game actually offers, so the
+    recorded actions no longer reproduce this game. Delete the episode's journal
+    to run it fresh."""
 
 
 def sanitize_events(events: list[dict[str, Any]], player_id: int) -> list[dict[str, Any]]:
@@ -251,6 +258,7 @@ class LLMEngine(BaseEngine):
         conversational: bool = True,
         auto_pass_reactions: bool = False,
         snapshot_decisions: bool = False,
+        replay: list[dict[str, Any]] | None = None,
     ) -> None:
         super().__init__(name, spectator=spectator, concurrency=concurrency)
         self.spec = providers.parse_spec(spec_str)
@@ -285,6 +293,9 @@ class LLMEngine(BaseEngine):
         self._conversation_lock = threading.Lock()
         self._snapshots: dict[int, dict[str, Any]] = {}
         self._snapshot_lock = threading.Lock()
+        # Recorded decisions to play back before calling the model: the arena is
+        # deterministic given seed + actions, so replayed decisions cost nothing.
+        self._replay: deque[dict[str, Any]] = deque(replay or [])
 
     def decide(
         self,
@@ -296,6 +307,8 @@ class LLMEngine(BaseEngine):
     ) -> dict[str, Any]:
         started = time.perf_counter()
         labels = [str(item["label"]) for item in menu]
+        if self._replay:
+            return self._replay_decision(labels, menu)
         prompt_events = _prompt_safe_events(events)
         if self.snapshot_decisions:
             snapshot = prompts.decision_snapshot(player_id, state, prompt_events, menu)
@@ -425,6 +438,18 @@ class LLMEngine(BaseEngine):
         self._record_decision(record, calls, usage_total, fallback is not None, retries)
         return menu[choice]["event"]
 
+    def _replay_decision(
+        self, labels: list[str], menu: list[actions.MenuItem]
+    ) -> dict[str, Any]:
+        record = self._replay.popleft()
+        if record.get("menu") != labels:
+            raise ReplayDiverged(
+                f"{self.name}: journal recorded menu {record.get('menu')} but the game "
+                f"offers {labels}; delete the episode's journal.jsonl to run it fresh"
+            )
+        self._record_decision(record, 0, _empty_usage(), bool(record.get("fallback")), 0)
+        return menu[int(record["choice"])]["event"]
+
     def decision_snapshot(self, game_index: int = 0) -> dict[str, Any] | None:
         """The latest published decision snapshot, or None before the first decision."""
         with self._snapshot_lock:
@@ -446,6 +471,20 @@ class LLMEngine(BaseEngine):
         kinds = {str(item.get("kind")) for item in menu}
         if not kinds <= _DECLINABLE:
             return None
+        if self._replay:
+            # A declinable reaction that reached the model was recorded (even a "none"
+            # choice); one with no matching record was auto-passed, so pass it again
+            # without reconstructing which rule - toggle or engine-wide - did it.
+            if self._replay[0].get("menu") == [str(item["label"]) for item in menu]:
+                return None
+            pass_item = next(
+                (item for item in menu if item.get("kind") == "none"), None
+            )
+            if pass_item is None:
+                return None
+            with self._log_lock:
+                self.totals["calls_declined"] += 1
+            return pass_item["event"]
         if not self.auto_pass_reactions:
             with self._conversation_lock:
                 history = self._conversations.get(game_index)

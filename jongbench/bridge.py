@@ -67,6 +67,7 @@ def make_bridged_engine(
     spectator: Any | None = None,
     auto_pass_reactions: bool = False,
     snapshot_decisions: bool = False,
+    replay: list[dict[str, Any]] | None = None,
 ) -> engines.LLMEngine:
     """An `LLMEngine` whose calls are answered by `ask`.
 
@@ -83,6 +84,7 @@ def make_bridged_engine(
         conversational=True,
         auto_pass_reactions=auto_pass_reactions,
         snapshot_decisions=snapshot_decisions,
+        replay=replay,
     )
     engine.provider = CallbackProvider(ask, name=name)
     return engine

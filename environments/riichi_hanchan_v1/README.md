@@ -94,6 +94,22 @@ $ jongbench reasoning episodes/hanchan-00000  # each seat's reasoning joined to 
 So placement (the env reward) and decision quality (Mortal's grading) come from the
 same rollout without spending a second one.
 
+## Crash recovery
+
+With `log_dir` set, every decision is also journaled to `hanchan-<idx>/journal.jsonl`
+as it happens. The arena is deterministic given seed + actions, so if a run dies or is
+killed, rerunning the same command replays each episode's complete hands from its
+journal without a single model call and goes live from the first unrecorded hand — the
+hand that was in flight is the only thing repaid. A journal whose header names a
+different game (seed, models, or prompt-shaping config changed) is ignored, and a
+journal from a finished episode replays the whole hanchan for free, reproducing its
+artifacts with zero API cost. Delete the episode's `journal.jsonl` to force a fresh
+game. This composes with the verifiers `--resume` flag, which skips episodes whose
+results were already accepted; the journal covers the ones it re-runs.
+
+In tools mode the seats' notes are not journaled: replayed hands re-derive actions,
+not conversations, so a resumed seat starts its live hands with an empty scratchpad.
+
 ## Notes
 
 - Hard to reward-hack: placement is computed by the Rust referee from final scores,

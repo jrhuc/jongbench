@@ -335,6 +335,14 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
   call) and the env serves it on the rollout's state channel (`trace.state`), reading
   notes back after each turn. Same information boundary as the hints path — rule-derived
   only, nothing from Mortal. See docs/tool-seats-scoping.md for what this changes.
+- Crash recovery: with `log_dir` set, every decision appends to the episode's
+  `journal.jsonl` (header = seed + models + prompt-shaping config). The arena is
+  deterministic given seed + actions, so a rerun replays complete hands straight from
+  the journal (`LLMEngine` consumes the records before calling the model, verifying
+  each recorded menu against the live one) and goes live from the first unrecorded
+  hand — only the in-flight hand is repaid. Auto-passed reactions leave no record, so
+  during replay any declinable menu with no matching next record is passed again.
+  Composes with verifiers `--resume`, which skips already-accepted episodes.
 - Expensive by nature (~1,000 model calls per episode) and every seat sees a board the
   other three steered. riichi-decision-v1 is the cheap, separable comparison.
 

@@ -281,6 +281,127 @@ def test_seat_toolset_answers_from_its_state() -> None:
     assert normalize_tile(" 3p ") == "3p"
 
 
+def test_journal_read_trims_and_guards(tmp_path) -> None:
+    from riichi_hanchan_v1.env import _Journal, _journal_header, _read_journal
+
+    header = _journal_header(7, RiichiHanchanEnvConfig())
+    path = tmp_path / "journal.jsonl"
+    journal = _Journal(path, header)
+    for seat, kyoku, honba in [
+        ("seat0", 1, 0),
+        ("seat1", 1, 0),
+        ("seat0", 1, 1),
+        ("seat0", 2, 0),
+    ]:
+        journal.append(seat, {"menu": ["x"], "choice": 0, "kyoku": kyoku, "honba": honba})
+    journal.close()
+
+    rows = _read_journal(path, header)
+    assert [(r["kyoku"], r["honba"]) for r in rows] == [(1, 0), (1, 0), (1, 1)]
+
+    assert _read_journal(path, _journal_header(8, RiichiHanchanEnvConfig())) == []
+    assert _read_journal(tmp_path / "missing.jsonl", header) == []
+
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("{cut mid-write")
+    assert len(_read_journal(path, header)) == 3
+
+    finished = tmp_path / "finished.jsonl"
+    journal = _Journal(finished, header)
+    journal.append("seat0", {"menu": ["x"], "choice": 0, "kyoku": 1, "honba": 0})
+    journal.append("seat0", {"menu": ["x"], "choice": 0, "kyoku": 2, "honba": 0})
+    journal.finish()
+    journal.close()
+    assert len(_read_journal(finished, header)) == 2
+
+
+@pytest.fixture(scope="module")
+def resumed(played, episode_dir, tmp_path_factory):
+    import json
+
+    source = episode_dir / "hanchan-00000" / "journal.jsonl"
+    lines = source.read_text(encoding="utf-8").splitlines()
+    assert json.loads(lines[-1]) == {"end": True}
+    cut = 1 + int((len(lines) - 2) * 0.7)
+    rows = [json.loads(line) for line in lines[1:cut]]
+    hands_recorded = {(row["kyoku"], row["honba"]) for row in rows}
+
+    resume_root = tmp_path_factory.mktemp("hanchan-resume")
+    run_dir = resume_root / "hanchan-00000"
+    run_dir.mkdir()
+    (run_dir / "journal.jsonl").write_text(
+        "\n".join(lines[:cut]) + "\n", encoding="utf-8"
+    )
+
+    env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
+    env.config = RiichiHanchanEnvConfig(log_dir=str(resume_root))
+    agents = FakeAgents()
+    task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
+    asyncio.run(env.run(task, agents))
+    return agents, resume_root, len(hands_recorded) - 1
+
+
+def test_resume_replays_the_journal_and_goes_live(played, resumed) -> None:
+    agents, resume_root, hands_replayed = resumed
+    live = sum(len(seat.prompts) for seat in agents.seats)
+    full = sum(len(seat.prompts) for seat in played.seats)
+    assert 0 < live < full
+
+    # Replay reproduces the same game, so the standings match the original run.
+    for orig, seat in zip(played.seats, agents.seats, strict=True):
+        before = orig.interactions[-1].trace.info["hanchan"]
+        after = seat.interactions[-1].trace.info["hanchan"]
+        assert (before["placement"], before["score"]) == (
+            after["placement"],
+            after["score"],
+        )
+        assert seat.interactions[0].trace.info["hanchan"]["kyoku"] == hands_replayed
+
+    journal = (resume_root / "hanchan-00000" / "journal.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert journal.splitlines()[-1] == '{"end":true}'
+
+
+def test_resume_artifacts_cover_the_whole_hanchan(played, resumed) -> None:
+    import json
+
+    agents, resume_root, _ = resumed
+    for name, orig in zip(SEATS, played.seats, strict=True):
+        lines = (
+            (resume_root / "hanchan-00000" / "decisions" / f"{name}.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
+        assert len(lines) == len(orig.prompts)
+        assert all("choice" in json.loads(line) for line in lines)
+
+
+def test_finished_journal_replays_the_episode_for_free(
+    played, episode_dir, tmp_path_factory
+) -> None:
+    import json
+
+    replay_root = tmp_path_factory.mktemp("hanchan-replay")
+    run_dir = replay_root / "hanchan-00000"
+    run_dir.mkdir()
+    source = episode_dir / "hanchan-00000"
+    (run_dir / "journal.jsonl").write_text(
+        (source / "journal.jsonl").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
+    env.config = RiichiHanchanEnvConfig(log_dir=str(replay_root))
+    agents = FakeAgents()
+    task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
+    asyncio.run(env.run(task, agents))
+
+    assert all(seat.interactions == [] for seat in agents.seats)
+    original = json.loads((source / "config.json").read_text(encoding="utf-8"))
+    replayed = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+    assert replayed["final"] == original["final"]
+
+
 def test_taskset_is_an_infinite_seeded_generator() -> None:
     taskset = RiichiHanchanTaskset(RiichiHanchanConfig())
     assert taskset.INFINITE
