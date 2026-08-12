@@ -12,6 +12,7 @@ from jongbench.prompts import (
     build_user_prompt,
     decision_snapshot,
     extract_choice,
+    render_state,
 )
 
 
@@ -217,6 +218,32 @@ def test_decision_snapshot():
         assert "shanten" in answer or "tenpai" in answer
 
 
+def test_board_shows_the_hand_in_progress_not_the_whole_match():
+    """A position replayed out of a finished game carries every event of that game, so
+    the board must cut back to the current start_kyoku."""
+    later = {**START_KYOKU, "kyoku": 2, "oya": 1, "scores": [31700, 25000, 18300, 25000]}
+    finished = [
+        START_KYOKU,
+        {"type": "tsumo", "actor": 0, "pai": "5pr"},
+        {"type": "dahai", "actor": 0, "pai": "9s", "tsumogiri": False},
+        {"type": "tsumo", "actor": 1, "pai": "1s"},
+        {"type": "dahai", "actor": 1, "pai": "9m", "tsumogiri": False},
+        {"type": "end_kyoku"},
+    ]
+    st = libriichi.state.PlayerState(0)
+    for ev in [later, {"type": "tsumo", "actor": 1, "pai": "1s"}]:
+        st.update(json.dumps(ev))
+
+    board = render_state(0, st, [*finished, later, {"type": "tsumo", "actor": 1, "pai": "1s"}])
+    assert board.startswith("Round: East 2 (honba 0), kyotaku 0, dealer P1")
+    assert "P0 N (you) score 31700:" in board
+    assert "Tiles remaining in wall: 69" in board
+    assert board.count("discards -") == 4
+    assert "discards 9s" not in board
+    assert "discards 9m" not in board
+
+
 if __name__ == "__main__":
     test_prompt_contract()
     test_decision_snapshot()
+    test_board_shows_the_hand_in_progress_not_the_whole_match()
