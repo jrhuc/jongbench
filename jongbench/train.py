@@ -50,6 +50,29 @@ class TrainConfig:
     seed: int = 20260812
 
 
+@dataclass
+class PolicyRLConfig:
+    logs: str
+    init: str
+    out: str
+    anchor: str | None = None
+    steps: int = 128
+    batch_size: int = 512
+    device: str = "auto"
+    lr: float = 1e-4
+    weight_decay: float = 0.0
+    max_grad_norm: float = 1.0
+    clip_ratio: float = 0.2
+    target_kl: float | None = 0.03
+    anchor_kl_weight: float = 0.02
+    entropy_weight: float = 0.001
+    sampling_temperature: float = 1.0
+    file_batch_size: int = 8
+    log_every: int = 10
+    pts: tuple[float, float, float, float] = DEFAULT_PTS
+    seed: int = 20260812
+
+
 def _set_trainable(module: nn.Module, trainable: bool) -> None:
     module.requires_grad_(trainable)
     if not trainable:
@@ -466,6 +489,251 @@ def train(cfg: TrainConfig) -> dict[str, Any]:
     last_stats["baseline"] = baseline_metrics
     last_stats["validation"] = validation_metrics
     return last_stats
+
+
+def train_policy_rl(cfg: PolicyRLConfig) -> dict[str, float]:
+    if cfg.steps <= 0:
+        raise ValueError("steps must be positive")
+    if cfg.sampling_temperature <= 0:
+        raise ValueError("sampling_temperature must be positive")
+    if not 0 < cfg.clip_ratio < 1:
+        raise ValueError("clip_ratio must be in (0, 1)")
+    if cfg.target_kl is not None and cfg.target_kl <= 0:
+        raise ValueError("target_kl must be positive or None")
+    if cfg.anchor_kl_weight < 0 or cfg.entropy_weight < 0:
+        raise ValueError("regularization weights must be non-negative")
+
+    device = resolve_device(cfg.device)
+    torch.manual_seed(cfg.seed)
+    random.seed(cfg.seed)
+    files = discover_logs(cfg.logs)
+    if not files:
+        raise ValueError(f"no gameplay logs under {cfg.logs}")
+
+    ckpt = load_checkpoint(cfg.init, map_location="cpu")
+    brain, dqn, policy, _, _, version = networks_from_checkpoint(ckpt)
+    if version != 4:
+        raise ValueError(f"policy RL requires Mortal version 4, got {version}")
+    if policy is None:
+        policy = PolicyHead.from_dqn(dqn)
+
+    anchor_path = cfg.anchor or cfg.init
+    anchor_ckpt = load_checkpoint(anchor_path, map_location="cpu")
+    anchor_brain, anchor_dqn, anchor_policy, _, _, anchor_version = (
+        networks_from_checkpoint(anchor_ckpt)
+    )
+    if anchor_version != version:
+        raise ValueError(
+            f"anchor Mortal version {anchor_version} does not match policy version {version}"
+        )
+    if anchor_policy is None:
+        anchor_policy = PolicyHead.from_dqn(anchor_dqn)
+
+    shared_anchor_encoder = all(
+        torch.equal(value, anchor_brain.state_dict()[key])
+        for key, value in brain.state_dict().items()
+    )
+    brain = brain.to(device).eval()
+    brain.requires_grad_(False)
+    policy = policy.to(device).train()
+    old_policy = copy.deepcopy(policy).eval()
+    old_policy.requires_grad_(False)
+    anchor_policy = anchor_policy.to(device).eval()
+    anchor_policy.requires_grad_(False)
+    if shared_anchor_encoder:
+        anchor_brain = brain
+    else:
+        anchor_brain = anchor_brain.to(device).eval()
+        anchor_brain.requires_grad_(False)
+
+    parameter_groups = _optimizer_groups(
+        [policy],
+        lr=cfg.lr,
+        weight_decay=cfg.weight_decay,
+    )
+    trainable = [
+        parameter for group in parameter_groups for parameter in group["params"]
+    ]
+    optimizer = torch.optim.AdamW(parameter_groups)
+    scaler = GradScaler(device.type, enabled=device.type == "cuda")
+    reward_values = torch.tensor(cfg.pts, dtype=torch.float32, device=device)
+    reward_mean = reward_values.mean()
+    reward_std = reward_values.std(correction=0)
+    if float(reward_std) == 0:
+        raise ValueError("pts must assign at least two distinct placement rewards")
+
+    dataset = GameplayIterable(
+        files,
+        version=version,
+        pts=cfg.pts,
+        file_batch_size=cfg.file_batch_size,
+        infinite=True,
+    )
+    loader = DataLoader(
+        dataset,
+        batch_size=cfg.batch_size,
+        drop_last=True,
+        num_workers=0,
+        pin_memory=device.type == "cuda",
+    )
+    batches = iter(loader)
+    running: dict[str, float] = {}
+    running_count = 0
+    last_stats: dict[str, float] = {}
+    updates = 0
+    t0 = time.time()
+
+    while updates < cfg.steps:
+        obs, actions, masks, _, rewards, _ = _move_batch(next(batches), device)
+        contested = masks.sum(-1) > 1
+        if not bool(contested.any()):
+            continue
+        obs = obs[contested]
+        actions = actions[contested]
+        masks = masks[contested]
+        rewards = rewards[contested]
+        advantages = (rewards - reward_mean) / reward_std
+
+        with (
+            torch.no_grad(),
+            torch.autocast(device.type, enabled=device.type == "cuda"),
+        ):
+            phi = brain(obs)
+            old_logits = old_policy(phi, masks) / cfg.sampling_temperature
+            old_log_policy = F.log_softmax(old_logits, dim=-1)
+            old_action_logp = old_log_policy.gather(-1, actions.unsqueeze(-1)).squeeze(
+                -1
+            )
+            anchor_phi = phi if shared_anchor_encoder else anchor_brain(obs)
+            anchor_logits = anchor_policy(anchor_phi, masks) / cfg.sampling_temperature
+            anchor_pi = F.softmax(anchor_logits, dim=-1)
+
+        with torch.autocast(device.type, enabled=device.type == "cuda"):
+            logits = policy(phi, masks) / cfg.sampling_temperature
+            log_policy = F.log_softmax(logits, dim=-1)
+            action_logp = log_policy.gather(-1, actions.unsqueeze(-1)).squeeze(-1)
+            log_ratio = action_logp - old_action_logp
+            ratio = log_ratio.exp()
+            clipped_ratio = ratio.clamp(1.0 - cfg.clip_ratio, 1.0 + cfg.clip_ratio)
+            policy_loss = -torch.minimum(
+                ratio * advantages, clipped_ratio * advantages
+            ).mean()
+            anchor_kl = _legal_kl(log_policy, anchor_pi, masks)
+            legal_log_policy = log_policy.masked_fill(~masks, 0.0)
+            legal_policy = log_policy.exp().masked_fill(~masks, 0.0)
+            entropy = -(legal_policy * legal_log_policy).sum(-1).mean()
+            loss = (
+                policy_loss
+                + cfg.anchor_kl_weight * anchor_kl
+                - cfg.entropy_weight * entropy
+            )
+        if not bool(torch.isfinite(loss)):
+            raise FloatingPointError(
+                f"non-finite policy RL loss at update {updates + 1}"
+            )
+
+        optimizer.zero_grad(set_to_none=True)
+        scaler.scale(loss).backward()
+        if cfg.max_grad_norm > 0:
+            scaler.unscale_(optimizer)
+            clip_grad_norm_(trainable, cfg.max_grad_norm)
+        scaler.step(optimizer)
+        scaler.update()
+        updates += 1
+
+        with torch.no_grad():
+            approx_kl = ((ratio - 1.0) - log_ratio).mean()
+            clip_fraction = ((ratio - 1.0).abs() > cfg.clip_ratio).float().mean()
+        stats = {
+            "loss": float(loss.detach()),
+            "policy": float(policy_loss.detach()),
+            "anchor_kl": float(anchor_kl.detach()),
+            "entropy": float(entropy.detach()),
+            "behavior_kl": float(approx_kl.detach()),
+            "clip_fraction": float(clip_fraction.detach()),
+            "mean_return": float(rewards.mean()),
+        }
+        for key, value in stats.items():
+            running[key] = running.get(key, 0.0) + value
+        running_count += 1
+
+        if updates % cfg.log_every == 0 or updates == 1 or updates == cfg.steps:
+            last_stats = {key: value / running_count for key, value in running.items()}
+            elapsed = time.time() - t0
+            print(
+                f"policy-rl {updates}/{cfg.steps} "
+                + " ".join(f"{key}={value:.4f}" for key, value in last_stats.items())
+                + f" elapsed={elapsed:.1f}s device={device}"
+            )
+            running = {}
+            running_count = 0
+
+        if cfg.target_kl is not None and float(approx_kl) > cfg.target_kl:
+            print(
+                f"policy-rl stopped at {updates}: "
+                f"behavior_kl={float(approx_kl):.4f} > {cfg.target_kl:.4f}"
+            )
+            break
+
+    if running_count:
+        last_stats = {key: value / running_count for key, value in running.items()}
+    last_stats["updates"] = float(updates)
+    _save_policy_rl_checkpoint(
+        cfg.out,
+        ckpt,
+        policy=policy,
+        train_cfg=cfg,
+        files=len(files),
+        updates=updates,
+        metrics=last_stats,
+    )
+    print(f"saved {cfg.out}")
+    return last_stats
+
+
+def _save_policy_rl_checkpoint(
+    path: str | Path,
+    init_ckpt: dict[str, Any],
+    *,
+    policy: nn.Module,
+    train_cfg: PolicyRLConfig,
+    files: int,
+    updates: int,
+    metrics: dict[str, float],
+) -> None:
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    config = copy.deepcopy(init_ckpt.get("config", {}))
+    reviewer = config.setdefault("reviewer", {})
+    reviewer["has_policy"] = True
+    prior = reviewer.get("policy_rl")
+    history = list(prior.get("history", [])) if isinstance(prior, dict) else []
+    history.append(
+        {
+            "source_checkpoint": train_cfg.init,
+            "anchor_checkpoint": train_cfg.anchor or train_cfg.init,
+            "files": files,
+            "updates": updates,
+            "training": asdict(train_cfg),
+            "metrics": dict(metrics),
+        }
+    )
+    reviewer["policy_rl"] = {
+        "format": 1,
+        "total_updates": sum(int(item.get("updates", 0)) for item in history),
+        "history": history,
+    }
+    payload = dict(init_ckpt)
+    payload.update(
+        {
+            "policy": {
+                key: value.detach().cpu() for key, value in policy.state_dict().items()
+            },
+            "config": config,
+            "timestamp": time.time(),
+        }
+    )
+    torch.save(payload, out)
 
 
 def _save_checkpoint(

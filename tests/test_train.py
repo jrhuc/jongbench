@@ -26,7 +26,7 @@ from jongbench.evaluate import (
     review_player,
 )
 from jongbench.mortal_model import ACTION_SPACE, DQN, ConfidenceHead, PolicyHead
-from jongbench.train import TrainConfig, train
+from jongbench.train import PolicyRLConfig, TrainConfig, train, train_policy_rl
 
 WEIGHTS = ROOT / "weights" / "mortal.pth"
 
@@ -127,6 +127,18 @@ def test_cli_new_commands_parse() -> None:
     train_args = parser.parse_args(["train", "--steps", "3", "--unfreeze-encoder"])
     assert train_args.steps == 3
     assert train_args.unfreeze_encoder
+    policy_rl = parser.parse_args(
+        [
+            "policy-rl",
+            "--logs",
+            "training/selfplay",
+            "--init",
+            "weights/reviewer.pth",
+            "--out",
+            "weights/candidate.pth",
+        ]
+    )
+    assert policy_rl.clip_ratio == 0.2
     duel_args = parser.parse_args(
         ["duel", "--challenger", "weights/reviewer.pth", "--games", "8"]
     )
@@ -215,3 +227,25 @@ def test_train_two_steps_on_tsumogiri_log(tmp_path: Path) -> None:
     stats = aggregates(review)
     assert stats["policy_count"] == review["total_reviewed"]
     assert stats["policy_match_rate"] is not None
+    rl_out = tmp_path / "reviewer-rl.pth"
+    rl_stats = train_policy_rl(
+        PolicyRLConfig(
+            logs=str(tmp_path),
+            init=str(out),
+            anchor=str(out),
+            out=str(rl_out),
+            steps=2,
+            batch_size=8,
+            device="cpu",
+            target_kl=None,
+            log_every=1,
+            file_batch_size=1,
+        )
+    )
+    assert rl_stats["updates"] == 2
+    rl_ckpt = torch.load(rl_out, weights_only=True, map_location="cpu")
+    for key, value in ckpt["mortal"].items():
+        torch.testing.assert_close(rl_ckpt["mortal"][key], value)
+    for key, value in ckpt["current_dqn"].items():
+        torch.testing.assert_close(rl_ckpt["current_dqn"][key], value)
+    assert rl_ckpt["config"]["reviewer"]["policy_rl"]["total_updates"] == 2

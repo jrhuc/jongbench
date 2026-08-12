@@ -538,6 +538,32 @@ def _cmd_train(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_policy_rl(args: argparse.Namespace) -> int:
+    from .train import PolicyRLConfig, train_policy_rl
+
+    stats = train_policy_rl(
+        PolicyRLConfig(
+            logs=args.logs,
+            init=args.init,
+            out=args.out,
+            anchor=args.anchor,
+            steps=args.steps,
+            batch_size=args.batch_size,
+            device=args.device,
+            lr=args.lr,
+            clip_ratio=args.clip_ratio,
+            target_kl=args.target_kl,
+            anchor_kl_weight=args.anchor_kl_weight,
+            entropy_weight=args.entropy_weight,
+            sampling_temperature=args.sampling_temperature,
+            file_batch_size=args.file_batch_size,
+        )
+    )
+    print(f"policy RL done: {stats}")
+    print(f"checkpoint: {args.out}")
+    return 0
+
+
 def _cmd_duel(args: argparse.Namespace) -> int:
     from .selfplay import duel
 
@@ -699,6 +725,25 @@ def _build_parser() -> argparse.ArgumentParser:
     train_cmd.add_argument("--data-provenance")
     train_cmd.add_argument("--data-sha256")
     train_cmd.set_defaults(func=_cmd_train)
+
+    policy_rl_cmd = subparsers.add_parser(
+        "policy-rl", help="update a policy head from its stochastic self-play logs"
+    )
+    policy_rl_cmd.add_argument("--logs", required=True)
+    policy_rl_cmd.add_argument("--init", required=True)
+    policy_rl_cmd.add_argument("--out", required=True)
+    policy_rl_cmd.add_argument("--anchor")
+    policy_rl_cmd.add_argument("--steps", type=_positive_int, default=128)
+    policy_rl_cmd.add_argument("--batch-size", type=_positive_int, default=512)
+    policy_rl_cmd.add_argument("--device", default="auto")
+    policy_rl_cmd.add_argument("--lr", type=float, default=1e-4)
+    policy_rl_cmd.add_argument("--clip-ratio", type=float, default=0.2)
+    policy_rl_cmd.add_argument("--target-kl", type=float, default=0.03)
+    policy_rl_cmd.add_argument("--anchor-kl-weight", type=float, default=0.02)
+    policy_rl_cmd.add_argument("--entropy-weight", type=float, default=0.001)
+    policy_rl_cmd.add_argument("--sampling-temperature", type=float, default=1.0)
+    policy_rl_cmd.add_argument("--file-batch-size", type=_positive_int, default=8)
+    policy_rl_cmd.set_defaults(func=_cmd_policy_rl)
 
     duel_cmd = subparsers.add_parser(
         "duel", help="1-vs-3 duplicate match between two checkpoints"
