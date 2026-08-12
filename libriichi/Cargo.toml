@@ -51,3 +51,7 @@ mimalloc = ["dep:mimalloc"]
 pymod = ["pyo3/extension-module"]
 abi3 = ["pyo3/abi3"]
 sp_reproduce_cpp_ver = []
+
+[profile.release]
+codegen-units = 1
+lto = "thin"

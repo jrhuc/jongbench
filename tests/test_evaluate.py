@@ -7,13 +7,15 @@ import time
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import jongbench
 import libriichi
-from jongbench.evaluate import load_engine, load_mjai_log, review_player
+from jongbench.evaluate import load_engine, load_mjai_log, review_game, review_player
 
 
 class TsumogiriEngine:
@@ -87,12 +89,19 @@ def test_mortal_review() -> None:
         assert abs(prob_sum - 1.0) <= 1e-3
         assert entry["actual_index"] < len(entry["details"])
     assert any(not entry["is_equal"] for entry in review["entries"])
+    batched = review_game(events, engine)[0]
+    assert batched["total_reviewed"] == review["total_reviewed"]
+    assert batched["total_matches"] == review["total_matches"]
+    assert batched["rating"] == pytest.approx(review["rating"], rel=1e-6)
+    assert [entry["actual"] for entry in batched["entries"]] == [
+        entry["actual"] for entry in review["entries"]
+    ]
 
     elapsed = time.perf_counter() - started
     print(
-        f'total_reviewed={review["total_reviewed"]} '
-        f'rating={review["rating"]:.6f} '
-        f'elapsed={elapsed:.3f}s'
+        f"total_reviewed={review['total_reviewed']} "
+        f"rating={review['rating']:.6f} "
+        f"elapsed={elapsed:.3f}s"
     )
     print("OK")
 

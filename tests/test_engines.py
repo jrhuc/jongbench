@@ -10,14 +10,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import jongbench
-import libriichi
 from types import SimpleNamespace
 
+import jongbench
+import libriichi
 from jongbench import engines as engines_module
 from jongbench import prompts, providers
 from jongbench.engines import LLMEngine, RandomEngine, sanitize_events
-
 
 _CONTEXT = threading.local()
 
@@ -126,10 +125,52 @@ def test_sanitize_events() -> None:
             "dora_marker": "3p",
             "scores": [25000, 25000, 25000, 25000],
             "tehais": [
-                ["1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "2p", "3p", "4p"],
-                ["5p", "6p", "7p", "8p", "9p", "1s", "2s", "3s", "4s", "5s", "6s", "7s", "8s"],
+                [
+                    "1m",
+                    "2m",
+                    "3m",
+                    "4m",
+                    "5m",
+                    "6m",
+                    "7m",
+                    "8m",
+                    "9m",
+                    "1p",
+                    "2p",
+                    "3p",
+                    "4p",
+                ],
+                [
+                    "5p",
+                    "6p",
+                    "7p",
+                    "8p",
+                    "9p",
+                    "1s",
+                    "2s",
+                    "3s",
+                    "4s",
+                    "5s",
+                    "6s",
+                    "7s",
+                    "8s",
+                ],
                 ["9s", "E", "E", "S", "S", "W", "W", "N", "N", "P", "P", "F", "F"],
-                ["C", "C", "1m", "2m", "3m", "4p", "5p", "6p", "7s", "8s", "9s", "E", "S"],
+                [
+                    "C",
+                    "C",
+                    "1m",
+                    "2m",
+                    "3m",
+                    "4p",
+                    "5p",
+                    "6p",
+                    "7s",
+                    "8s",
+                    "9s",
+                    "E",
+                    "S",
+                ],
             ],
         },
         {"type": "tsumo", "actor": 1, "pai": "5pr"},
@@ -223,8 +264,7 @@ def test_full_game_no_hidden_leak() -> None:
         assert all(record["prompt_version"] == 3 for record in log)
         assert all(record["state_hints"] is True for record in log)
         assert all(
-            record["choice_label"] == record["menu"][record["choice"]]
-            for record in log
+            record["choice_label"] == record["menu"][record["choice"]] for record in log
         )
 
     raw_by_key = {
@@ -242,6 +282,39 @@ def test_full_game_no_hidden_leak() -> None:
                 continue
             hidden_seq = "".join(str(tile) for tile in hand[:3])
             assert hidden_seq not in prompt, (call["player_id"], seat, hidden_seq)
+
+
+def test_reasoning_token_caps_only_stop_runaways() -> None:
+    assert LLMEngine("plain", "openai/fake").max_tokens == 4096
+    assert LLMEngine("low", "openai/fake", reasoning="low").max_tokens == 64000
+    assert LLMEngine("max", "openai/fake", reasoning="max").max_tokens == 96000
+    assert (
+        LLMEngine(
+            "explicit", "openai/fake", reasoning="low", max_tokens=100000
+        ).max_tokens
+        == 100000
+    )
+
+
+def test_decision_coordinates_use_the_latest_kyoku() -> None:
+    events = [
+        {"type": "start_kyoku", "bakaze": "E", "kyoku": 1, "honba": 0},
+        {"type": "tsumo", "actor": 2},
+        {"type": "pon", "actor": 2},
+        {"type": "end_kyoku"},
+        {"type": "start_kyoku", "bakaze": "E", "kyoku": 2, "honba": 1},
+        {"type": "tsumo", "actor": 0},
+        {"type": "tsumo", "actor": 2},
+        {"type": "chi", "actor": 2},
+    ]
+
+    assert engines_module._kyoku_id(events) == ("E", 2, 1)
+    assert engines_module._decision_coords(2, events) == {
+        "kyoku": 1,
+        "honba": 1,
+        "junme": 2,
+        "tiles_left": 68,
+    }
 
 
 def test_random_engine_is_reproducible_across_batched_games() -> None:
@@ -315,7 +388,9 @@ def test_declining_calls_skips_only_pure_call_reactions() -> None:
         {"kind": "none", "label": "pass", "event": {"type": "none"}},
         {"kind": "chi", "label": "chi", "event": {"type": "chi"}},
     ]
-    assert engine.auto_reaction(_state(False), menu, _REACTION_EVENTS, 0) == {"type": "none"}
+    assert engine.auto_reaction(_state(False), menu, _REACTION_EVENTS, 0) == {
+        "type": "none"
+    }
     assert engine.totals["calls_declined"] == 1
 
 
@@ -368,7 +443,9 @@ def test_auto_pass_reactions_skips_calls_without_any_conversation() -> None:
         {"kind": "none", "label": "pass", "event": {"type": "none"}},
         {"kind": "chi", "label": "chi", "event": {"type": "chi"}},
     ]
-    assert engine.auto_reaction(_state(False), menu, _REACTION_EVENTS, 0) == {"type": "none"}
+    assert engine.auto_reaction(_state(False), menu, _REACTION_EVENTS, 0) == {
+        "type": "none"
+    }
     assert engine.totals["calls_declined"] == 1
 
     win = [

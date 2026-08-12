@@ -9,19 +9,20 @@ CLI and credentials come from the environment, the same as every other run. A
 from __future__ import annotations
 
 import copy
-from collections import deque
-from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-from datetime import datetime, timezone
-from pathlib import Path
 import re
 import threading
 import time
 import traceback
+import webbrowser
+from collections import deque
+from datetime import datetime, timezone
+from functools import cache
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
-import webbrowser
 
 from . import arena, prompts, providers
 from .artifacts import decision_filename
@@ -69,8 +70,7 @@ class WebHumanIO(HumanIO):
         gate = threading.Event()
         state_text = prompts.render_state(player_id, state, _prompt_safe_events(events))
         options = [
-            _pending_option(index, player_id, item)
-            for index, item in enumerate(menu)
+            _pending_option(index, player_id, item) for index, item in enumerate(menu)
         ]
         with self._lock:
             # Rendering is deliberately outside the lock, so cancellation must
@@ -473,21 +473,30 @@ def _make_handler(session: GameSession) -> type[BaseHTTPRequestHandler]:
                 parsed = urlparse(self.path)
                 path = parsed.path
                 if path == "/":
-                    self._send_bytes(HTTPStatus.OK, _page_bytes(), "text/html; charset=utf-8")
+                    self._send_bytes(
+                        HTTPStatus.OK, _page_bytes(), "text/html; charset=utf-8"
+                    )
                 elif path == "/api/state":
                     self._send_json(HTTPStatus.OK, _session_state(session))
                 elif path == "/api/events":
                     query = parse_qs(parsed.query)
                     since = _int_query(query.get("since", ["0"])[0], 0)
+                    since = max(
+                        since, _int_query(self.headers.get("Last-Event-ID", "0"), 0)
+                    )
                     self._send_events(session, since)
                 elif path == "/api/pending":
                     self._send_json(
                         HTTPStatus.OK,
-                        session.human_io.pending() if session.human_seat is not None else None,
+                        session.human_io.pending()
+                        if session.human_seat is not None
+                        else None,
                     )
                 elif path == "/api/review":
                     if session.review is None:
-                        raise _HTTPError(HTTPStatus.NOT_FOUND, "review is not available")
+                        raise _HTTPError(
+                            HTTPStatus.NOT_FOUND, "review is not available"
+                        )
                     self._send_json(HTTPStatus.OK, session.review)
                 else:
                     raise _HTTPError(HTTPStatus.NOT_FOUND, "not found")
@@ -497,7 +506,9 @@ def _make_handler(session: GameSession) -> type[BaseHTTPRequestHandler]:
                 self._send_json(exc.status, {"error": exc.message})
             except Exception as exc:
                 try:
-                    self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+                    self._send_json(
+                        HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)}
+                    )
                 except (BrokenPipeError, ConnectionResetError):
                     pass
 
@@ -508,7 +519,9 @@ def _make_handler(session: GameSession) -> type[BaseHTTPRequestHandler]:
                     self._send_json(HTTPStatus.OK, {"ok": session.abort()})
                 elif parsed.path == "/api/choose":
                     payload = self._read_json_body()
-                    ok = session.human_io.choose(payload.get("generation"), payload.get("choice"))
+                    ok = session.human_io.choose(
+                        payload.get("generation"), payload.get("choice")
+                    )
                     self._send_json(HTTPStatus.OK, {"ok": ok})
                 else:
                     raise _HTTPError(HTTPStatus.NOT_FOUND, "not found")
@@ -521,11 +534,15 @@ def _make_handler(session: GameSession) -> type[BaseHTTPRequestHandler]:
             try:
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError as exc:
-                raise _HTTPError(HTTPStatus.BAD_REQUEST, "invalid Content-Length") from exc
+                raise _HTTPError(
+                    HTTPStatus.BAD_REQUEST, "invalid Content-Length"
+                ) from exc
             if length < 0:
                 raise _HTTPError(HTTPStatus.BAD_REQUEST, "invalid Content-Length")
             if length > _BODY_LIMIT:
-                raise _HTTPError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request body is too large")
+                raise _HTTPError(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request body is too large"
+                )
             raw = self.rfile.read(length)
             try:
                 loaded = json.loads(raw.decode("utf-8") if raw else "{}")
@@ -560,7 +577,7 @@ def _make_handler(session: GameSession) -> type[BaseHTTPRequestHandler]:
                 while True:
                     for frame in session.frames_after(since):
                         since = max(since, int(frame["seq"]))
-                        self._write_sse("frame", frame)
+                        self._write_sse("frame", frame, event_id=since)
                     if initial_status in _TERMINAL_STATUSES:
                         self._write_sse(
                             "status",
@@ -592,9 +609,13 @@ def _make_handler(session: GameSession) -> type[BaseHTTPRequestHandler]:
             except (BrokenPipeError, ConnectionResetError, OSError):
                 return
 
-        def _write_sse(self, event: str, payload: Any) -> None:
+        def _write_sse(
+            self, event: str, payload: Any, *, event_id: int | None = None
+        ) -> None:
             data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             self.wfile.write(f"event: {event}\n".encode("utf-8"))
+            if event_id is not None:
+                self.wfile.write(f"id: {event_id}\n".encode("utf-8"))
             self.wfile.write(f"data: {data}\n\n".encode("utf-8"))
             self.wfile.flush()
 
@@ -612,7 +633,9 @@ def _run_game_thread(
 ) -> None:
     try:
         session.set_status("running")
-        summaries = arena.run_games(engines, 1, seed_start=seed, log_dir=str(run_dir / "logs"))
+        summaries = arena.run_games(
+            engines, 1, seed_start=seed, log_dir=str(run_dir / "logs")
+        )
         if not summaries:
             raise RuntimeError("arena returned no game summaries")
         summary = summaries[0]
@@ -672,11 +695,11 @@ def _poll_spectator(
     seq = 0
     try:
         while True:
-            updates = spectator.events_since(seq)
+            updates = spectator.events_since(seq, copy_events=False)
             if updates:
                 for item in updates:
                     seq = max(seq, int(item["seq"]))
-                    event = copy.deepcopy(item["event"])
+                    event = item["event"]
                     if event.get("type") == "finish":
                         partial_log({"type": "end_game"})
                         table.finish(event.get("names"), event.get("scores"))
@@ -686,7 +709,7 @@ def _poll_spectator(
                     snapshot = table.snapshot()
                     public_event = event
                     if session.human_seat is not None:
-                        snapshot = _mask_snapshot(snapshot, session.human_seat)
+                        snapshot = _mask_snapshot_in_place(snapshot, session.human_seat)
                         public_event = _prompt_safe_events(
                             sanitize_events([event], session.human_seat)
                         )[0]
@@ -729,7 +752,10 @@ def _write_run_error(run_dir: Path, stage: str, exc: Exception) -> None:
 
 
 def _mask_snapshot(snapshot: dict[str, Any], human_seat: int) -> dict[str, Any]:
-    masked = copy.deepcopy(snapshot)
+    return _mask_snapshot_in_place(copy.deepcopy(snapshot), human_seat)
+
+
+def _mask_snapshot_in_place(masked: dict[str, Any], human_seat: int) -> dict[str, Any]:
     ticker = masked.get("ticker")
     if isinstance(ticker, list):
         for index, line in enumerate(ticker):
@@ -738,11 +764,6 @@ def _mask_snapshot(snapshot: dict[str, Any], human_seat: int) -> dict[str, Any]:
             match = _DRAW_TICKER_RE.fullmatch(line)
             if match is not None and int(match.group(1)) != human_seat:
                 ticker[index] = f"P{match.group(1)} drew a tile"
-    hands = masked.get("hands")
-    if isinstance(hands, list):
-        for seat, hand in enumerate(hands):
-            if seat != human_seat and isinstance(hand, list):
-                hands[seat] = ["?"] * len(hand)
     for seat_info in masked.get("seats", []):
         if not isinstance(seat_info, dict):
             continue
@@ -768,18 +789,17 @@ def _evaluate_run(
             raise GameAborted("game aborted")
 
     check_cancelled()
-    logs = sorted((run_dir / "logs").glob("*.json.gz")) + sorted((run_dir / "logs").glob("*.json"))
+    logs = sorted((run_dir / "logs").glob("*.json.gz")) + sorted(
+        (run_dir / "logs").glob("*.json")
+    )
     if not logs:
         raise RuntimeError("no mjai log was written")
     events = evaluate.load_mjai_log(str(logs[0]))
     check_cancelled()
     mortal = evaluate.load_engine(weights)
     check_cancelled()
-    reviews: dict[int, dict[str, Any]] = {}
-    for seat in range(4):
-        check_cancelled()
-        reviews[seat] = evaluate.review_player(events, seat, mortal)
-        check_cancelled()
+    reviews = evaluate.review_game(events, mortal, check_cancelled=check_cancelled)
+    check_cancelled()
     players: dict[str, Any] = {}
     for seat in range(4):
         review = reviews[seat]
@@ -797,7 +817,9 @@ def _evaluate_run(
         "players": players,
     }
     path = run_dir / "review" / f"{summary.seed[0]}_{summary.seed[1]}.json"
-    path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
+    )
     response = dict(data)
     response["run_dir"] = str(run_dir)
     return response
@@ -816,7 +838,9 @@ def _make_engine(
     state_hints: bool,
 ) -> Any:
     if spec.provider == "human":
-        return make_engine(name, spec_str, human_io=human_io, spectator=spectator, concurrency=1)
+        return make_engine(
+            name, spec_str, human_io=human_io, spectator=spectator, concurrency=1
+        )
     kwargs: dict[str, Any] = {
         "spectator": spectator,
         "state_hints": state_hints,
@@ -911,6 +935,7 @@ def _session_state(
     }
 
 
+@cache
 def _page_bytes() -> bytes:
     page = Path(__file__).parent / "webui_page.html"
     if not page.exists():

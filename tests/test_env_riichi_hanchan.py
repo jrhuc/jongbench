@@ -71,7 +71,9 @@ class FakeInteraction:
         return SimpleNamespace(
             last_reply='{"choice": 0}',
             terminated=False,
-            messages=[SimpleNamespace(reasoning_content=f"thought {len(self.prompts)}")],
+            messages=[
+                SimpleNamespace(reasoning_content=f"thought {len(self.prompts)}")
+            ],
         )
 
 
@@ -202,6 +204,13 @@ def test_episode_persists_as_a_jongbench_run_dir(played, episode_dir) -> None:
     config = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
     assert config["names"] == list(SEATS)
     assert sorted(config["final"]["placements"].values()) == [1, 2, 3, 4]
+    assert config["max_tool_calls"] == RiichiHanchanEnvConfig().max_tool_calls
+    assert config["weights"] == RiichiHanchanEnvConfig().weights
+    header = json.loads(
+        (run_dir / "journal.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert header["max_tool_calls"] == config["max_tool_calls"]
+    assert header["weights"] == config["weights"]
 
     for name, seat in zip(SEATS, played.seats, strict=True):
         lines = [
@@ -221,9 +230,11 @@ def test_decisions_carry_what_the_turn_cost(played, episode_dir) -> None:
 
     run_dir = episode_dir / "hanchan-00000"
     for name in SEATS:
-        lines = (run_dir / "decisions" / f"{name}.jsonl").read_text(
-            encoding="utf-8"
-        ).splitlines()
+        lines = (
+            (run_dir / "decisions" / f"{name}.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
         records = [json.loads(line) for line in lines]
         assert records
         for record in records:
@@ -248,7 +259,9 @@ def test_metered_turns_carry_the_provider_s_price() -> None:
         call.usage.cost = cost
         return call
 
-    assert _usage_of([metered(0.0004), metered(0.0002)])["cost"] == pytest.approx(0.0006)
+    assert _usage_of([metered(0.0004), metered(0.0002)])["cost"] == pytest.approx(
+        0.0006
+    )
     assert _usage_of([metered(0.0004), _fake_call(1)])["cost"] == pytest.approx(0.0004)
     assert "cost" not in _usage_of([_fake_call(1)])
 
@@ -284,6 +297,34 @@ class ToolUsingInteraction(FakeInteraction):
         return segment
 
 
+class RetryingToolInteraction(ToolUsingInteraction):
+    async def turn(self, message: str) -> SimpleNamespace:
+        import threading
+
+        state = self.trace.state
+        self.states.append(state)
+        self.served_budgets.append(state.budget)
+        self.prompts.append(message)
+        self.thread_ids.add(threading.get_ident())
+        self.trace.calls.append(_fake_call(len(self.prompts)))
+        retry = message.startswith("Your previous reply was invalid:")
+        if not retry and state.budget is not None:
+            state.budget -= 1
+        return SimpleNamespace(
+            last_reply='{"choice": 0}' if retry else "invalid",
+            terminated=False,
+            messages=[SimpleNamespace(reasoning_content="")],
+        )
+
+
+class ForcedFallbackInteraction(FakeInteraction):
+    async def turn(self, message: str) -> SimpleNamespace:
+        segment = await super().turn(message)
+        self.trace.stop_condition = "tool_budget_exhausted"
+        segment.terminated = True
+        return segment
+
+
 @pytest.fixture(scope="module")
 def played_tools():
     env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
@@ -312,7 +353,9 @@ def test_tools_mode_serves_the_decision_snapshot(played_tools) -> None:
                 assert state.board.startswith("Round:")
                 assert set(state.discards) == {"P0", "P1", "P2", "P3"}
                 assert state.waits
-        assert any(state.simulate for inter in seat.interactions for state in inter.states)
+        assert any(
+            state.simulate for inter in seat.interactions for state in inter.states
+        )
         assert not any("Engine-derived state hints" in p for p in seat.prompts)
 
 
@@ -355,6 +398,52 @@ def test_each_decision_gets_its_budget_back(played_tools) -> None:
         assert seat.interactions[-1].trace.metrics["budget_spent"] == querying
 
 
+def test_engine_retry_keeps_the_same_decision_budget() -> None:
+    env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
+    env.config = RiichiHanchanEnvConfig(tools=True, max_tool_calls=4)
+    agents = FakeAgents(RetryingToolInteraction, env.config)
+    task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
+    asyncio.run(env.run(task, agents))
+
+    for seat in agents.seats:
+        retries = [
+            index
+            for interaction in seat.interactions
+            for index, prompt in enumerate(interaction.prompts)
+            if prompt.startswith("Your previous reply was invalid:")
+        ]
+        assert retries
+        for interaction in seat.interactions:
+            for index, prompt in enumerate(interaction.prompts):
+                if prompt.startswith("Your previous reply was invalid:"):
+                    assert interaction.served_budgets[index - 1 : index + 1] == [4, 3]
+
+
+def test_repeated_over_budget_tools_force_fallback_without_aborting() -> None:
+    env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
+    env.config = RiichiHanchanEnvConfig(tools=True, max_tool_calls=1)
+    agents = FakeAgents(ForcedFallbackInteraction, env.config)
+    task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
+    asyncio.run(env.run(task, agents))
+
+    for seat in agents.seats:
+        kyokus = [
+            interaction.trace.info["hanchan"]["kyoku"]
+            for interaction in seat.interactions
+        ]
+        assert kyokus == sorted(kyokus)
+        assert len(set(kyokus)) < len(kyokus)
+        assert {
+            interaction.trace.info["hanchan"]["kyoku_count"]
+            for interaction in seat.interactions
+        } == {len(set(kyokus))}
+        assert all(
+            interaction.prompts and interaction.prompts[0].startswith("Round:")
+            for interaction in seat.interactions
+        )
+        assert seat.interactions[-1].trace.metrics["fallbacks"] > 0
+
+
 def test_seat_toolset_answers_from_its_state() -> None:
     from riichi_hanchan_v1.tools import SeatState, SeatToolset, normalize_tile
 
@@ -363,14 +452,20 @@ def test_seat_toolset_answers_from_its_state() -> None:
         board="Round: East 1 (honba 0), kyotaku 0, dealer P0",
         discards={f"P{i}": "riichi no; discards -" for i in range(4)},
         waits="current structure: tenpai (0-shanten); waits: 3p; furiten: no",
-        simulate={"1m": "1-shanten", "5p(red)": "tenpai (0-shanten); waits 3p; furiten no"},
+        simulate={
+            "1m": "1-shanten",
+            "5p(red)": "tenpai (0-shanten); waits 3p; furiten no",
+        },
     )
 
     assert toolset.board().startswith("Round: East 1")
     assert toolset.discards(2) == "P2: riichi no; discards -"
     assert toolset.discards(7) == "player must be 0, 1, 2 or 3"
     assert toolset.waits().startswith("current structure")
-    assert toolset.simulate("0p") == "after discarding 5p(red): tenpai (0-shanten); waits 3p; furiten no"
+    assert (
+        toolset.simulate("0p")
+        == "after discarding 5p(red): tenpai (0-shanten); waits 3p; furiten no"
+    )
     assert toolset.simulate("5pr").startswith("after discarding 5p(red)")
     assert "not a legal discard now" in toolset.simulate("9s")
     assert "1m 5p(red)" in toolset.simulate("9s")
@@ -397,6 +492,11 @@ def test_a_budgeted_decision_stops_answering_when_it_runs_out() -> None:
     assert toolset.board() == BUDGET_SPENT
     assert toolset.note("read me later") == BUDGET_SPENT
     assert toolset.state.notes == []  # a refused call must not have a side effect
+    assert toolset.state.refused_tool_calls == 2
+    from riichi_hanchan_v1.env import SeatToolsTask
+
+    trace = SimpleNamespace(state=toolset.state)
+    assert asyncio.run(SeatToolsTask.tool_budget_exhausted(None, trace))
 
 
 def test_journal_read_trims_and_guards(tmp_path) -> None:
@@ -412,16 +512,31 @@ def test_journal_read_trims_and_guards(tmp_path) -> None:
         ("seat0", 1, 1),
         ("seat0", 2, 0),
     ]:
-        journal.append(seat, {"menu": ["x"], "choice": 0, "kyoku": kyoku, "honba": honba})
+        journal.append(
+            seat, {"menu": ["x"], "choice": 0, "kyoku": kyoku, "honba": honba}
+        )
     journal.close()
 
     rows = _read_journal(path, header)
     assert [(r["kyoku"], r["honba"]) for r in rows] == [(1, 0), (1, 0), (1, 1)]
 
+    compacted = tmp_path / "compacted.jsonl"
+    journal = _Journal(compacted, header, rows)
+    journal.close()
+    assert _read_journal(compacted, header) == rows
+    journal = _Journal(compacted, header, rows)
+    journal.append("seat0", {"menu": ["x"], "choice": 0, "kyoku": 2, "honba": 0})
+    journal.close()
+    assert _read_journal(compacted, header) == rows
+
+    original = path.read_bytes()
     stale = _journal_header(8, RiichiHanchanEnvConfig(), models, 0)
-    assert _read_journal(path, stale) == []
+    with pytest.raises(ValueError, match="different hanchan configuration"):
+        _read_journal(path, stale)
     rotated = _journal_header(7, RiichiHanchanEnvConfig(), models, 1)
-    assert _read_journal(path, rotated) == []
+    with pytest.raises(ValueError, match="different hanchan configuration"):
+        _read_journal(path, rotated)
+    assert path.read_bytes() == original
     assert _read_journal(tmp_path / "missing.jsonl", header) == []
 
     with path.open("a", encoding="utf-8") as handle:

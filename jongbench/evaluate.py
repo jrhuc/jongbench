@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import json
 import math
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -11,20 +12,55 @@ import torch
 import jongbench
 import libriichi
 from jongbench.mortal_engine import MortalEngine
-from jongbench.mortal_model import Brain, DQN
-
+from jongbench.mortal_model import DQN, Brain
 
 TILES = [
-    "1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m",
-    "1p", "2p", "3p", "4p", "5p", "6p", "7p", "8p", "9p",
-    "1s", "2s", "3s", "4s", "5s", "6s", "7s", "8s", "9s",
-    "E", "S", "W", "N", "P", "F", "C",
-    "5mr", "5pr", "5sr",
+    "1m",
+    "2m",
+    "3m",
+    "4m",
+    "5m",
+    "6m",
+    "7m",
+    "8m",
+    "9m",
+    "1p",
+    "2p",
+    "3p",
+    "4p",
+    "5p",
+    "6p",
+    "7p",
+    "8p",
+    "9p",
+    "1s",
+    "2s",
+    "3s",
+    "4s",
+    "5s",
+    "6s",
+    "7s",
+    "8s",
+    "9s",
+    "E",
+    "S",
+    "W",
+    "N",
+    "P",
+    "F",
+    "C",
+    "5mr",
+    "5pr",
+    "5sr",
 ]
 TILE_TO_LABEL = {tile: idx for idx, tile in enumerate(TILES)}
 AKA_TO_BASE = {"5mr": "5m", "5pr": "5p", "5sr": "5s"}
 BASE_TO_AKA = {"5m": "5mr", "5p": "5pr", "5s": "5sr"}
+
+
 def load_engine(weights_path: str) -> MortalEngine:
+    # Single-position Mortal inference regresses above two intra-op CPU threads.
+    torch.set_num_threads(min(torch.get_num_threads(), 2))
     ckpt = torch.load(weights_path, weights_only=True, map_location="cpu")
     cfg = ckpt["config"]
     version = cfg["control"].get("version", 1)
@@ -58,11 +94,18 @@ def review_player(
     player_id: int,
     engine: MortalEngine,
     temperature: float = 0.1,
+    *,
+    _lines: list[str] | None = None,
+    _reactions: list[str | None] | None = None,
 ) -> dict[str, Any]:
     if temperature <= 0:
         raise ValueError("temperature must be positive")
 
-    bot = libriichi.mjai.Bot(engine, player_id)
+    if _lines is not None and len(_lines) != len(events):
+        raise ValueError("serialized event count does not match events")
+    if _reactions is not None and len(_reactions) != len(events):
+        raise ValueError("reaction count does not match events")
+    bot = None if _reactions is not None else libriichi.mjai.Bot(engine, player_id)
     state = libriichi.state.PlayerState(player_id)
 
     total_reviewed = 0
@@ -79,8 +122,12 @@ def review_player(
     last_actor = 0
 
     for i, event in enumerate(events):
-        line = json.dumps(event, separators=(",", ":"))
-        reaction = bot.react(line)
+        line = (
+            _lines[i]
+            if _lines is not None
+            else json.dumps(event, separators=(",", ":"))
+        )
+        reaction = _reactions[i] if _reactions is not None else bot.react(line)
         state.update(line)
 
         event_type = event.get("type")
@@ -92,9 +139,7 @@ def review_player(
             )
             kyoku_review["honba"] = int(event["honba"])
             scores = list(event["scores"])
-            kyoku_review["relative_scores"] = (
-                scores[player_id:] + scores[:player_id]
-            )
+            kyoku_review["relative_scores"] = scores[player_id:] + scores[:player_id]
             tiles_left = 70
         elif event_type == "end_kyoku":
             kyoku_review["entries"] = current_entries
@@ -306,9 +351,26 @@ def review_game(
     events: list[dict[str, Any]],
     engine: MortalEngine,
     temperature: float = 0.1,
+    *,
+    check_cancelled: Callable[[], None] | None = None,
 ) -> dict[int, dict[str, Any]]:
+    lines = [json.dumps(event, separators=(",", ":")) for event in events]
+    bot = libriichi.mjai.BatchBot(engine, [0, 1, 2, 3])
+    reactions: list[list[str | None]] = [[] for _ in range(4)]
+    for line in lines:
+        if check_cancelled is not None:
+            check_cancelled()
+        for player_id, reaction in enumerate(bot.react(line)):
+            reactions[player_id].append(reaction)
     return {
-        player_id: review_player(events, player_id, engine, temperature)
+        player_id: review_player(
+            events,
+            player_id,
+            engine,
+            temperature,
+            _lines=lines,
+            _reactions=reactions[player_id],
+        )
         for player_id in range(4)
     }
 
@@ -505,28 +567,52 @@ def to_event(
             consumed = [akaize(next_tile(pai)), akaize(next_tile(next_tile(pai)))]
         else:
             consumed = [next_tile(pai), next_tile(next_tile(pai))]
-        return {"type": "chi", "actor": actor, "target": target, "pai": pai, "consumed": consumed}
+        return {
+            "type": "chi",
+            "actor": actor,
+            "target": target,
+            "pai": pai,
+            "consumed": consumed,
+        }
     if label == 39:
         pai = require_tile(last_tsumo_or_discard, "missing last discard for Chi")
         if pai in {"4m", "6m", "4p", "6p", "4s", "6s"} and has_red_for(pai, state):
             consumed = [akaize(prev_tile(pai)), akaize(next_tile(pai))]
         else:
             consumed = [prev_tile(pai), next_tile(pai)]
-        return {"type": "chi", "actor": actor, "target": target, "pai": pai, "consumed": consumed}
+        return {
+            "type": "chi",
+            "actor": actor,
+            "target": target,
+            "pai": pai,
+            "consumed": consumed,
+        }
     if label == 40:
         pai = require_tile(last_tsumo_or_discard, "missing last discard for Chi")
         if pai in {"6m", "7m", "6p", "7p", "6s", "7s"} and has_red_for(pai, state):
             consumed = [akaize(prev_tile(prev_tile(pai))), akaize(prev_tile(pai))]
         else:
             consumed = [prev_tile(prev_tile(pai)), prev_tile(pai)]
-        return {"type": "chi", "actor": actor, "target": target, "pai": pai, "consumed": consumed}
+        return {
+            "type": "chi",
+            "actor": actor,
+            "target": target,
+            "pai": pai,
+            "consumed": consumed,
+        }
     if label == 41:
         pai = require_tile(last_tsumo_or_discard, "missing last discard for Pon")
         if pai in {"5m", "5p", "5s"} and has_red_for(pai, state):
             consumed = [akaize(pai), deaka(pai)]
         else:
             consumed = [deaka(pai), deaka(pai)]
-        return {"type": "pon", "actor": actor, "target": target, "pai": pai, "consumed": consumed}
+        return {
+            "type": "pon",
+            "actor": actor,
+            "target": target,
+            "pai": pai,
+            "consumed": consumed,
+        }
     if label == 42:
         tile = require_tile(last_tsumo_or_discard, "missing last discard for Daiminkan")
         return {
@@ -633,7 +719,11 @@ def _actual_index(
         kind, label = detail["_label"]
         if kind == "general" and actual_kan_label is None and label == actual_label:
             return idx
-        if kind == "kan_select" and actual_kan_label is not None and label == actual_kan_label:
+        if (
+            kind == "kan_select"
+            and actual_kan_label is not None
+            and label == actual_kan_label
+        ):
             return idx
     return None
 

@@ -110,14 +110,14 @@ Together they measure how much a seat pays for information alongside how well it
 plays.
 
 `--env.max-tool-calls` (default 32, `0` lifts the cap) bounds one decision. Past it
-every tool answers "budget spent" and the seat must commit to its choice. Every tool
-turn resends the decision's whole conversation, so a querying loop costs
-quadratically; the first live tools run had a seat burn 2.5M input tokens on a single
-discard before it had to be killed. The budget lives on the seat's synced state and is
-republished at every decision, so a seat that exhausts it in one hand starts the next
-one whole. It cannot live in verifiers' `RolloutLimits`, because those halt the
-rollout and a rollout here is a whole kyoku: a seat that over-queried once would abort
-the hand for all four players.
+every tool answers "budget spent". If the seat ignores that result and queries again,
+the env stops that interaction, plays the engine's safe fallback, and opens a fresh
+interaction at the next decision. This hard edge matters because every tool turn
+resends the decision's whole conversation: the first live tools run burned 2.5M input
+tokens on one discard before it was killed. The remaining budget survives engine
+retries and resets only at the next decision. A normal interaction still spans one
+kyoku; the forced fallback can split a pathological kyoku into another trace rather
+than aborting the hand for all four players.
 
 The tools answer from the same information the hints path may use: rule-derived only,
 nothing from Mortal, precomputed at each decision point and served from the rollout's
@@ -130,7 +130,8 @@ mode needs the `PYTHONPATH` entries to be absolute (`$PWD` as above, not `.`).
 
 ## Rewards and metrics
 
-A seat produces one trace per kyoku; every one of them carries the same seat-level
+A seat normally produces one trace per kyoku; a forced tool-budget fallback may split
+that kyoku so the next decision can continue. Every trace carries the same seat-level
 signals:
 
 - `placement` (reward) — 1st → 1.0, 4th → 0.0. A seat's mean reward is exactly its
@@ -250,8 +251,9 @@ as it happens. The arena is deterministic given seed + actions, so if a run dies
 killed, rerunning the same command replays each episode's complete hands from its
 journal without a single model call and goes live from the first unrecorded hand. Only
 the hand that was in flight is paid for twice. A journal whose header names a
-different game (seed, models, or prompt-shaping config changed) is ignored, and a
-journal from a finished episode replays the whole hanchan for free, reproducing its
+different game (seed, models, or prompt-shaping config changed) fails without
+overwriting the old journal. A journal from a finished episode replays the whole
+hanchan for free, reproducing its
 artifacts with zero API cost. Delete the episode's `journal.jsonl` to force a fresh
 game. This composes with the verifiers `--resume` flag, which skips episodes whose
 results were already accepted; the journal covers the ones it re-runs.

@@ -9,7 +9,6 @@ from typing import Any
 
 from .artifacts import decision_filename
 
-
 _TILE_VIEWBOX = "0 0 320 446"
 _VIEWBOX_RE = re.compile(r'\bviewBox\s*=\s*["\']([^"\']+)["\']')
 _XML_RE = re.compile(r"^\s*<\?xml[^>]*>\s*", re.IGNORECASE)
@@ -31,7 +30,11 @@ def summarize(run_dir: str) -> dict[str, Any]:
 
     games: list[dict[str, Any]] = []
     review_dir = run / "review"
-    for path in sorted(review_dir.glob("*.json"), key=_review_sort_key) if review_dir.exists() else []:
+    for path in (
+        sorted(review_dir.glob("*.json"), key=_review_sort_key)
+        if review_dir.exists()
+        else []
+    ):
         raw_game = _read_json(path, {})
         game = _game_row(path, raw_game)
         games.append(game)
@@ -70,21 +73,23 @@ def summarize(run_dir: str) -> dict[str, Any]:
         "missing_review_files": max(0, int(config.get("games") or 0) - len(games)),
     }
     (run / "summary.json").write_text(
-        json.dumps(summary, indent=2, sort_keys=True),
+        json.dumps(summary, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
     )
     return summary
 
 
-def write_report(run_dir: str) -> str:
+def write_report(run_dir: str, summary: dict[str, Any] | None = None) -> str:
     run = Path(run_dir)
-    summary = summarize(run_dir)
+    summary = summarize(run_dir) if summary is None else summary
     label = str(summary.get("config", {}).get("label") or run.name)
     sprite = _load_pai_sprite()
     view_box = _sprite_view_box(sprite)
     data = dict(summary)
     data["tile_view_box"] = view_box
-    data_json = json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+    data_json = json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace(
+        "</", "<\\/"
+    )
     report = _html_document(label, sprite, data_json)
     path = run / "report.html"
     path.write_text(report, encoding="utf-8")
@@ -109,7 +114,9 @@ def leaderboard(batch_dir: str) -> dict[str, Any]:
     for run in runs:
         summary = summarize(str(run))
         config = summary.get("config") or {}
-        specs = {name: engine["spec"] or name for name, engine in summary["engines"].items()}
+        specs = {
+            name: engine["spec"] or name for name, engine in summary["engines"].items()
+        }
 
         for name, engine in summary["engines"].items():
             acc = accum.setdefault(specs[name], _new_batch_accumulator(specs[name]))
@@ -252,7 +259,9 @@ def _finalize_batch_engine(acc: dict[str, Any]) -> dict[str, Any]:
             "output_tokens": int(acc["output_tokens"]),
             "cost": acc["cost"],
             "mean_latency_ms": (
-                acc["latency_sum"] / acc["latency_records"] if acc["latency_records"] else None
+                acc["latency_sum"] / acc["latency_records"]
+                if acc["latency_records"]
+                else None
             ),
         }
     )
@@ -317,16 +326,22 @@ def _game_row(path: Path, raw_game: dict[str, Any]) -> dict[str, Any]:
 
     for seat in range(4):
         player = raw_players.get(str(seat)) or raw_players.get(seat) or {}
-        name = str(player.get("name") or (names[seat] if seat < len(names) else f"P{seat}"))
+        name = str(
+            player.get("name") or (names[seat] if seat < len(names) else f"P{seat}")
+        )
         review = _review(player.get("review") or {})
         aggregates = _normal_aggregates(player.get("aggregates") or _aggregates(review))
         score = scores[seat] if seat < len(scores) else None
         placement = placements.get(name)
-        total_reviewed = int(review.get("total_reviewed") or len(review.get("entries") or []))
+        total_reviewed = int(
+            review.get("total_reviewed") or len(review.get("entries") or [])
+        )
         total_matches = int(
             review.get("total_matches")
             if review.get("total_matches") is not None
-            else sum(1 for entry in review.get("entries") or [] if entry.get("is_equal"))
+            else sum(
+                1 for entry in review.get("entries") or [] if entry.get("is_equal")
+            )
         )
         loss_sum = sum(_prob_loss(entry) for entry in review.get("entries") or [])
         if not loss_sum and total_reviewed and aggregates.get("mean_prob_loss"):
@@ -365,7 +380,9 @@ def _review(raw: dict[str, Any]) -> dict[str, Any]:
     review["entries"] = list(review.get("entries") or [])
     review["kyokus"] = list(review.get("kyokus") or [])
     review["rating"] = float(review.get("rating") or 0.0)
-    review["total_reviewed"] = int(review.get("total_reviewed") or len(review["entries"]))
+    review["total_reviewed"] = int(
+        review.get("total_reviewed") or len(review["entries"])
+    )
     review["total_matches"] = int(
         review.get("total_matches")
         if review.get("total_matches") is not None
@@ -407,7 +424,8 @@ def _aggregates(review: dict[str, Any]) -> dict[str, Any]:
             "honba": entry.get("honba", 0),
             "junme": entry.get("junme", 0),
             "actual": entry.get("actual") or {},
-            "expected": entry.get("expected") or ((entry.get("details") or [{}])[0].get("event") or {}),
+            "expected": entry.get("expected")
+            or ((entry.get("details") or [{}])[0].get("event") or {}),
             "loss": loss,
         }
         for entry, loss in sorted(
@@ -481,8 +499,12 @@ def _decision_stats(decisions_dir: Path, name: str) -> dict[str, Any]:
         records += 1
         fallback_count += int(bool(record.get("fallback")))
         usage = record.get("usage") or {}
-        input_tokens += int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
-        output_tokens += int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+        input_tokens += int(
+            usage.get("input_tokens") or usage.get("prompt_tokens") or 0
+        )
+        output_tokens += int(
+            usage.get("output_tokens") or usage.get("completion_tokens") or 0
+        )
         if usage.get("cost") is not None:
             cost = (cost or 0.0) + float(usage["cost"])
         latency = record.get("latency_ms")
@@ -536,7 +558,9 @@ def _load_pai_sprite() -> str:
 
 
 def _sprite_view_box(sprite: str) -> str:
-    match = re.search(r'<symbol\s+id=["\']tile["\'][^>]*\bviewBox=["\']([^"\']+)["\']', sprite)
+    match = re.search(
+        r'<symbol\s+id=["\']tile["\'][^>]*\bviewBox=["\']([^"\']+)["\']', sprite
+    )
     if match:
         return match.group(1)
     match = _VIEWBOX_RE.search(sprite)
@@ -546,37 +570,29 @@ def _sprite_view_box(sprite: str) -> str:
 def _html_document(label: str, sprite: str, data_json: str) -> str:
     return (
         "<!doctype html>\n"
-        "<html lang=\"en\">\n"
+        '<html lang="en">\n'
         "<head>\n"
-        "<meta charset=\"utf-8\">\n"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-        "<title>jongbench report \u2014 "
-        + html.escape(label)
-        + "</title>\n"
-        "<style>\n"
-        + _CSS
-        + "\n</style>\n"
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        "<title>jongbench report \u2014 " + html.escape(label) + "</title>\n"
+        "<style>\n" + _CSS + "\n</style>\n"
         "</head>\n"
         "<body>\n"
-        "<div id=\"pai-assets\" style=\"display:none\" aria-hidden=\"true\">\n"
+        '<div id="pai-assets" style="display:none" aria-hidden="true">\n'
         + sprite
         + "\n</div>\n"
-        "<button class=\"theme-toggle\" id=\"theme-toggle\" type=\"button\" aria-label=\"Toggle color theme\" aria-pressed=\"false\">Theme</button>\n"
-        "<main class=\"page\">\n"
-        "<header class=\"card report-header\">\n"
-        "<div><p class=\"eyebrow\">jongbench report</p><h1 id=\"report-label\"></h1><p class=\"meta\" id=\"report-meta\"></p></div>\n"
-        "<div class=\"models\" id=\"models-list\"></div>\n"
+        '<button class="theme-toggle" id="theme-toggle" type="button" aria-label="Toggle color theme" aria-pressed="false">Theme</button>\n'
+        '<main class="page">\n'
+        '<header class="card report-header">\n'
+        '<div><p class="eyebrow">jongbench report</p><h1 id="report-label"></h1><p class="meta" id="report-meta"></p></div>\n'
+        '<div class="models" id="models-list"></div>\n'
         "</header>\n"
-        "<section class=\"stat-grid\" id=\"stats\"></section>\n"
-        "<section class=\"card table-card\"><div class=\"section-head\"><h2>Leaderboard</h2><p id=\"review-status\"></p></div><div class=\"table-wrap\"><table id=\"leaderboard\"></table></div></section>\n"
-        "<section class=\"games\" id=\"games\"></section>\n"
+        '<section class="stat-grid" id="stats"></section>\n'
+        '<section class="card table-card"><div class="section-head"><h2>Leaderboard</h2><p id="review-status"></p></div><div class="table-wrap"><table id="leaderboard"></table></div></section>\n'
+        '<section class="games" id="games"></section>\n'
         "</main>\n"
-        "<script id=\"report-data\" type=\"application/json\">"
-        + data_json
-        + "</script>\n"
-        "<script>\n"
-        + _JS
-        + "\n</script>\n"
+        '<script id="report-data" type="application/json">' + data_json + "</script>\n"
+        "<script>\n" + _JS + "\n</script>\n"
         "</body>\n"
         "</html>\n"
     )
@@ -648,7 +664,7 @@ def _read_json(path: Path, default: Any) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-_CSS = r'''
+_CSS = r"""
 :root {
   color-scheme: light;
   --surface:#fcfcfb;
@@ -1079,10 +1095,10 @@ details.player > summary {
   .stat-grid { grid-template-columns: 1fr; }
   .theme-toggle { position: absolute; }
 }
-'''
+"""
 
 
-_JS = r'''
+_JS = r"""
 (function () {
   const data = JSON.parse(document.getElementById("report-data").textContent);
   const root = document.documentElement;
@@ -1435,4 +1451,4 @@ _JS = r'''
     return escapeHtml(value);
   }
 })();
-'''
+"""

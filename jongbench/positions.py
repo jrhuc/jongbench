@@ -46,6 +46,12 @@ class Position:
     def prompt(self, *, state_hints: bool = True) -> str:
         state = self.state()
         menu = actions.build_menu(state)
+        labels = [str(item["label"]) for item in menu]
+        if labels != self.menu:
+            raise ValueError(
+                f"stored menu does not match the rebuilt position: "
+                f"{self.menu!r} != {labels!r}"
+            )
         return prompts.build_user_prompt(
             self.player_id,
             state,
@@ -122,8 +128,16 @@ def extract_positions(
 ) -> list[Position]:
     """Every gradeable decision in `events`, from each seat's own point of view."""
     positions: list[Position] = []
+    reviews = (
+        evaluate.review_game(events, engine, temperature)
+        if seats == (0, 1, 2, 3)
+        else {
+            player_id: evaluate.review_player(events, player_id, engine, temperature)
+            for player_id in seats
+        }
+    )
     for player_id in seats:
-        review = evaluate.review_player(events, player_id, engine, temperature)
+        review = reviews[player_id]
         by_index = {entry["event_index"]: entry for entry in review["entries"]}
         if not by_index:
             continue
