@@ -14,6 +14,8 @@ from jongbench.arena import GameSummary, run_games
 from jongbench.evaluate import load_engine, resolve_device
 from jongbench.mortal_engine import MortalEngine
 
+DUPLICATE_PTS = (90.0, 45.0, 0.0, -135.0)
+
 
 def _share_engine(template: MortalEngine, name: str, **overrides: Any) -> MortalEngine:
     kwargs = {
@@ -118,7 +120,7 @@ class DuelResult:
     avg_rank: float
     avg_pt: float
     standard_error: float | None
-    pts: tuple[float, float, float, float] = (90.0, 45.0, 0.0, -135.0)
+    pts: tuple[float, float, float, float] = DUPLICATE_PTS
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -151,7 +153,7 @@ def duel(
     champion_agari_guard: bool = True,
     log_dir: str | Path | None = None,
     disable_progress_bar: bool = False,
-    pts: tuple[float, float, float, float] = (90.0, 45.0, 0.0, -135.0),
+    pts: tuple[float, float, float, float] = DUPLICATE_PTS,
 ) -> DuelResult:
     if games <= 0:
         raise ValueError("games must be greater than zero")

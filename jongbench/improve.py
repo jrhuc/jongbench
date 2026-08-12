@@ -8,7 +8,7 @@ from typing import Any
 
 import torch
 
-from jongbench.selfplay import DuelResult, duel
+from jongbench.selfplay import DUPLICATE_PTS, DuelResult, duel
 from jongbench.train import PolicyRLConfig, train_policy_rl
 
 
@@ -31,7 +31,7 @@ class ImproveConfig:
     anchor_kl_weight: float = 0.02
     entropy_weight: float = 0.001
     promotion_z: float = 1.0
-    pts: tuple[float, float, float, float] = (90.0, 45.0, 0.0, -135.0)
+    pts: tuple[float, float, float, float] = DUPLICATE_PTS
     promotion_margin: float = 0.0
 
 

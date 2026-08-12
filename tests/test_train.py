@@ -26,7 +26,7 @@ from jongbench.evaluate import (
     review_player,
 )
 from jongbench.mortal_model import ACTION_SPACE, DQN, ConfidenceHead, PolicyHead
-from jongbench.selfplay import duel
+from jongbench.selfplay import DUPLICATE_PTS, duel
 from jongbench.train import PolicyRLConfig, TrainConfig, train, train_policy_rl
 
 WEIGHTS = ROOT / "weights" / "mortal.pth"
@@ -121,7 +121,7 @@ def test_policy_head_can_exactly_clone_v4_q_distribution() -> None:
     torch.testing.assert_close(actual, expected)
 
 
-def test_cli_new_commands_parse() -> None:
+def test_cli_new_commands_parse(monkeypatch) -> None:
     parser = _build_parser()
     selfplay = parser.parse_args(["selfplay", "--games", "2", "--out", "training/x"])
     assert selfplay.games == 2
@@ -137,9 +137,17 @@ def test_cli_new_commands_parse() -> None:
             "weights/reviewer.pth",
             "--out",
             "weights/candidate.pth",
+            "--duplicate-challenger-only",
         ]
     )
     assert policy_rl.clip_ratio == 0.2
+    seen = []
+    monkeypatch.setattr(
+        "jongbench.train.train_policy_rl",
+        lambda config: seen.append(config) or {},
+    )
+    assert policy_rl.func(policy_rl) == 0
+    assert seen[0].pts == DUPLICATE_PTS
     improve = parser.parse_args(
         [
             "improve",

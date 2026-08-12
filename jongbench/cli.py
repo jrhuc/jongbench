@@ -539,6 +539,8 @@ def _cmd_train(args: argparse.Namespace) -> int:
 
 
 def _cmd_policy_rl(args: argparse.Namespace) -> int:
+    from .dataset import DEFAULT_PTS
+    from .selfplay import DUPLICATE_PTS
     from .train import PolicyRLConfig, train_policy_rl
 
     stats = train_policy_rl(
@@ -558,6 +560,7 @@ def _cmd_policy_rl(args: argparse.Namespace) -> int:
             sampling_temperature=args.sampling_temperature,
             file_batch_size=args.file_batch_size,
             duplicate_challenger_only=args.duplicate_challenger_only,
+            pts=(DUPLICATE_PTS if args.duplicate_challenger_only else DEFAULT_PTS),
         )
     )
     print(f"policy RL done: {stats}")
