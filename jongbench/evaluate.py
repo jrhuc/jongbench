@@ -7,12 +7,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 
-import jongbench
 import libriichi
 from jongbench.mortal_engine import MortalEngine
-from jongbench.mortal_model import DQN, Brain
+from jongbench.mortal_model import DQN, AuxNet, Brain, ConfidenceHead, PolicyHead
 
 TILES = [
     "1m",
@@ -58,34 +58,103 @@ AKA_TO_BASE = {"5mr": "5m", "5pr": "5p", "5sr": "5s"}
 BASE_TO_AKA = {"5m": "5mr", "5p": "5pr", "5s": "5sr"}
 
 
-def load_engine(weights_path: str) -> MortalEngine:
-    # Single-position Mortal inference regresses above two intra-op CPU threads.
-    torch.set_num_threads(min(torch.get_num_threads(), 2))
-    ckpt = torch.load(weights_path, weights_only=True, map_location="cpu")
+def resolve_device(name: str | torch.device | None = "cpu") -> torch.device:
+    if name is None or name == "cpu":
+        return torch.device("cpu")
+    if name == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(name)
+
+
+def load_checkpoint(
+    weights_path: str, map_location: str | torch.device = "cpu"
+) -> dict[str, Any]:
+    return torch.load(weights_path, weights_only=True, map_location=map_location)
+
+
+def networks_from_checkpoint(
+    ckpt: dict[str, Any],
+) -> tuple[
+    Brain,
+    DQN,
+    PolicyHead | None,
+    AuxNet | None,
+    ConfidenceHead | None,
+    int,
+]:
     cfg = ckpt["config"]
     version = cfg["control"].get("version", 1)
-    num_blocks = cfg["resnet"]["num_blocks"]
-    conv_channels = cfg["resnet"]["conv_channels"]
-
-    mortal = Brain(
+    brain = Brain(
         version=version,
-        num_blocks=num_blocks,
-        conv_channels=conv_channels,
-    ).eval()
-    dqn = DQN(version=version).eval()
-    mortal.load_state_dict(ckpt["mortal"])
+        num_blocks=cfg["resnet"]["num_blocks"],
+        conv_channels=cfg["resnet"]["conv_channels"],
+    )
+    dqn = DQN(version=version)
+    brain.load_state_dict(ckpt["mortal"])
     dqn.load_state_dict(ckpt["current_dqn"])
 
+    policy = None
+    if "policy" in ckpt:
+        policy = PolicyHead()
+        policy.load_state_dict(ckpt["policy"])
+
+    aux_net = None
+    if "aux_net" in ckpt:
+        aux_net = AuxNet((4,))
+        aux_net.load_state_dict(ckpt["aux_net"])
+
+    confidence = None
+    if "confidence" in ckpt:
+        confidence = ConfidenceHead()
+        confidence.load_state_dict(ckpt["confidence"])
+
+    return (
+        brain.eval(),
+        dqn.eval(),
+        policy.eval() if policy is not None else None,
+        aux_net.eval() if aux_net is not None else None,
+        confidence.eval() if confidence is not None else None,
+        version,
+    )
+
+
+def load_engine(
+    weights_path: str,
+    *,
+    device: str | torch.device | None = None,
+    use_policy: bool = False,
+    enable_quick_eval: bool = False,
+    enable_amp: bool | None = None,
+    enable_rule_based_agari_guard: bool = True,
+    boltzmann_epsilon: float = 0,
+    boltzmann_temp: float = 1,
+    name: str = "mortal",
+) -> MortalEngine:
+    # Single-position Mortal inference regresses above two intra-op CPU threads.
+    torch.set_num_threads(min(torch.get_num_threads(), 2))
+    ckpt = load_checkpoint(weights_path, map_location="cpu")
+    default_device = "auto" if "policy" in ckpt else "cpu"
+    device_t = resolve_device(default_device if device is None else device)
+    brain, dqn, policy, aux_net, confidence, version = networks_from_checkpoint(ckpt)
+    if enable_amp is None:
+        enable_amp = device_t.type == "cuda"
+
     return MortalEngine(
-        mortal,
+        brain,
         dqn,
         is_oracle=False,
-        device=torch.device("cpu"),
-        enable_amp=False,
-        enable_quick_eval=False,
-        enable_rule_based_agari_guard=True,
-        name="mortal",
+        device=device_t,
+        enable_amp=enable_amp,
+        enable_quick_eval=enable_quick_eval,
+        enable_rule_based_agari_guard=enable_rule_based_agari_guard,
+        name=name,
         version=version,
+        policy=policy,
+        aux_net=aux_net,
+        confidence=confidence,
+        use_policy=use_policy,
+        boltzmann_epsilon=boltzmann_epsilon,
+        boltzmann_temp=boltzmann_temp,
     )
 
 
@@ -98,6 +167,10 @@ def review_player(
     _lines: list[str] | None = None,
     _reactions: list[str | None] | None = None,
 ) -> dict[str, Any]:
+    if engine.use_policy:
+        raise ValueError(
+            "review requires Q-value play mode; load with use_policy=False"
+        )
     if temperature <= 0:
         raise ValueError("temperature must be positive")
 
@@ -114,6 +187,7 @@ def review_player(
     kyokus: list[dict[str, Any]] = []
     all_entries: list[dict[str, Any]] = []
     current_entries: list[dict[str, Any]] = []
+    policy_jobs: list[dict[str, Any]] = []
     kyoku_review = _new_kyoku_review()
 
     junme = 0
@@ -245,6 +319,9 @@ def review_player(
             if orig_kan_idx is None:
                 raise ValueError("in kan_select but no kan found in root")
             orig_kan_q_value = float(details[orig_kan_idx]["q_value"])
+            orig_kan_kind, orig_kan_label = details[orig_kan_idx]["_label"]
+            if orig_kan_kind != "general":
+                raise ValueError("kan root action is not in the general action space")
             del details[orig_kan_idx]
 
             kan_masks = masks_from_bits(kan_mask_bits)
@@ -279,13 +356,14 @@ def review_player(
                         "q_value": q_value,
                         "prob": 0.0,
                         "_label": ("kan_select", kan_label),
+                        "_root_label": int(orig_kan_label),
                     }
                 )
 
         probs = softmax([float(detail["q_value"]) for detail in details], temperature)
         for detail, prob in zip(details, probs, strict=True):
             detail["prob"] = prob
-
+        policy_inputs = _capture_policy_inputs(engine, state, details)
         details.sort(key=lambda detail: detail["q_value"], reverse=True)
         actual_index = _actual_index(details, actual_label, actual_kan_label)
         if actual_index is None:
@@ -302,19 +380,22 @@ def review_player(
             total_matches += 1
         else:
             raw_rating += (actual_q_value - min_q) / max(max_q - min_q, 1e-6)
+
         total_reviewed += 1
 
         if last_tsumo_or_discard is None:
             raise ValueError("missing last tsumo or discard")
 
-        public_details = [
-            {
+        public_details = []
+        for detail in details:
+            item = {
                 "event": detail["event"],
                 "q_value": detail["q_value"],
                 "prob": detail["prob"],
             }
-            for detail in details
-        ]
+            if "policy_prob" in detail:
+                item["policy_prob"] = detail["policy_prob"]
+            public_details.append(item)
         entry = {
             # Index into `events` of the decision point, so a caller can replay the log
             # to this action and rebuild the board without redoing the review.
@@ -333,9 +414,19 @@ def review_player(
             "at_furiten": at_furiten,
             "details": public_details,
         }
+        if policy_inputs is not None:
+            policy_jobs.append(
+                {
+                    "entry": entry,
+                    "details": details,
+                    "actual_index": actual_index,
+                    "inputs": policy_inputs,
+                }
+            )
         current_entries.append(entry)
         all_entries.append(entry)
 
+    _attach_policy_probs_batch(engine, policy_jobs)
     rating = (raw_rating / total_reviewed) ** 2 if total_reviewed else 0.0
     return {
         "rating": rating,
@@ -378,6 +469,12 @@ def review_game(
 def aggregates(review: dict[str, Any]) -> dict[str, Any]:
     entries = list(review.get("entries", []))
     losses = [_prob_loss(entry) for entry in entries]
+    policy_entries = [entry for entry in entries if "policy_loss" in entry]
+    policy_losses = [float(entry["policy_loss"]) for entry in policy_entries]
+    policy_nlls = [
+        -math.log(max(float(entry["policy_actual_prob"]), 1e-12))
+        for entry in policy_entries
+    ]
     total_reviewed = int(review.get("total_reviewed", 0))
     total_matches = int(review.get("total_matches", 0))
     kinds = ["dahai", "reach", "chi", "pon", "kan", "hora", "ryukyoku", "none"]
@@ -415,9 +512,28 @@ def aggregates(review: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
+    policy_count = len(policy_entries)
+    policy_matches = sum(
+        int(bool(entry["policy_is_equal"])) for entry in policy_entries
+    )
+    confidences = [
+        float(entry["policy_confidence"])
+        for entry in policy_entries
+        if "policy_confidence" in entry
+    ]
     return {
         "match_rate": total_matches / total_reviewed if total_reviewed else 0.0,
         "mean_prob_loss": sum(losses) / len(losses) if losses else 0.0,
+        "mean_q_weight_loss": sum(losses) / len(losses) if losses else 0.0,
+        "policy_count": policy_count,
+        "policy_match_rate": (policy_matches / policy_count if policy_count else None),
+        "mean_policy_loss": (
+            sum(policy_losses) / policy_count if policy_count else None
+        ),
+        "mean_policy_nll": sum(policy_nlls) / policy_count if policy_count else None,
+        "mean_policy_confidence": (
+            sum(confidences) / len(confidences) if confidences else None
+        ),
         "worst": worst,
         "by_kind": by_kind,
     }
@@ -641,6 +757,110 @@ def equal_ignore_aka_consumed(a: dict[str, Any], b: dict[str, Any]) -> bool:
             map(deaka, b.get("consumed", []))
         )
     return a_type in {"reach", "hora", "ryukyoku", "none"}
+
+
+def _capture_policy_inputs(
+    engine: MortalEngine, state: Any, details: list[dict[str, Any]]
+) -> dict[bool, tuple[Any, Any]] | None:
+    if engine.policy is None or not details:
+        return None
+    needs_kan = any(detail["_label"][0] == "kan_select" for detail in details)
+    return {
+        at_kan: state.encode_obs(engine.version, at_kan)
+        for at_kan in (False, True)
+        if not at_kan or needs_kan
+    }
+
+
+def _attach_policy_probs_batch(
+    engine: MortalEngine, jobs: list[dict[str, Any]]
+) -> None:
+    if not jobs or engine.policy is None:
+        return
+    records = [
+        (job_index, at_kan, obs, mask)
+        for job_index, job in enumerate(jobs)
+        for at_kan, (obs, mask) in job["inputs"].items()
+    ]
+    outputs: dict[tuple[int, bool], dict[str, Any]] = {}
+    batch_size = 128 if engine.device.type == "cuda" else 16
+    for start in range(0, len(records), batch_size):
+        batch = records[start : start + batch_size]
+        obs = torch.as_tensor(
+            np.stack([record[2] for record in batch]),
+            dtype=torch.float32,
+            device=engine.device,
+        )
+        masks = torch.as_tensor(
+            np.stack([record[3] for record in batch]),
+            dtype=torch.bool,
+            device=engine.device,
+        )
+        with (
+            torch.inference_mode(),
+            torch.autocast(engine.device.type, enabled=engine.enable_amp),
+        ):
+            phi = engine.brain(obs)
+            probs = torch.softmax(engine.policy(phi, masks), dim=-1)
+            confidence = (
+                engine.confidence(phi) if engine.confidence is not None else None
+            )
+            rank_probs = None
+            if engine.aux_net is not None:
+                (rank_logits,) = engine.aux_net(phi)
+                rank_probs = torch.softmax(rank_logits, dim=-1)
+        probs = probs.float().cpu()
+        if confidence is not None:
+            confidence = confidence.float().cpu()
+        if rank_probs is not None:
+            rank_probs = rank_probs.float().cpu()
+        for row, (job_index, at_kan, _, _) in enumerate(batch):
+            result: dict[str, Any] = {"probs": probs[row]}
+            if not at_kan and confidence is not None:
+                result["confidence"] = float(confidence[row])
+            if not at_kan and rank_probs is not None:
+                result["rank_probs"] = [
+                    float(value) for value in rank_probs[row].tolist()
+                ]
+            outputs[(job_index, at_kan)] = result
+
+    for job_index, job in enumerate(jobs):
+        entry = job["entry"]
+        details = job["details"]
+        root = outputs[(job_index, False)]
+        kan = outputs.get((job_index, True))
+        for detail, public_detail in zip(details, entry["details"], strict=True):
+            kind, label = detail["_label"]
+            if kind == "general":
+                probability = root["probs"][int(label)]
+            else:
+                if kan is None:
+                    raise ValueError("missing conditional kan policy")
+                probability = (
+                    root["probs"][detail["_root_label"]] * kan["probs"][int(label)]
+                )
+            public_detail["policy_prob"] = float(probability)
+
+        policy_best_index = max(
+            range(len(entry["details"])),
+            key=lambda index: entry["details"][index]["policy_prob"],
+        )
+        policy_best = entry["details"][policy_best_index]
+        policy_actual = entry["details"][job["actual_index"]]
+        policy_best_prob = float(policy_best["policy_prob"])
+        policy_actual_prob = float(policy_actual["policy_prob"])
+        entry.update(
+            {
+                "policy_expected": policy_best["event"],
+                "policy_is_equal": policy_best_index == job["actual_index"],
+                "policy_actual_prob": policy_actual_prob,
+                "policy_loss": max(0.0, policy_best_prob - policy_actual_prob),
+            }
+        )
+        if "confidence" in root:
+            entry["policy_confidence"] = root["confidence"]
+        if "rank_probs" in root:
+            entry["next_rank_probs"] = root["rank_probs"]
 
 
 def softmax(values: list[float], temperature: float) -> list[float]:

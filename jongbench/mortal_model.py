@@ -4,6 +4,7 @@ from typing import *
 from functools import partial
 from libriichi.consts import obs_shape, oracle_obs_shape, ACTION_SPACE
 
+
 class ChannelAttention(nn.Module):
     def __init__(self, channels, ratio=16, actv_builder=nn.ReLU, bias=True):
         super().__init__()
@@ -24,14 +25,15 @@ class ChannelAttention(nn.Module):
         x = weight.unsqueeze(-1) * x
         return x
 
+
 class ResBlock(nn.Module):
     def __init__(
         self,
         channels,
         *,
-        norm_builder = nn.Identity,
-        actv_builder = nn.ReLU,
-        pre_actv = False,
+        norm_builder=nn.Identity,
+        actv_builder=nn.ReLU,
+        pre_actv=False,
     ):
         super().__init__()
         self.pre_actv = pre_actv
@@ -64,6 +66,7 @@ class ResBlock(nn.Module):
             out = self.actv(out)
         return out
 
+
 class ResNet(nn.Module):
     def __init__(
         self,
@@ -71,22 +74,26 @@ class ResNet(nn.Module):
         conv_channels,
         num_blocks,
         *,
-        norm_builder = nn.Identity,
-        actv_builder = nn.ReLU,
-        pre_actv = False,
+        norm_builder=nn.Identity,
+        actv_builder=nn.ReLU,
+        pre_actv=False,
     ):
         super().__init__()
 
         blocks = []
         for _ in range(num_blocks):
-            blocks.append(ResBlock(
-                conv_channels,
-                norm_builder = norm_builder,
-                actv_builder = actv_builder,
-                pre_actv = pre_actv,
-            ))
+            blocks.append(
+                ResBlock(
+                    conv_channels,
+                    norm_builder=norm_builder,
+                    actv_builder=actv_builder,
+                    pre_actv=pre_actv,
+                )
+            )
 
-        layers = [nn.Conv1d(in_channels, conv_channels, kernel_size=3, padding=1, bias=False)]
+        layers = [
+            nn.Conv1d(in_channels, conv_channels, kernel_size=3, padding=1, bias=False)
+        ]
         if pre_actv:
             layers += [*blocks, norm_builder(), actv_builder()]
         else:
@@ -101,6 +108,7 @@ class ResNet(nn.Module):
 
     def forward(self, x):
         return self.net(x)
+
 
 class Brain(nn.Module):
     def __init__(self, *, conv_channels, num_blocks, is_oracle=False, version=1):
@@ -129,21 +137,26 @@ class Brain(nn.Module):
             case 2:
                 pass
             case 3 | 4:
-                norm_builder = partial(nn.BatchNorm1d, conv_channels, momentum=0.01, eps=1e-3)
+                norm_builder = partial(
+                    nn.BatchNorm1d, conv_channels, momentum=0.01, eps=1e-3
+                )
             case _:
-                raise ValueError(f'Unexpected version {self.version}')
+                raise ValueError(f"Unexpected version {self.version}")
 
         self.encoder = ResNet(
-            in_channels = in_channels,
-            conv_channels = conv_channels,
-            num_blocks = num_blocks,
-            norm_builder = norm_builder,
-            actv_builder = actv_builder,
-            pre_actv = pre_actv,
+            in_channels=in_channels,
+            conv_channels=conv_channels,
+            num_blocks=num_blocks,
+            norm_builder=norm_builder,
+            actv_builder=actv_builder,
+            pre_actv=pre_actv,
         )
         self.actv = actv_builder()
+        self._freeze_bn = False
 
-    def forward(self, obs: Tensor, invisible_obs: Optional[Tensor] = None) -> Union[Tuple[Tensor, Tensor], Tensor]:
+    def forward(
+        self, obs: Tensor, invisible_obs: Optional[Tensor] = None
+    ) -> Union[Tuple[Tensor, Tensor], Tensor]:
         if self.is_oracle:
             assert invisible_obs is not None
             obs = torch.cat((obs, invisible_obs), dim=1)
@@ -158,7 +171,20 @@ class Brain(nn.Module):
             case 2 | 3 | 4:
                 return self.actv(phi)
             case _:
-                raise ValueError(f'Unexpected version {self.version}')
+                raise ValueError(f"Unexpected version {self.version}")
+
+    def train(self, mode=True):
+        super().train(mode)
+        if self._freeze_bn:
+            for mod in self.modules():
+                if isinstance(mod, nn.BatchNorm1d):
+                    mod.eval()
+        return self
+
+    def freeze_bn(self, value: bool):
+        self._freeze_bn = bool(value)
+        return self.train(self.training)
+
 
 class DQN(nn.Module):
     def __init__(self, *, version=1):
@@ -190,8 +216,58 @@ class DQN(nn.Module):
         else:
             v = self.v_head(phi)
             a = self.a_head(phi)
-        a_sum = a.masked_fill(~mask, 0.).sum(-1, keepdim=True)
+        a_sum = a.masked_fill(~mask, 0.0).sum(-1, keepdim=True)
         mask_sum = mask.sum(-1, keepdim=True)
         a_mean = a_sum / mask_sum
         q = (v + a - a_mean).masked_fill(~mask, -torch.inf)
         return q
+
+
+class PolicyHead(nn.Module):
+    """Masked 46-way policy over Mortal's action space."""
+
+    def __init__(self, in_features: int = 1024):
+        super().__init__()
+        self.net = nn.Linear(in_features, ACTION_SPACE)
+        nn.init.zeros_(self.net.bias)
+        nn.init.orthogonal_(self.net.weight, gain=0.01)
+
+    @classmethod
+    def from_dqn(cls, dqn: "DQN", temperature: float = 1.0) -> "PolicyHead":
+        if dqn.version != 4:
+            raise ValueError("policy initialization requires a version 4 DQN")
+        if temperature <= 0:
+            raise ValueError("temperature must be positive")
+        head = cls()
+        with torch.no_grad():
+            head.net.weight.copy_(dqn.net.weight[1:] / temperature)
+            head.net.bias.copy_(dqn.net.bias[1:] / temperature)
+        return head
+
+    def forward(self, phi: Tensor, mask: Tensor) -> Tensor:
+        return self.net(phi).masked_fill(~mask, -torch.inf)
+
+
+class ConfidenceHead(nn.Module):
+    """Probability that policy top-1 matches the expert action."""
+
+    def __init__(self, in_features: int = 1024, hidden: int = 256):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_features, hidden),
+            nn.Mish(inplace=True),
+            nn.Linear(hidden, 1),
+        )
+
+    def forward(self, phi: Tensor) -> Tensor:
+        return self.net(phi).sigmoid().squeeze(-1)
+
+
+class AuxNet(nn.Module):
+    def __init__(self, dims=None):
+        super().__init__()
+        self.dims = list(dims or (4,))
+        self.net = nn.Linear(1024, sum(self.dims), bias=False)
+
+    def forward(self, x: Tensor):
+        return self.net(x).split(self.dims, dim=-1)

@@ -494,6 +494,71 @@ def _cmd_selfcheck(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_selfplay(args: argparse.Namespace) -> int:
+    from .selfplay import selfplay
+
+    summaries = selfplay(
+        weights=args.weights,
+        out_dir=args.out,
+        games=args.games,
+        seed=args.seed,
+        batch_games=args.batch_games,
+        device=args.device,
+        use_policy=args.policy,
+        boltzmann_epsilon=args.epsilon,
+        boltzmann_temp=args.temp,
+    )
+    print(f"wrote {len(summaries)} games to {args.out}")
+    return 0
+
+
+def _cmd_train(args: argparse.Namespace) -> int:
+    from .train import TrainConfig, train
+
+    stats = train(
+        TrainConfig(
+            logs=args.logs,
+            init=args.init,
+            out=args.out,
+            steps=args.steps,
+            batch_size=args.batch_size,
+            device=args.device,
+            lr=args.lr,
+            freeze_encoder=not args.unfreeze_encoder,
+            file_batch_size=args.file_batch_size,
+            teacher_temperature=args.teacher_temperature,
+            validation_ratio=args.validation_ratio,
+            validation_batches=args.validation_batches,
+            data_provenance=args.data_provenance,
+            data_sha256=args.data_sha256,
+        )
+    )
+    print(f"train done: {stats}")
+    print(f"checkpoint: {args.out}")
+    return 0
+
+
+def _cmd_duel(args: argparse.Namespace) -> int:
+    from .selfplay import duel
+
+    result = duel(
+        challenger_weights=args.challenger,
+        champion_weights=args.champion,
+        games=args.games,
+        seed=args.seed,
+        device=args.device,
+        challenger_policy=args.challenger_policy,
+        champion_policy=args.champion_policy,
+        log_dir=args.log_dir,
+    )
+    print(
+        f"challenger rankings {result.rankings} "
+        f"avg_rank={result.avg_rank:.4f} avg_pt={result.avg_pt:.2f} "
+        f"games={result.games}"
+    )
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="jongbench")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -593,6 +658,68 @@ def _build_parser() -> argparse.ArgumentParser:
         "would actually face",
     )
     positions_cmd.set_defaults(func=_cmd_positions)
+
+    selfplay_cmd = subparsers.add_parser(
+        "selfplay", help="generate Mortal self-play logs for training"
+    )
+    selfplay_cmd.add_argument("--weights", default="weights/mortal.pth")
+    selfplay_cmd.add_argument("--out", default="training/selfplay")
+    selfplay_cmd.add_argument("--games", type=_positive_int, default=256)
+    selfplay_cmd.add_argument("--seed", type=_u64, default=10000)
+    selfplay_cmd.add_argument("--batch-games", type=_positive_int, default=32)
+    selfplay_cmd.add_argument("--device", default="auto")
+    selfplay_cmd.add_argument("--epsilon", type=float, default=0.0)
+    selfplay_cmd.add_argument("--temp", type=float, default=0.2)
+    selfplay_cmd.add_argument(
+        "--policy",
+        action="store_true",
+        help="play with the checkpoint policy head instead of Q-argmax",
+    )
+    selfplay_cmd.set_defaults(func=_cmd_selfplay)
+
+    train_cmd = subparsers.add_parser(
+        "train", help="train a policy/value reviewer from mjai logs"
+    )
+    train_cmd.add_argument("--logs", default="training/selfplay")
+    train_cmd.add_argument("--init", default="weights/mortal.pth")
+    train_cmd.add_argument("--out", default="weights/reviewer.pth")
+    train_cmd.add_argument("--steps", type=_positive_int, default=4000)
+    train_cmd.add_argument("--batch-size", type=_positive_int, default=256)
+    train_cmd.add_argument("--device", default="auto")
+    train_cmd.add_argument("--lr", type=float, default=3e-4)
+    train_cmd.add_argument(
+        "--unfreeze-encoder",
+        action="store_true",
+        help="finetune Mortal's ResNet (off by default; easy to wreck Q)",
+    )
+    train_cmd.add_argument("--file-batch-size", type=_positive_int, default=4)
+    train_cmd.add_argument("--teacher-temperature", type=float, default=0.1)
+    train_cmd.add_argument("--validation-ratio", type=float, default=0.1)
+    train_cmd.add_argument("--validation-batches", type=_positive_int, default=20)
+    train_cmd.add_argument("--data-provenance")
+    train_cmd.add_argument("--data-sha256")
+    train_cmd.set_defaults(func=_cmd_train)
+
+    duel_cmd = subparsers.add_parser(
+        "duel", help="1-vs-3 duplicate match between two checkpoints"
+    )
+    duel_cmd.add_argument("--challenger", required=True)
+    duel_cmd.add_argument("--champion", default="weights/mortal.pth")
+    duel_cmd.add_argument("--games", type=_positive_int, default=64)
+    duel_cmd.add_argument("--seed", type=_u64, default=20000)
+    duel_cmd.add_argument("--device", default="auto")
+    duel_cmd.add_argument(
+        "--challenger-policy",
+        action="store_true",
+        help="challenger plays with its policy head",
+    )
+    duel_cmd.add_argument(
+        "--champion-policy",
+        action="store_true",
+        help="champion plays with its policy head",
+    )
+    duel_cmd.add_argument("--log-dir")
+    duel_cmd.set_defaults(func=_cmd_duel)
 
     return parser
 
