@@ -20,18 +20,59 @@ comparison use riichi-decision-v1, which grades single positions against Mortal.
 import asyncio
 import json
 import threading
+from collections import Counter
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from itertools import count
 from pathlib import Path
 
-from jongbench import arena, bridge, engines, prompts
+from jongbench import arena, bridge, engines, prompts, providers
 from jongbench.artifacts import decision_filename
 from riichi_hanchan_v1.tools import SeatState, SeatToolset
 
 import verifiers.v1 as vf
 
 SEATS = ("seat0", "seat1", "seat2", "seat3")
+
+
+def _segment_reasoning(segment) -> str:
+    return "\n".join(
+        message.reasoning_content
+        for message in segment.messages
+        if getattr(message, "reasoning_content", None)
+    )
+
+
+def _tools_called(segment) -> Counter:
+    return Counter(
+        call.name
+        for message in segment.messages
+        for call in (getattr(message, "tool_calls", None) or ())
+    )
+
+
+def _usage_of(calls) -> dict[str, int | float]:
+    """verifiers' accounting in the shape jongbench's decision records use: its
+    `prompt_tokens` has cache reads split out, jongbench's `input_tokens` has them in."""
+    total: dict[str, int | float] = dict.fromkeys(
+        ("input_tokens", "output_tokens", "cached_input_tokens", "reasoning_tokens"), 0
+    )
+    cost = None
+    for call in calls:
+        if call.usage is None:
+            continue
+        cached = call.usage.cached_input_tokens or 0
+        total["input_tokens"] += call.usage.prompt_tokens + cached
+        total["output_tokens"] += call.usage.completion_tokens
+        total["cached_input_tokens"] += cached
+        total["reasoning_tokens"] += call.usage.reasoning_tokens or 0
+        call_cost = getattr(call.usage, "cost", None)
+        if call_cost is not None:
+            cost = (cost or 0.0) + call_cost
+    # Absent means the provider does not meter, which is not the same as free.
+    if cost is not None:
+        total["cost"] = cost
+    return total
 
 
 class RiichiHanchanData(vf.TaskData):
@@ -67,11 +108,24 @@ class RiichiHanchanEnvConfig(vf.EnvConfig):
     """Pass pure chi/pon/open-kan reactions without a model call (~15% of decisions).
     A cost mode: the seats never call on others' discards, which changes what is
     measured. Wins and own-turn decisions always reach the model."""
+    seat_rotation: bool = False
+    """Rotate the seating by the episode index: agent i sits at table position
+    (i + idx) % 4. Over four episodes each agent plays every wind, which cancels the
+    dealer advantage a fixed seating bakes into a short batch. Rewards are keyed by
+    engine name, so a seat's placement follows it around the table."""
     tools: bool = False
     """Give each seat board-query tools instead of inline state hints: board(),
     discards(), waits(), simulate(), plus a note()/notes() scratchpad that survives
     kyoku resets. Information-seeking and memory management become part of what is
     measured — a different benchmark, not a cheaper rendering of this one."""
+    max_tool_calls: int = 32
+    """Tool calls one decision may spend before every tool answers "budget spent" and
+    the seat must commit (0 lifts the cap). Each tool turn resends the whole decision
+    conversation, so an unbounded loop costs quadratically: one observed seat burned
+    2.5M input tokens on a single discard before the run had to be killed. Sized to
+    clear an exhaustive sweep - simulate() on all 14 discards plus board, waits and
+    three discard rows is ~20 - so the cap only fires on a loop: at 4 it cut short 25%
+    of a seat's decisions, at 12 about 2%."""
     log_dir: str | None = None
     """Persist each episode as a jongbench run dir - mjai log, per-seat decision logs,
     config.json - so `jongbench review` and `jongbench reasoning` grade the rollout
@@ -110,11 +164,14 @@ class _Journal:
             self._handle.flush()
 
 
-def _journal_header(seed: int, config: RiichiHanchanEnvConfig) -> dict:
+def _journal_header(
+    seed: int, config: RiichiHanchanEnvConfig, models: list[str], rotation: int
+) -> dict:
     return {
         "journal": 1,
         "seed": seed,
-        "models": [getattr(config, name).model for name in SEATS],
+        "models": list(models),
+        "rotation": rotation,
         "state_hints": bool(config.state_hints),
         "auto_pass_reactions": bool(config.auto_pass_reactions),
         "tools": bool(config.tools),
@@ -176,12 +233,25 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
         # Rewards are only known at the end, so kyoku traces are collected as they
         # close and placement is recorded on all of them afterwards.
         seat_agents = [agents.seat0, agents.seat1, agents.seat2, agents.seat3]
+        # The run's own model fills in an unpinned seat, so the resolved config is the
+        # only place the real spec of every seat is knowable.
+        models = [str(agent.config.model) for agent in seat_agents]
+        rotation = task.data.idx % len(SEATS) if self.config.seat_rotation else 0
         open_cms: list = [None, None, None, None]
         current: list = [None, None, None, None]
         seat_traces: list[list] = [[] for _ in SEATS]
+        seat_calls = [0, 0, 0, 0]
         tools = bool(self.config.tools)
         seat_notes: list[list[str]] = [[] for _ in SEATS]
-        system_prompt = prompts.SYSTEM + (prompts.TOOLS_APPENDIX if tools else "")
+        seat_tools: list[Counter] = [Counter() for _ in SEATS]
+        tool_turns = [0, 0, 0, 0]
+        tool_budget = self.config.max_tool_calls or None
+        budget_spent = [0, 0, 0, 0]
+        system_prompt = prompts.SYSTEM
+        if tools:
+            system_prompt += prompts.TOOLS_APPENDIX
+            if tool_budget:
+                system_prompt += prompts.BUDGET_LINE.format(budget=tool_budget)
 
         def _seat_task(index: int) -> vf.Task:
             task_cls = SeatToolsTask if tools else vf.Task
@@ -207,29 +277,43 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
                 cm = seat_agents[index].interaction(_seat_task(index))
                 current[index] = await cm.__aenter__()
                 open_cms[index] = cm
+                seat_calls[index] = 0
             if tools:
                 snapshot = seats[index].decision_snapshot(0) or {}
                 current[index].trace.state = SeatState(
-                    **snapshot, notes=list(seat_notes[index])
+                    **snapshot, notes=list(seat_notes[index]), budget=tool_budget
                 )
             segment = await current[index].turn(prompt)
             if tools:
-                notes = getattr(current[index].trace.state, "notes", None)
+                state = current[index].trace.state
+                notes = getattr(state, "notes", None)
                 if notes is not None:
                     seat_notes[index] = list(notes)
-            return segment
+                budget_spent[index] += getattr(state, "budget", None) == 0
+                called = _tools_called(segment)
+                seat_tools[index] += called
+                tool_turns[index] += bool(called)
+            # The trace's calls accumulate over the whole kyoku, so a decision costs
+            # only the ones this turn added.
+            trace_calls = current[index].trace.calls
+            calls, seat_calls[index] = trace_calls[seat_calls[index] :], len(trace_calls)
+            return segment, calls
 
         def ask_from(index: int):
-            def ask(prompt: str, fresh: bool) -> str:
+            def ask(prompt: str, fresh: bool) -> providers.Completion:
                 # Called on the arena's worker thread; hand the turn back to the loop
                 # and block this seat until the model answers, as the arena expects.
                 future = asyncio.run_coroutine_threadsafe(
                     _seat_turn(index, prompt, fresh), loop
                 )
-                segment = future.result()
+                segment, calls = future.result()
                 if segment.terminated:
                     raise engines.GameAborted(f"{SEATS[index]} ended its rollout")
-                return segment.last_reply
+                return providers.Completion(
+                    text=segment.last_reply,
+                    reasoning=_segment_reasoning(segment),
+                    usage=_usage_of(calls),
+                )
 
             return ask
 
@@ -238,7 +322,7 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
         replayed: dict[str, list[dict]] = {name: [] for name in SEATS}
         hands_replayed = 0
         if episode_dir is not None:
-            header = _journal_header(seed, self.config)
+            header = _journal_header(seed, self.config, models, rotation)
             past = _read_journal(episode_dir / "journal.jsonl", header)
             hands_replayed = len({(row["kyoku"], row["honba"]) for row in past})
             for row in past:
@@ -258,7 +342,7 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
         # resume it recomputes the same choices live and needs no journal of its own.
         seats = [
             engines.make_engine(name, "mortal", weights=self.config.weights)
-            if getattr(self.config, name).model == "mortal"
+            if models[index] == "mortal"
             else bridge.make_bridged_engine(
                 name,
                 ask_from(index),
@@ -271,12 +355,17 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
             for index, name in enumerate(SEATS)
         ]
 
+        # Table position is list position, and it decides the winds. Rotating the list
+        # while every engine keeps its agent name means the seat that answers, the
+        # decision log it writes and the placement it is paid all still line up.
+        table = [seats[(position - rotation) % len(SEATS)] for position in range(len(SEATS))]
+
         try:
             # One hanchan per episode: a single engine driving several games at once
             # would interleave their turns into one conversation.
             summaries = await asyncio.to_thread(
                 arena.run_games,
-                seats,
+                table,
                 1,
                 (seed, 1),
                 str(episode_dir / "logs") if episode_dir else None,
@@ -294,7 +383,9 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
             journal.close()
         summary = summaries[0]
         if episode_dir is not None:
-            _write_episode_artifacts(episode_dir, seed, summary, logs, self.config)
+            _write_episode_artifacts(
+                episode_dir, seed, summary, logs, self.config, models, rotation
+            )
         scores = dict(zip(summary.names, summary.scores, strict=True))
         for index, name in enumerate(SEATS):
             placement = summary.placements[name]
@@ -312,15 +403,24 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
                 )
                 if tools:
                     trace.record_metric("notes_saved", float(len(seat_notes[index])))
+                    trace.record_metric(
+                        "tool_calls", float(sum(seat_tools[index].values()))
+                    )
+                    trace.record_metric("tool_turns", float(tool_turns[index]))
+                    trace.record_metric("budget_spent", float(budget_spent[index]))
                 trace.info["hanchan"] = {
                     "seat": name,
+                    "model": models[index],
                     "placement": placement,
                     "score": scores[name],
                     "seed": seed,
                     "seat_order": list(summary.names),
+                    "table_position": (index + rotation) % len(SEATS),
                     "kyoku": hands_replayed + kyoku,
                     "kyoku_count": hands_replayed + len(seat_traces[index]),
                 }
+                if tools:
+                    trace.info["hanchan"]["tools"] = dict(seat_tools[index])
 
 
 def _write_episode_artifacts(
@@ -329,6 +429,8 @@ def _write_episode_artifacts(
     summary: arena.GameSummary,
     logs: list[list[dict]],
     config: RiichiHanchanEnvConfig,
+    models: list[str],
+    rotation: int,
 ) -> None:
     for name, decisions in zip(SEATS, logs, strict=True):
         path = episode_dir / "decisions" / decision_filename(name)
@@ -342,11 +444,17 @@ def _write_episode_artifacts(
             {
                 "label": episode_dir.name,
                 "created": datetime.now(timezone.utc).isoformat(),
-                "models": list(SEATS),
+                # `names` are the engine names the mjai log and the reviews are keyed
+                # by; `models` is the spec each one played, paired by position.
+                "models": list(models),
                 "names": list(SEATS),
                 "games": 1,
                 "seed_start": [seed, 1],
-                "state_hints": bool(config.state_hints),
+                "rotation": rotation,
+                "table": [SEATS[(position - rotation) % len(SEATS)] for position in range(len(SEATS))],
+                # the effective value: tools mode replaces inline hints, so a run dir
+                # would otherwise claim hints the seats never saw.
+                "state_hints": bool(config.state_hints) and not config.tools,
                 "tools": bool(config.tools),
                 "final": {
                     "names": list(summary.names),

@@ -312,6 +312,11 @@ survives into later hands of this match; notes() returns everything you have sav
 Tool results describe the current decision point only.
 Call any tools first, then end with the same single JSON object reply."""
 
+BUDGET_LINE = """
+Each decision allows at most {budget} tool calls; past that every tool answers
+"budget spent" and you must reply with your choice. Spend them on what you cannot work
+out from the board itself."""
+
 
 def decision_snapshot(
     player_id: int,
