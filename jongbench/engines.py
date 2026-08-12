@@ -536,7 +536,7 @@ class LLMEngine(BaseEngine):
         self,
         record: dict[str, Any],
         calls: int,
-        usage: dict[str, int],
+        usage: dict[str, float],
         did_fallback: bool,
         retries: int,
     ) -> None:
@@ -544,6 +544,8 @@ class LLMEngine(BaseEngine):
             self.totals["calls"] += calls
             for key in _USAGE_KEYS:
                 self.totals[key] += usage.get(key, 0)
+            if "cost" in usage:
+                self.totals["cost"] = self.totals.get("cost", 0.0) + usage["cost"]
             self.totals["fallbacks"] += int(did_fallback)
             self.totals["retries"] += retries
             if callable(self.decision_log):
@@ -580,13 +582,16 @@ _USAGE_KEYS = (
 )
 
 
-def _empty_usage() -> dict[str, int]:
+def _empty_usage() -> dict[str, float]:
     return dict.fromkeys(_USAGE_KEYS, 0)
 
 
-def _add_usage(total: dict[str, int], usage: dict[str, Any] | None) -> None:
+def _add_usage(total: dict[str, float], usage: dict[str, Any] | None) -> None:
     for key in _USAGE_KEYS:
         total[key] += int((usage or {}).get(key, 0) or 0)
+    cost = (usage or {}).get("cost")
+    if cost is not None:
+        total["cost"] = total.get("cost", 0.0) + float(cost)
 
 
 def _fallback_choice(menu: list[actions.MenuItem]) -> int:
