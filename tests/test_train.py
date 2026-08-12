@@ -26,6 +26,7 @@ from jongbench.evaluate import (
     review_player,
 )
 from jongbench.mortal_model import ACTION_SPACE, DQN, ConfidenceHead, PolicyHead
+from jongbench.selfplay import duel
 from jongbench.train import PolicyRLConfig, TrainConfig, train, train_policy_rl
 
 WEIGHTS = ROOT / "weights" / "mortal.pth"
@@ -155,6 +156,35 @@ def test_cli_new_commands_parse() -> None:
         ["duel", "--challenger", "weights/reviewer.pth", "--games", "8"]
     )
     assert duel_args.games == 8
+
+
+def test_duel_can_disable_challenger_agari_guard(monkeypatch) -> None:
+    calls = []
+
+    def fake_load_engine(path, **kwargs):
+        calls.append((path, kwargs))
+        return object()
+
+    class FakeArena:
+        def __init__(self, **kwargs):
+            pass
+
+        def py_vs_py_rank_sequence(self, challenger, champion, seed, seed_count):
+            return [0, 1, 2, 3] * seed_count
+
+    monkeypatch.setattr("jongbench.selfplay.load_engine", fake_load_engine)
+    monkeypatch.setattr("jongbench.selfplay.libriichi.arena.OneVsThree", FakeArena)
+    result = duel(
+        challenger_weights="challenger.pth",
+        champion_weights="champion.pth",
+        games=8,
+        device="cpu",
+        challenger_agari_guard=False,
+    )
+
+    assert result.rankings == [2, 2, 2, 2]
+    assert calls[0][1]["enable_rule_based_agari_guard"] is False
+    assert calls[1][1]["enable_rule_based_agari_guard"] is True
 
 
 def test_gameplay_dataset_from_tsumogiri_log() -> None:

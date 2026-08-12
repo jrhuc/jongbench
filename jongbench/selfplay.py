@@ -147,6 +147,8 @@ def duel(
     challenger_boltzmann_temp: float = 1.0,
     champion_boltzmann_epsilon: float = 0.0,
     champion_boltzmann_temp: float = 1.0,
+    challenger_agari_guard: bool = True,
+    champion_agari_guard: bool = True,
     log_dir: str | Path | None = None,
     disable_progress_bar: bool = False,
     pts: tuple[float, float, float, float] = (90.0, 45.0, 0.0, -135.0),
@@ -164,6 +166,7 @@ def duel(
         use_policy=challenger_policy,
         enable_quick_eval=True,
         enable_amp=device_t.type == "cuda",
+        enable_rule_based_agari_guard=challenger_agari_guard,
         boltzmann_epsilon=challenger_boltzmann_epsilon,
         boltzmann_temp=challenger_boltzmann_temp,
         name="challenger",
@@ -173,6 +176,7 @@ def duel(
         and not (challenger_policy or champion_policy)
         and challenger_boltzmann_epsilon == champion_boltzmann_epsilon
         and challenger_boltzmann_temp == champion_boltzmann_temp
+        and challenger_agari_guard == champion_agari_guard
     ):
         champion = _share_engine(challenger, "champion", use_policy=False)
     else:
@@ -182,6 +186,7 @@ def duel(
             use_policy=champion_policy,
             enable_quick_eval=True,
             enable_amp=device_t.type == "cuda",
+            enable_rule_based_agari_guard=champion_agari_guard,
             boltzmann_epsilon=champion_boltzmann_epsilon,
             boltzmann_temp=champion_boltzmann_temp,
             name="champion",

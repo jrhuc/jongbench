@@ -92,6 +92,7 @@ def improve_policy(cfg: ImproveConfig) -> dict[str, Any]:
             champion_policy=True,
             challenger_boltzmann_epsilon=1.0,
             challenger_boltzmann_temp=cfg.rollout_temperature,
+            challenger_agari_guard=False,
             log_dir=logs_dir,
             disable_progress_bar=True,
             pts=cfg.pts,
