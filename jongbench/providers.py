@@ -120,7 +120,7 @@ class Provider:
         self,
         messages: list[dict[str, Any]],
         *,
-        max_tokens: int = 1200,
+        max_tokens: int = 4096,
         temperature: float | None = None,
     ) -> Completion:
         params: dict[str, Any] = {

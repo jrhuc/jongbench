@@ -250,7 +250,7 @@ class LLMEngine(BaseEngine):
         api_key: str | None = None,
         decision_log: DecisionSink | None = None,
         temperature: float = 0.6,
-        max_tokens: int = 1200,
+        max_tokens: int = 4096,
         spectator: Any | None = None,
         concurrency: int = 4,
         state_hints: bool = True,
@@ -271,10 +271,15 @@ class LLMEngine(BaseEngine):
         self.temperature = temperature
         self.max_tokens = max_tokens
         if reasoning not in {None, "off"}:
-            floor = 32000 if reasoning in {"xhigh", "max"} else 16000
+            # A truncated reply is billed for the whole cap and scores zero, so a tight
+            # cap costs money and data at once: deepseek-v4-flash at effort low ran the
+            # 128-position bank for $0.42 either way, but 16k truncated 36% of replies
+            # (reward 0.584) against 4% at 32k (reward 0.834). The cap exists to stop a
+            # runaway loop, not to limit spend.
+            floor = 96000 if reasoning in {"xhigh", "max"} else 64000
             self.max_tokens = max(self.max_tokens, floor)
         self.state_hints = bool(state_hints)
-        self.totals = {
+        self.totals: dict[str, float] = {
             "calls": 0,
             "input_tokens": 0,
             "output_tokens": 0,
@@ -428,8 +433,8 @@ class LLMEngine(BaseEngine):
             "state_hints": self.state_hints,
             "calls_enabled": history.calls_enabled,
             "fallback": fallback,
-            "raw_response": raw_response[:4000],
-            "raw_reasoning": raw_reasoning[:16000],
+            "raw_response": raw_response[:32000],
+            "raw_reasoning": raw_reasoning[:200000],
             "served_by": served_by,
             "usage": usage_total,
             "latency_ms": latency_ms,
