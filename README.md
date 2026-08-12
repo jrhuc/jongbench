@@ -78,6 +78,13 @@ $ jongbench reasoning runs/<stamp>/ --worst 5
 # pool a directory of runs into one table, keyed by model spec
 $ jongbench leaderboard runs/<batch>/ --review
 
+# generate open training logs, fit a Phoenix-policy head, then run a duplicate duel
+$ jongbench selfplay --games 256 --out training/selfplay
+$ jongbench train --logs training/tenhou/2026 --out weights/reviewer.pth \
+    --data-provenance https://github.com/NikkeTryHard/tenhou-to-mjai/releases/tag/v2.0.0
+    --data-sha256 c37af299d9c382cc45608e6a253a0c966d038335493a55bfcc06d6fdf2674816
+$ jongbench duel --challenger weights/reviewer.pth --challenger-policy --games 256
+
 # watch one game live (terminal board, or --ui web for the browser board;
 # a seat spec of `human` puts you at the table)
 $ jongbench watch --models anthropic/claude-sonnet-5 openai/gpt-5.2 google/gemini-3-pro random
@@ -87,6 +94,15 @@ $ jongbench watch --ui web --models ... human
 $ jongbench replay runs/<stamp>/
 $ jongbench replay runs/<stamp>/ --out replay.json   # static bundle for hosting
 ```
+
+Reviewer checkpoints keep Mortal's Q network as the outcome-value axis and add a
+masked policy distribution, next-rank head, and confidence head. Training starts the
+policy exactly at Mortal's temperature-scaled action distribution, then fits expert
+actions while regularizing back to that teacher. Validation is file-disjoint and its
+metrics and data-provenance string are stored in the checkpoint. Plain or gzip MJAI
+logs are accepted. The shipped training path uses no NAGA reports, outputs, or code.
+The legacy `prob` field is a softmax display weight over Mortal Q-values, not a
+calibrated probability; trained reports expose `policy_prob` separately.
 
 Model specs are OpenRouter ids: `<vendor>/<model>`, optionally suffixed with
 `@<provider>` to pin inference routing (reproducibility against one upstream) and
