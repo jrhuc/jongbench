@@ -37,7 +37,7 @@ def _as_numpy(value) -> np.ndarray:
 
 def _duplicate_challenger_player(path: str | Path) -> int:
     name = Path(path).name
-    for suffix in (".gz", ".json", ".mjson"):
+    for suffix in (".gz", ".mjson", ".json"):
         name = name.removesuffix(suffix)
     split = name.rsplit("_", 1)[-1]
     try:
