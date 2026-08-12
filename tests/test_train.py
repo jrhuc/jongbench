@@ -139,6 +139,18 @@ def test_cli_new_commands_parse() -> None:
         ]
     )
     assert policy_rl.clip_ratio == 0.2
+    improve = parser.parse_args(
+        [
+            "improve",
+            "--init",
+            "weights/reviewer.pth",
+            "--out",
+            "training/league",
+            "--no-control",
+        ]
+    )
+    assert improve.rounds == 4
+    assert improve.control is None
     duel_args = parser.parse_args(
         ["duel", "--challenger", "weights/reviewer.pth", "--games", "8"]
     )
@@ -162,6 +174,17 @@ def test_gameplay_dataset_from_tsumogiri_log() -> None:
         assert steps >= 0
         assert rank in {0, 1, 2, 3}
         assert reward in {0.0, 2.0, 4.0, 6.0}
+        duplicate = Path(tempdir) / "9100_1_a.json.gz"
+        duplicate.write_bytes(log.read_bytes())
+        challenger_samples = list(
+            iter_gameplay_samples(
+                [str(duplicate)],
+                shuffle_files=False,
+                shuffle_buffer=False,
+                duplicate_challenger_only=True,
+            )
+        )
+        assert 0 < len(challenger_samples) < len(samples)
 
 
 def test_discover_logs_includes_plain_json(tmp_path: Path) -> None:

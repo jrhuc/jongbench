@@ -61,6 +61,30 @@ impl OneVsThree {
         })
     }
 
+    pub fn py_vs_py_rank_sequence(
+        &self,
+        challenger: PyObject,
+        champion: PyObject,
+        seed_start: (u64, u64),
+        seed_count: u64,
+        py: Python<'_>,
+    ) -> Result<Vec<u8>> {
+        py.allow_threads(move || {
+            let results = self.run_batch(
+                |player_ids| new_py_agent(challenger, player_ids),
+                |player_ids| new_py_agent(champion, player_ids),
+                seed_start,
+                seed_count,
+            )?;
+
+            Ok(results
+                .iter()
+                .enumerate()
+                .map(|(i, result)| result.rankings().rank_by_player[i % 4])
+                .collect())
+        })
+    }
+
     /// Returns the rankings of the challenger (akochan in this case).
     pub fn ako_vs_py(
         &self,

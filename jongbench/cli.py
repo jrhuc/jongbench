@@ -557,10 +557,43 @@ def _cmd_policy_rl(args: argparse.Namespace) -> int:
             entropy_weight=args.entropy_weight,
             sampling_temperature=args.sampling_temperature,
             file_batch_size=args.file_batch_size,
+            duplicate_challenger_only=args.duplicate_challenger_only,
         )
     )
     print(f"policy RL done: {stats}")
     print(f"checkpoint: {args.out}")
+    return 0
+
+
+def _cmd_improve(args: argparse.Namespace) -> int:
+    from .improve import ImproveConfig, improve_policy
+
+    result = improve_policy(
+        ImproveConfig(
+            init=args.init,
+            out_dir=args.out,
+            control=args.control,
+            rounds=args.rounds,
+            rollout_games=args.rollout_games,
+            updates=args.updates,
+            batch_size=args.batch_size,
+            duel_games=args.duel_games,
+            device=args.device,
+            seed=args.seed,
+            lr=args.lr,
+            rollout_temperature=args.rollout_temperature,
+            clip_ratio=args.clip_ratio,
+            target_kl=args.target_kl,
+            anchor_kl_weight=args.anchor_kl_weight,
+            entropy_weight=args.entropy_weight,
+            promotion_z=args.promotion_z,
+            promotion_margin=args.promotion_margin,
+        )
+    )
+    print(
+        f"league done: {result['promotions']} promotion(s), "
+        f"champion={result['champion']}"
+    )
     return 0
 
 
@@ -577,10 +610,13 @@ def _cmd_duel(args: argparse.Namespace) -> int:
         champion_policy=args.champion_policy,
         log_dir=args.log_dir,
     )
+    standard_error = (
+        "n/a" if result.standard_error is None else f"{result.standard_error:.3f}"
+    )
     print(
         f"challenger rankings {result.rankings} "
         f"avg_rank={result.avg_rank:.4f} avg_pt={result.avg_pt:.2f} "
-        f"games={result.games}"
+        f"se={standard_error} games={result.games}"
     )
     return 0
 
@@ -743,7 +779,39 @@ def _build_parser() -> argparse.ArgumentParser:
     policy_rl_cmd.add_argument("--entropy-weight", type=float, default=0.001)
     policy_rl_cmd.add_argument("--sampling-temperature", type=float, default=1.0)
     policy_rl_cmd.add_argument("--file-batch-size", type=_positive_int, default=8)
+    policy_rl_cmd.add_argument(
+        "--duplicate-challenger-only",
+        action="store_true",
+        help="train only the challenger POV from OneVsThree a/b/c/d logs",
+    )
     policy_rl_cmd.set_defaults(func=_cmd_policy_rl)
+
+    improve_cmd = subparsers.add_parser(
+        "improve",
+        help="iterate stochastic self-play, policy updates, and duplicate gating",
+    )
+    improve_cmd.add_argument("--init", required=True)
+    improve_cmd.add_argument("--out", required=True)
+    improve_cmd.add_argument("--control", default="weights/mortal.pth")
+    improve_cmd.add_argument(
+        "--no-control", action="store_const", dest="control", const=None
+    )
+    improve_cmd.add_argument("--rounds", type=_positive_int, default=4)
+    improve_cmd.add_argument("--rollout-games", type=_positive_int, default=256)
+    improve_cmd.add_argument("--updates", type=_positive_int, default=128)
+    improve_cmd.add_argument("--batch-size", type=_positive_int, default=512)
+    improve_cmd.add_argument("--duel-games", type=_positive_int, default=512)
+    improve_cmd.add_argument("--device", default="auto")
+    improve_cmd.add_argument("--seed", type=_u64, default=20270000)
+    improve_cmd.add_argument("--lr", type=float, default=1e-4)
+    improve_cmd.add_argument("--rollout-temperature", type=float, default=1.0)
+    improve_cmd.add_argument("--clip-ratio", type=float, default=0.2)
+    improve_cmd.add_argument("--target-kl", type=float, default=0.03)
+    improve_cmd.add_argument("--anchor-kl-weight", type=float, default=0.02)
+    improve_cmd.add_argument("--entropy-weight", type=float, default=0.001)
+    improve_cmd.add_argument("--promotion-z", type=float, default=1.0)
+    improve_cmd.add_argument("--promotion-margin", type=float, default=0.0)
+    improve_cmd.set_defaults(func=_cmd_improve)
 
     duel_cmd = subparsers.add_parser(
         "duel", help="1-vs-3 duplicate match between two checkpoints"

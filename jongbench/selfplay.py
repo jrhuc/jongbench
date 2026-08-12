@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import sqrt
 from pathlib import Path
+from statistics import stdev
 from typing import Any
 
 import torch
@@ -110,16 +112,22 @@ def selfplay(
 @dataclass
 class DuelResult:
     rankings: list[int]
+    rank_sequence: list[int]
+    seed_avg_pts: list[float]
     games: int
     avg_rank: float
     avg_pt: float
+    standard_error: float | None
     pts: tuple[float, float, float, float] = (90.0, 45.0, 0.0, -135.0)
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "rank_sequence": self.rank_sequence,
+            "seed_avg_pts": self.seed_avg_pts,
             "rankings": self.rankings,
             "games": self.games,
             "avg_rank": self.avg_rank,
+            "standard_error": self.standard_error,
             "avg_pt": self.avg_pt,
             "pts": list(self.pts),
         }
@@ -135,6 +143,10 @@ def duel(
     device: str | torch.device = "auto",
     challenger_policy: bool = False,
     champion_policy: bool = False,
+    challenger_boltzmann_epsilon: float = 0.0,
+    challenger_boltzmann_temp: float = 1.0,
+    champion_boltzmann_epsilon: float = 0.0,
+    champion_boltzmann_temp: float = 1.0,
     log_dir: str | Path | None = None,
     disable_progress_bar: bool = False,
     pts: tuple[float, float, float, float] = (90.0, 45.0, 0.0, -135.0),
@@ -152,10 +164,15 @@ def duel(
         use_policy=challenger_policy,
         enable_quick_eval=True,
         enable_amp=device_t.type == "cuda",
+        boltzmann_epsilon=challenger_boltzmann_epsilon,
+        boltzmann_temp=challenger_boltzmann_temp,
         name="challenger",
     )
-    if Path(champion_weights).resolve() == Path(challenger_weights).resolve() and not (
-        challenger_policy or champion_policy
+    if (
+        Path(champion_weights).resolve() == Path(challenger_weights).resolve()
+        and not (challenger_policy or champion_policy)
+        and challenger_boltzmann_epsilon == champion_boltzmann_epsilon
+        and challenger_boltzmann_temp == champion_boltzmann_temp
     ):
         champion = _share_engine(challenger, "champion", use_policy=False)
     else:
@@ -165,6 +182,8 @@ def duel(
             use_policy=champion_policy,
             enable_quick_eval=True,
             enable_amp=device_t.type == "cuda",
+            boltzmann_epsilon=champion_boltzmann_epsilon,
+            boltzmann_temp=champion_boltzmann_temp,
             name="champion",
         )
     if log_dir is not None:
@@ -174,14 +193,30 @@ def duel(
         disable_progress_bar=disable_progress_bar,
         log_dir=None if log_dir is None else str(log_dir),
     )
-    rankings = list(arena.py_vs_py(challenger, champion, (seed, key), seed_count))
-    total = sum(rankings)
-    avg_rank = sum((i + 1) * n for i, n in enumerate(rankings)) / max(total, 1)
-    avg_pt = sum(pts[i] * n for i, n in enumerate(rankings)) / max(total, 1)
+    rank_sequence = list(
+        arena.py_vs_py_rank_sequence(challenger, champion, (seed, key), seed_count)
+    )
+    if len(rank_sequence) != games or any(
+        rank not in range(4) for rank in rank_sequence
+    ):
+        raise RuntimeError("duplicate arena returned invalid challenger ranks")
+    rankings = [rank_sequence.count(rank) for rank in range(4)]
+    avg_rank = sum(rank + 1 for rank in rank_sequence) / games
+    avg_pt = sum(pts[rank] for rank in rank_sequence) / games
+    seed_avg_pts = [
+        sum(pts[rank] for rank in rank_sequence[start : start + 4]) / 4
+        for start in range(0, games, 4)
+    ]
+    standard_error = (
+        stdev(seed_avg_pts) / sqrt(len(seed_avg_pts)) if len(seed_avg_pts) > 1 else None
+    )
     return DuelResult(
         rankings=rankings,
-        games=total,
+        rank_sequence=rank_sequence,
+        seed_avg_pts=seed_avg_pts,
+        games=games,
         avg_rank=avg_rank,
         avg_pt=avg_pt,
+        standard_error=standard_error,
         pts=pts,
     )

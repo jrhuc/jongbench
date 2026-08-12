@@ -70,6 +70,7 @@ class PolicyRLConfig:
     file_batch_size: int = 8
     log_every: int = 10
     pts: tuple[float, float, float, float] = DEFAULT_PTS
+    duplicate_challenger_only: bool = False
     seed: int = 20260812
 
 
@@ -568,6 +569,7 @@ def train_policy_rl(cfg: PolicyRLConfig) -> dict[str, float]:
         pts=cfg.pts,
         file_batch_size=cfg.file_batch_size,
         infinite=True,
+        duplicate_challenger_only=cfg.duplicate_challenger_only,
     )
     loader = DataLoader(
         dataset,

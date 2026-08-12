@@ -35,6 +35,17 @@ def _as_numpy(value) -> np.ndarray:
     return np.asarray(value)
 
 
+def _duplicate_challenger_player(path: str | Path) -> int:
+    name = Path(path).name
+    for suffix in (".gz", ".json", ".mjson"):
+        name = name.removesuffix(suffix)
+    split = name.rsplit("_", 1)[-1]
+    try:
+        return {"a": 0, "b": 1, "c": 2, "d": 3}[split]
+    except KeyError as exc:
+        raise ValueError(f"not a duplicate-arena log filename: {path}") from exc
+
+
 def iter_gameplay_samples(
     files: list[str],
     *,
@@ -43,6 +54,7 @@ def iter_gameplay_samples(
     file_batch_size: int = 4,
     shuffle_files: bool = True,
     shuffle_buffer: bool = True,
+    duplicate_challenger_only: bool = False,
 ) -> Iterator[tuple[np.ndarray, int, np.ndarray, int, float, int]]:
     """Yield (obs, action, mask, steps_to_done, reward, next_rank) from mjai logs.
 
@@ -75,8 +87,16 @@ def iter_gameplay_samples(
                     loader_files.append(str(target))
             data = loader.load_gz_log_files(loader_files)
         buffer: list[tuple[np.ndarray, int, np.ndarray, int, float, int]] = []
-        for file_games in data:
+        for source_path, file_games in zip(batch_files, data, strict=True):
+            challenger_player = (
+                _duplicate_challenger_player(source_path)
+                if duplicate_challenger_only
+                else None
+            )
             for game in file_games:
+                player_id = int(game.take_player_id())
+                if challenger_player is not None and player_id != challenger_player:
+                    continue
                 obs = game.take_obs()
                 actions = game.take_actions()
                 masks = game.take_masks()
@@ -84,7 +104,6 @@ def iter_gameplay_samples(
                 dones = game.take_dones()
                 apply_gamma = game.take_apply_gamma()
                 grp = game.take_grp()
-                player_id = int(game.take_player_id())
                 n = len(obs)
                 if n == 0:
                     continue
@@ -135,6 +154,7 @@ class GameplayIterable(IterableDataset):
         file_batch_size: int = 4,
         infinite: bool = True,
         shuffle: bool = True,
+        duplicate_challenger_only: bool = False,
     ) -> None:
         super().__init__()
         self.files = list(files)
@@ -143,6 +163,7 @@ class GameplayIterable(IterableDataset):
         self.file_batch_size = file_batch_size
         self.infinite = infinite
         self.shuffle = shuffle
+        self.duplicate_challenger_only = duplicate_challenger_only
         if not self.files:
             raise ValueError("no gameplay logs to train on")
 
@@ -156,6 +177,7 @@ class GameplayIterable(IterableDataset):
                 file_batch_size=self.file_batch_size,
                 shuffle_files=self.shuffle,
                 shuffle_buffer=self.shuffle,
+                duplicate_challenger_only=self.duplicate_challenger_only,
             ):
                 yielded = True
                 yield (

@@ -85,6 +85,10 @@ $ jongbench train --logs training/tenhou/2026 --out weights/reviewer.pth \
     --data-sha256 c37af299d9c382cc45608e6a253a0c966d038335493a55bfcc06d6fdf2674816
 $ jongbench duel --challenger weights/reviewer.pth --challenger-policy --games 256
 
+# iterate on-policy self-play, clipped policy updates, and duplicate-match promotion
+$ jongbench improve --init weights/reviewer.pth --out training/policy-league \
+    --rounds 4 --rollout-games 256 --duel-games 512 --device cuda
+
 # watch one game live (terminal board, or --ui web for the browser board;
 # a seat spec of `human` puts you at the table)
 $ jongbench watch --models anthropic/claude-sonnet-5 openai/gpt-5.2 google/gemini-3-pro random
@@ -103,6 +107,16 @@ metrics and data-provenance string are stored in the checkpoint. Plain or gzip M
 logs are accepted. The shipped training path uses no NAGA reports, outputs, or code.
 The legacy `prob` field is a softmax display weight over Mortal Q-values, not a
 calibrated probability; trained reports expose `policy_prob` separately.
+
+`jongbench improve` keeps Mortal's encoder and Q head frozen. Each round samples
+one stochastic current-policy seat against three frozen greedy copies, trains only
+from that seat's decisions using centered final-placement returns and a clipped
+behavior-policy ratio, and regularizes toward the original expert-trained policy.
+A candidate is promoted only when its duplicate
+1-vs-3 point estimate clears `promotion_margin` after subtracting
+`promotion_z * paired_standard_error`; four seat rotations of each seed form one
+paired sample. The final manifest also records direct duplicate matches against the
+initial policy and Mortal Q control.
 
 Model specs are OpenRouter ids: `<vendor>/<model>`, optionally suffixed with
 `@<provider>` to pin inference routing (reproducibility against one upstream) and
