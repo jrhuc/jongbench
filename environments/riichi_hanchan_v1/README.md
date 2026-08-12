@@ -197,7 +197,7 @@ model with the chair effect averaged out.
 ### Tools versus hints, one seed
 
 Seed 20260000 replayed four ways with the same two agents and two `mortal` chairs
-(2026-08-11, effort low, auto-pass on): hints inline, hints off with no tools, tools
+(2026-08-11 and 12, effort low, auto-pass on): hints inline, hints off with no tools, tools
 at a 12-call budget, and tools at 4. Per-seat totals, de-duped across the seat's
 kyoku traces:
 
