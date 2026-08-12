@@ -309,6 +309,7 @@ def _finalize_engine(acc: dict[str, Any]) -> dict[str, Any]:
         "mean_rating": _mean(acc["ratings"]),
         "match_rate": matches / reviewed if reviewed else 0.0,
         "mean_prob_loss": float(acc["loss_sum"]) / reviewed if reviewed else 0.0,
+        "mean_q_weight_loss": float(acc["loss_sum"]) / reviewed if reviewed else 0.0,
         "total_reviewed": reviewed,
         "total_matches": matches,
     }
@@ -357,6 +358,9 @@ def _game_row(path: Path, raw_game: dict[str, Any]) -> dict[str, Any]:
                 "total_matches": total_matches,
                 "match_rate": total_matches / total_reviewed if total_reviewed else 0.0,
                 "mean_prob_loss": loss_sum / total_reviewed if total_reviewed else 0.0,
+                "mean_q_weight_loss": (
+                    loss_sum / total_reviewed if total_reviewed else 0.0
+                ),
                 "loss_sum": loss_sum,
                 "review": review,
                 "aggregates": aggregates,
@@ -437,6 +441,7 @@ def _aggregates(review: dict[str, Any]) -> dict[str, Any]:
     return {
         "match_rate": total_matches / total_reviewed if total_reviewed else 0.0,
         "mean_prob_loss": sum(losses) / len(losses) if losses else 0.0,
+        "mean_q_weight_loss": sum(losses) / len(losses) if losses else 0.0,
         "worst": worst,
         "by_kind": by_kind,
     }
@@ -458,6 +463,9 @@ def _normal_aggregates(raw: dict[str, Any]) -> dict[str, Any]:
     aggregates["worst"] = list(aggregates.get("worst") or [])
     aggregates["match_rate"] = float(aggregates.get("match_rate") or 0.0)
     aggregates["mean_prob_loss"] = float(aggregates.get("mean_prob_loss") or 0.0)
+    aggregates["mean_q_weight_loss"] = float(
+        aggregates.get("mean_q_weight_loss", aggregates["mean_prob_loss"]) or 0.0
+    )
     return aggregates
 
 
@@ -1192,7 +1200,7 @@ _JS = r"""
     const head = '<thead><tr>' +
       '<th class="num">rank</th><th>engine</th><th class="num">games</th><th class="num">avg placement</th>' +
       '<th class="num">avg score</th><th class="num">rating</th><th class="num">match %</th>' +
-      '<th class="num">mean prob loss</th><th class="num">fallbacks %</th><th class="num">tokens (in/out)</th><th class="num">cost</th><th class="num">mean latency</th>' +
+      '<th class="num">mean Q-weight loss</th><th class="num">fallbacks %</th><th class="num">tokens (in/out)</th><th class="num">cost</th><th class="num">mean latency</th>' +
       '</tr></thead>';
     const body = '<tbody>' + engines.map(function (engine) {
       return '<tr>' +
@@ -1203,7 +1211,7 @@ _JS = r"""
         '<td class="num">' + integer(engine.avg_score) + '</td>' +
         '<td class="num">' + fixed(engine.mean_rating * 100, 1) + '</td>' +
         '<td class="num">' + percent(engine.match_rate, 0) + '</td>' +
-        '<td class="num">' + percent(engine.mean_prob_loss, 1) + '</td>' +
+        '<td class="num">' + percent(engine.mean_q_weight_loss, 1) + '</td>' +
         '<td class="num">' + nullablePercent(engine.fallback_rate, 1) + '</td>' +
         '<td class="num">' + tokenPair(engine) + '</td>' +
         '<td class="num">' + nullableCost(engine.cost) + '</td>' +
@@ -1245,9 +1253,17 @@ _JS = r"""
 
   function playerBlock(player) {
     return '<details class="player">' +
-      '<summary>P' + player.seat + ' ' + escapeHtml(player.name) + ' — rating ' + fixed(player.rating * 100, 1) + ', matched ' + String(player.total_matches) + '/' + String(player.total_reviewed) + '</summary>' +
+      '<summary>P' + player.seat + ' ' + escapeHtml(player.name) + ' — value rating ' + fixed(player.rating * 100, 1) + ', value matched ' + String(player.total_matches) + '/' + String(player.total_reviewed) + policySummary(player) + '</summary>' +
       '<div class="player-body">' + decisionTable(player) + strengths(player) + '</div>' +
       '</details>';
+  }
+
+  function policySummary(player) {
+    const aggregates = player.aggregates || {};
+    if (!Number(aggregates.policy_count || 0) || aggregates.policy_match_rate == null) {
+      return "";
+    }
+    return ', policy matched ' + percent(aggregates.policy_match_rate, 1);
   }
 
   function decisionTable(player) {
@@ -1258,17 +1274,21 @@ _JS = r"""
     const rows = entries.map(function (entry) {
       const isMatch = Boolean(entry.is_equal);
       const best = (entry.details || [])[0] || {};
+      const policyBest = entry.policy_expected;
+      const hasPolicy = Boolean(policyBest);
       return '<tr class="' + (isMatch ? "is-match" : "is-mistake") + '">' +
         '<td class="num">' + kyokuLabel(entry.kyoku, entry.honba) + ' / ' + integer(entry.junme) + '</td>' +
         '<td class="context-cell">' + tileHtml(entry.tile) + '</td>' +
         '<td class="action-cell">' + actionHtml(entry.actual) + ' ' + decisionMark(entry) + '</td>' +
         '<td class="best-cell">' + actionHtml(best.event || entry.expected) + '</td>' +
+        '<td class="best-cell">' + (hasPolicy ? actionHtml(policyBest) : '<span class="muted">—</span>') + '</td>' +
         '<td>' + probCell(actualProb(entry), Number(best.prob || 0)) + '</td>' +
+        '<td>' + (hasPolicy ? probCell(actualPolicyProb(entry), bestPolicyProb(entry)) : '<span class="muted">—</span>') + '</td>' +
         '</tr>';
     }).join("");
     return '<div class="review-panel" data-filter="mistakes">' +
       '<div class="filter-row"><button type="button" data-filter="mistakes" aria-pressed="true">Mistakes only</button><button type="button" data-filter="all" aria-pressed="false">All decisions</button></div>' +
-      '<div class="table-wrap"><table class="review-table"><thead><tr><th class="num">kyoku/junme</th><th>context tile</th><th>actual action</th><th>Mortal best</th><th>probability</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      '<div class="table-wrap"><table class="review-table"><thead><tr><th class="num">kyoku/junme</th><th>context tile</th><th>actual action</th><th>value best</th><th>policy best</th><th>value weight</th><th>policy probability</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
       '</div>';
   }
 
@@ -1377,6 +1397,24 @@ _JS = r"""
       return 0;
     }
     return Math.max(0, Number(details[0].prob || 0) - actualProb(entry));
+  }
+
+  function actualPolicyProb(entry) {
+    if (entry.policy_actual_prob != null) {
+      return Number(entry.policy_actual_prob);
+    }
+    const details = entry.details || [];
+    let index = Number(entry.actual_index || 0);
+    if (index < 0 || index >= details.length) {
+      return 0;
+    }
+    return Number(details[index].policy_prob || 0);
+  }
+
+  function bestPolicyProb(entry) {
+    return (entry.details || []).reduce(function (best, detail) {
+      return Math.max(best, Number(detail.policy_prob || 0));
+    }, 0);
   }
 
   function kyokuLabel(kyoku, honba) {

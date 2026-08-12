@@ -47,8 +47,21 @@ function lossTone(loss: number): string {
 }
 
 function DecisionEntry({ entry, entryKey, expanded, onToggle }: { entry: ReviewEntry; entryKey: string; expanded: boolean; onToggle(): void }) {
-  const loss = probLoss(entry);
-  const bestProb = entry.details[0]?.prob ?? 0;
+  const valueLoss = probLoss(entry);
+  const policyLoss = entry.policy_loss ?? 0;
+  const bestValueProb = entry.details[0]?.prob ?? 0;
+  const hasPolicy = entry.details.some((candidate) => candidate.policy_prob !== undefined);
+  const bestPolicyProb = hasPolicy ? Math.max(...entry.details.map((candidate) => candidate.policy_prob ?? 0)) : 0;
+  const policyBestIndex = hasPolicy
+    ? entry.details.reduce((best, candidate, index, candidates) => (
+      (candidate.policy_prob ?? 0) > (candidates[best]?.policy_prob ?? -1) ? index : best
+    ), 0)
+    : -1;
+  const visibleIndexes = [...new Set([
+    ...entry.details.slice(0, 8).map((_, index) => index),
+    entry.actual_index,
+    policyBestIndex,
+  ])].filter((index) => index >= 0 && index < entry.details.length);
 
   return (
     <div class={`dlog-entry ${entry.is_equal ? "dlog-entry-match" : ""}`}>
@@ -56,8 +69,18 @@ function DecisionEntry({ entry, entryKey, expanded, onToggle }: { entry: ReviewE
         <span class="dlog-turn">{entry.junme}巡</span>
         <span class="dlog-tiles-left">{entry.tiles_left} left</span>
         <span class="dlog-played"><Action event={entry.actual} /></span>
-        {!entry.is_equal && <span class="dlog-expected">Mortal: <Action event={entry.expected} /></span>}
-        {!entry.is_equal && <span class={`dlog-loss dlog-loss-${lossTone(loss)}`}>−{(loss * 100).toFixed(1)}%</span>}
+        {(!entry.is_equal || entry.policy_is_equal === false) && (
+          <span class="dlog-expected">
+            {!entry.is_equal && <span>value: <Action event={entry.expected} /></span>}
+            {entry.policy_is_equal === false && entry.policy_expected && <span>policy: <Action event={entry.policy_expected} /></span>}
+          </span>
+        )}
+        {(valueLoss > 0 || policyLoss > 0) && (
+          <span class={`dlog-loss dlog-loss-${lossTone(Math.max(valueLoss, policyLoss))}`}>
+            V −{(valueLoss * 100).toFixed(1)}
+            {hasPolicy && ` · P −${(policyLoss * 100).toFixed(1)}`}
+          </span>
+        )}
         <span class="dlog-entry-chevron" aria-hidden="true">{expanded ? "⌃" : "⌄"}</span>
       </button>
       {expanded && (
@@ -65,21 +88,33 @@ function DecisionEntry({ entry, entryKey, expanded, onToggle }: { entry: ReviewE
           <div class="dlog-meta">
             <span class="dlog-context">on <TileView tile={entry.tile} size="s" /></span>
             <span>shanten {entry.shanten}</span>
+            {entry.policy_confidence !== undefined && <span>policy confidence {(entry.policy_confidence * 100).toFixed(0)}%</span>}
             {entry.at_furiten && <span class="dlog-furiten">furiten</span>}
           </div>
           <div class="dlog-candidates">
-            {entry.details.slice(0, 8).map((candidate, index) => {
+            {visibleIndexes.map((index) => {
+              const candidate = entry.details[index];
               const actual = index === entry.actual_index;
-              const best = index === 0;
-              const tag = actual && best ? "played · best" : actual ? "played" : best ? "best" : null;
-              const width = bestProb > 0 ? Math.min(100, (candidate.prob / bestProb) * 100) : 0;
+              const tags = [
+                actual ? "played" : null,
+                index === 0 ? "value" : null,
+                index === policyBestIndex ? "policy" : null,
+              ].filter(Boolean);
+              const valueWidth = bestValueProb > 0 ? Math.min(100, (candidate.prob / bestValueProb) * 100) : 0;
+              const policyWidth = bestPolicyProb > 0 ? Math.min(100, ((candidate.policy_prob ?? 0) / bestPolicyProb) * 100) : 0;
               return (
                 <div class={`dlog-candidate ${actual ? "dlog-candidate-actual" : ""}`} key={`${entryKey}-${index}`}>
                   <span class="dlog-rank">{index + 1}</span>
                   <span class="dlog-candidate-action"><Action event={candidate.event} /></span>
-                  <span class="dlog-prob-track"><span class="dlog-prob-fill" style={{ width: `${width}%` }} /></span>
-                  <span class="dlog-prob">{(candidate.prob * 100).toFixed(1)}%</span>
-                  {tag && <span class="dlog-tag">{tag}</span>}
+                  <span class="dlog-prob-track">
+                    <span class="dlog-prob-lane"><span class="dlog-prob-fill" style={{ width: `${valueWidth}%` }} /></span>
+                    {hasPolicy && <span class="dlog-prob-lane"><span class="dlog-policy-fill" style={{ width: `${policyWidth}%` }} /></span>}
+                  </span>
+                  <span class="dlog-prob dlog-prob-values">
+                    <span>V {(candidate.prob * 100).toFixed(1)}%</span>
+                    {hasPolicy && <span>P {((candidate.policy_prob ?? 0) * 100).toFixed(1)}%</span>}
+                  </span>
+                  {tags.length > 0 && <span class="dlog-tag">{tags.join(" · ")}</span>}
                 </div>
               );
             })}
@@ -113,6 +148,9 @@ export function DecisionLog({ player, onBack }: { player: PlayerReview; onBack()
           <span><strong>{(player.review.rating * 100).toFixed(1)}</strong> rating</span>
           <span><strong>{(player.aggregates.match_rate * 100).toFixed(1)}%</strong> match rate</span>
           <span><strong>{player.review.total_reviewed}</strong> decisions reviewed</span>
+          {(player.aggregates.policy_count ?? 0) > 0 && player.aggregates.policy_match_rate != null && (
+            <span><strong>{(player.aggregates.policy_match_rate * 100).toFixed(1)}%</strong> policy match</span>
+          )}
         </div>
       </header>
       <div class="dlog-groups">

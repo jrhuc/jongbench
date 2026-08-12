@@ -110,6 +110,7 @@ export interface ReviewCandidate {
   event: MjaiEvent;
   q_value: number;
   prob: number;
+  policy_prob?: number;
 }
 
 export interface ReviewEntry {
@@ -126,6 +127,12 @@ export interface ReviewEntry {
   shanten: number;
   at_furiten: boolean;
   details: ReviewCandidate[];
+  policy_expected?: MjaiEvent;
+  policy_is_equal?: boolean;
+  policy_actual_prob?: number;
+  policy_loss?: number;
+  policy_confidence?: number;
+  next_rank_probs?: number[];
 }
 
 export interface PlayerReview {
@@ -140,6 +147,12 @@ export interface PlayerReview {
   aggregates: {
     match_rate: number;
     mean_prob_loss: number;
+    mean_q_weight_loss?: number;
+    policy_count?: number;
+    policy_match_rate?: number | null;
+    mean_policy_loss?: number | null;
+    mean_policy_nll?: number | null;
+    mean_policy_confidence?: number | null;
     by_kind: Record<string, { count: number; matches: number; mean_loss: number }>;
     worst: { kyoku: number; junme: number; loss: number; actual: MjaiEvent; expected: MjaiEvent }[];
   };

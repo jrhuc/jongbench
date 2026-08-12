@@ -63,6 +63,7 @@ export function Results({ session, review, onClose }: { session: SessionState; r
   ).sort((a, b) => b.loss - a.loss).slice(0, 8), [players]);
   const maxRating = Math.max(1, ...players.map(({ player }) => player.review.rating * 100));
   const selectedPlayer = players.find(({ seat }) => seat === selectedSeat)?.player ?? null;
+  const hasPolicy = players.some(({ player }) => (player.aggregates.policy_count ?? 0) > 0);
 
   return (
     <div
@@ -100,7 +101,7 @@ export function Results({ session, review, onClose }: { session: SessionState; r
 
         {review !== null && (
           <section class="results-section review-section">
-            <h2>Mortal review</h2>
+            <h2>{hasPolicy ? "Value + policy review" : "Mortal review"}</h2>
             <div class="review-stat-grid">
               {players.map(({ seat, player }) => (
                 <button class="review-stat" type="button" key={seat} onClick={() => setSelectedSeat(seat)}>
@@ -109,7 +110,10 @@ export function Results({ session, review, onClose }: { session: SessionState; r
                   <span class="review-stat-label">Mortal rating</span>
                   <dl>
                     <div><dt>Match rate</dt><dd>{(player.aggregates.match_rate * 100).toFixed(1)}%</dd></div>
-                    <div><dt>Mean prob-loss</dt><dd>{player.aggregates.mean_prob_loss.toFixed(3)}</dd></div>
+                    <div><dt>Mean Q-weight loss</dt><dd>{(player.aggregates.mean_q_weight_loss ?? player.aggregates.mean_prob_loss).toFixed(3)}</dd></div>
+                    {(player.aggregates.policy_count ?? 0) > 0 && player.aggregates.policy_match_rate != null && (
+                      <div><dt>Policy match</dt><dd>{(player.aggregates.policy_match_rate * 100).toFixed(1)}%</dd></div>
+                    )}
                   </dl>
                   <span class="review-stat-affordance">View decisions <span aria-hidden="true">›</span></span>
                 </button>
