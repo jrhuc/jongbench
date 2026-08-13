@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from . import arena, evaluate, providers, report
-from .artifacts import decision_filename
 from .arena import GameSummary
+from .artifacts import decision_filename
 from .engines import RandomEngine, TerminalHumanIO, make_engine
 from .spectator import Spectator, TerminalRenderer
 
@@ -90,7 +90,9 @@ def _evaluate_run(
     weights: str | Path,
     temperature: float = 0.1,
     progress: bool = True,
-    summaries: Sequence[GameSummary] | Mapping[tuple[int, int], GameSummary] | None = None,
+    summaries: Sequence[GameSummary]
+    | Mapping[tuple[int, int], GameSummary]
+    | None = None,
 ) -> None:
     run = Path(run_dir)
     log_paths = sorted((run / "logs").glob("*.json.gz"), key=_log_sort_key)
@@ -105,7 +107,9 @@ def _evaluate_run(
     for log_path in log_paths:
         events = evaluate.load_mjai_log(str(log_path))
         seed = _seed_from_events_or_path(events, log_path)
-        game_summary = summary_by_seed.get(seed) or _reconstruct_summary(events, log_path)
+        game_summary = summary_by_seed.get(seed) or _reconstruct_summary(
+            events, log_path
+        )
         reviews = evaluate.review_game(events, mortal, temperature=temperature)
         players: dict[str, dict[str, Any]] = {}
 
@@ -131,7 +135,7 @@ def _evaluate_run(
             "players": players,
         }
         (review_dir / f"{_seed_label(seed)}.json").write_text(
-            json.dumps(payload, indent=2, sort_keys=True),
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
             encoding="utf-8",
         )
 
@@ -182,8 +186,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         return 0
 
     _evaluate_run(run_dir, args.weights, summaries=summaries)
-    report_path = report.write_report(str(run_dir))
-    _print_summary(report.summarize(str(run_dir)))
+    summary = report.summarize(str(run_dir))
+    report_path = report.write_report(str(run_dir), summary)
+    _print_summary(summary)
     print(f"report: {report_path}")
     return 0
 
@@ -264,8 +269,9 @@ def _cmd_watch(args: argparse.Namespace) -> int:
         return 0
 
     _evaluate_run(run_dir, args.weights, summaries=summaries)
-    report_path = report.write_report(str(run_dir))
-    _print_summary(report.summarize(str(run_dir)))
+    summary = report.summarize(str(run_dir))
+    report_path = report.write_report(str(run_dir), summary)
+    _print_summary(summary)
     _print_seat_ratings(run_dir)
     print(f"report: {report_path}")
     return 0
@@ -297,8 +303,9 @@ def _cmd_review(args: argparse.Namespace) -> int:
             path.unlink()
     if args.force or _reviews_missing(run_dir):
         _evaluate_run(run_dir, args.weights)
-    report_path = report.write_report(str(run_dir))
-    _print_summary(report.summarize(str(run_dir)))
+    summary = report.summarize(str(run_dir))
+    report_path = report.write_report(str(run_dir), summary)
+    _print_summary(summary)
     print(f"report: {report_path}")
     return 0
 
@@ -350,7 +357,9 @@ def _cmd_reasoning(args: argparse.Namespace) -> int:
         data = _read_json(path)
         for player_id, player in sorted((data.get("players") or {}).items()):
             name = str(player.get("name", ""))
-            records = decisions_by_name.get(decision_filename(name).removesuffix(".jsonl"))
+            records = decisions_by_name.get(
+                decision_filename(name).removesuffix(".jsonl")
+            )
             if not records:
                 continue
             joined = reasoning_module.join(
@@ -411,8 +420,12 @@ def _cmd_positions(args: argparse.Namespace) -> int:
                     for i in range(4)
                 ]
             else:
-                seats = [RandomEngine(f"random-{i}", seed=args.seed + i) for i in range(4)]
-            arena.run_games(seats, args.games, seed_start=(args.seed, 1), log_dir=tempdir)
+                seats = [
+                    RandomEngine(f"random-{i}", seed=args.seed + i) for i in range(4)
+                ]
+            arena.run_games(
+                seats, args.games, seed_start=(args.seed, 1), log_dir=tempdir
+            )
             for path in sorted(Path(tempdir).glob("*.json.gz")):
                 with gzip.open(path, "rt") as handle:
                     logs.append([json.loads(line) for line in handle if line.strip()])
@@ -423,11 +436,15 @@ def _cmd_positions(args: argparse.Namespace) -> int:
     with out.open("w") as handle:
         for events in logs:
             for position in positions_module.extract_positions(events, engine):
-                handle.write(json.dumps(position.to_dict(), separators=(",", ":")) + "\n")
+                handle.write(
+                    json.dumps(position.to_dict(), separators=(",", ":")) + "\n"
+                )
                 extracted.append(position)
 
     source = "logs" if args.from_log else args.source
-    print(f"wrote {len(extracted)} positions from {len(logs)} game(s) ({source}) to {out}")
+    print(
+        f"wrote {len(extracted)} positions from {len(logs)} game(s) ({source}) to {out}"
+    )
     for line in _bank_baselines(extracted):
         print(line)
     return 0
@@ -469,10 +486,141 @@ def _cmd_selfcheck(args: argparse.Namespace) -> int:
         disable_progress_bar=True,
     )
     _evaluate_run(run_dir, args.weights, summaries=summaries)
-    report_path = report.write_report(str(run_dir))
-    _print_summary(report.summarize(str(run_dir)))
+    summary = report.summarize(str(run_dir))
+    report_path = report.write_report(str(run_dir), summary)
+    _print_summary(summary)
     print(f"report: {report_path}")
     print("SELFCHECK OK")
+    return 0
+
+
+def _cmd_selfplay(args: argparse.Namespace) -> int:
+    from .selfplay import selfplay
+
+    summaries = selfplay(
+        weights=args.weights,
+        out_dir=args.out,
+        games=args.games,
+        seed=args.seed,
+        batch_games=args.batch_games,
+        device=args.device,
+        use_policy=args.policy,
+        boltzmann_epsilon=args.epsilon,
+        boltzmann_temp=args.temp,
+    )
+    print(f"wrote {len(summaries)} games to {args.out}")
+    return 0
+
+
+def _cmd_train(args: argparse.Namespace) -> int:
+    from .train import TrainConfig, train
+
+    stats = train(
+        TrainConfig(
+            logs=args.logs,
+            init=args.init,
+            out=args.out,
+            steps=args.steps,
+            batch_size=args.batch_size,
+            device=args.device,
+            lr=args.lr,
+            freeze_encoder=not args.unfreeze_encoder,
+            file_batch_size=args.file_batch_size,
+            teacher_temperature=args.teacher_temperature,
+            validation_ratio=args.validation_ratio,
+            validation_batches=args.validation_batches,
+            data_provenance=args.data_provenance,
+            data_sha256=args.data_sha256,
+        )
+    )
+    print(f"train done: {stats}")
+    print(f"checkpoint: {args.out}")
+    return 0
+
+
+def _cmd_policy_rl(args: argparse.Namespace) -> int:
+    from .dataset import DEFAULT_PTS
+    from .selfplay import DUPLICATE_PTS
+    from .train import PolicyRLConfig, train_policy_rl
+
+    stats = train_policy_rl(
+        PolicyRLConfig(
+            logs=args.logs,
+            init=args.init,
+            out=args.out,
+            anchor=args.anchor,
+            steps=args.steps,
+            batch_size=args.batch_size,
+            device=args.device,
+            lr=args.lr,
+            clip_ratio=args.clip_ratio,
+            target_kl=args.target_kl,
+            anchor_kl_weight=args.anchor_kl_weight,
+            entropy_weight=args.entropy_weight,
+            sampling_temperature=args.sampling_temperature,
+            file_batch_size=args.file_batch_size,
+            duplicate_challenger_only=args.duplicate_challenger_only,
+            pts=(DUPLICATE_PTS if args.duplicate_challenger_only else DEFAULT_PTS),
+        )
+    )
+    print(f"policy RL done: {stats}")
+    print(f"checkpoint: {args.out}")
+    return 0
+
+
+def _cmd_improve(args: argparse.Namespace) -> int:
+    from .improve import ImproveConfig, improve_policy
+
+    result = improve_policy(
+        ImproveConfig(
+            init=args.init,
+            out_dir=args.out,
+            control=args.control,
+            rounds=args.rounds,
+            rollout_games=args.rollout_games,
+            updates=args.updates,
+            batch_size=args.batch_size,
+            duel_games=args.duel_games,
+            device=args.device,
+            seed=args.seed,
+            lr=args.lr,
+            rollout_temperature=args.rollout_temperature,
+            clip_ratio=args.clip_ratio,
+            target_kl=args.target_kl,
+            anchor_kl_weight=args.anchor_kl_weight,
+            entropy_weight=args.entropy_weight,
+            promotion_z=args.promotion_z,
+            promotion_margin=args.promotion_margin,
+        )
+    )
+    print(
+        f"league done: {result['promotions']} promotion(s), "
+        f"champion={result['champion']}"
+    )
+    return 0
+
+
+def _cmd_duel(args: argparse.Namespace) -> int:
+    from .selfplay import duel
+
+    result = duel(
+        challenger_weights=args.challenger,
+        champion_weights=args.champion,
+        games=args.games,
+        seed=args.seed,
+        device=args.device,
+        challenger_policy=args.challenger_policy,
+        champion_policy=args.champion_policy,
+        log_dir=args.log_dir,
+    )
+    standard_error = (
+        "n/a" if result.standard_error is None else f"{result.standard_error:.3f}"
+    )
+    print(
+        f"challenger rankings {result.rankings} "
+        f"avg_rank={result.avg_rank:.4f} avg_pt={result.avg_pt:.2f} "
+        f"se={standard_error} games={result.games}"
+    )
     return 0
 
 
@@ -525,7 +673,9 @@ def _build_parser() -> argparse.ArgumentParser:
     replay_cmd = subparsers.add_parser("replay")
     replay_cmd.add_argument("run_dir")
     replay_cmd.add_argument("--game")
-    replay_cmd.add_argument("--out", help="write the bundle as JSON instead of serving it")
+    replay_cmd.add_argument(
+        "--out", help="write the bundle as JSON instead of serving it"
+    )
     replay_cmd.add_argument("--host", default="127.0.0.1")
     replay_cmd.add_argument("--port", type=int, default=8642)
     replay_cmd.add_argument("--no-open", action="store_true")
@@ -574,6 +724,119 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     positions_cmd.set_defaults(func=_cmd_positions)
 
+    selfplay_cmd = subparsers.add_parser(
+        "selfplay", help="generate Mortal self-play logs for training"
+    )
+    selfplay_cmd.add_argument("--weights", default="weights/mortal.pth")
+    selfplay_cmd.add_argument("--out", default="training/selfplay")
+    selfplay_cmd.add_argument("--games", type=_positive_int, default=256)
+    selfplay_cmd.add_argument("--seed", type=_u64, default=10000)
+    selfplay_cmd.add_argument("--batch-games", type=_positive_int, default=32)
+    selfplay_cmd.add_argument("--device", default="auto")
+    selfplay_cmd.add_argument("--epsilon", type=float, default=0.0)
+    selfplay_cmd.add_argument("--temp", type=float, default=0.2)
+    selfplay_cmd.add_argument(
+        "--policy",
+        action="store_true",
+        help="play with the checkpoint policy head instead of Q-argmax",
+    )
+    selfplay_cmd.set_defaults(func=_cmd_selfplay)
+
+    train_cmd = subparsers.add_parser(
+        "train", help="train a policy/value reviewer from mjai logs"
+    )
+    train_cmd.add_argument("--logs", default="training/selfplay")
+    train_cmd.add_argument("--init", default="weights/mortal.pth")
+    train_cmd.add_argument("--out", default="weights/reviewer.pth")
+    train_cmd.add_argument("--steps", type=_positive_int, default=4000)
+    train_cmd.add_argument("--batch-size", type=_positive_int, default=256)
+    train_cmd.add_argument("--device", default="auto")
+    train_cmd.add_argument("--lr", type=float, default=3e-4)
+    train_cmd.add_argument(
+        "--unfreeze-encoder",
+        action="store_true",
+        help="finetune Mortal's ResNet (off by default; easy to wreck Q)",
+    )
+    train_cmd.add_argument("--file-batch-size", type=_positive_int, default=4)
+    train_cmd.add_argument("--teacher-temperature", type=float, default=0.1)
+    train_cmd.add_argument("--validation-ratio", type=float, default=0.1)
+    train_cmd.add_argument("--validation-batches", type=_positive_int, default=20)
+    train_cmd.add_argument("--data-provenance")
+    train_cmd.add_argument("--data-sha256")
+    train_cmd.set_defaults(func=_cmd_train)
+
+    policy_rl_cmd = subparsers.add_parser(
+        "policy-rl", help="update a policy head from its stochastic self-play logs"
+    )
+    policy_rl_cmd.add_argument("--logs", required=True)
+    policy_rl_cmd.add_argument("--init", required=True)
+    policy_rl_cmd.add_argument("--out", required=True)
+    policy_rl_cmd.add_argument("--anchor")
+    policy_rl_cmd.add_argument("--steps", type=_positive_int, default=128)
+    policy_rl_cmd.add_argument("--batch-size", type=_positive_int, default=512)
+    policy_rl_cmd.add_argument("--device", default="auto")
+    policy_rl_cmd.add_argument("--lr", type=float, default=1e-4)
+    policy_rl_cmd.add_argument("--clip-ratio", type=float, default=0.2)
+    policy_rl_cmd.add_argument("--target-kl", type=float, default=0.03)
+    policy_rl_cmd.add_argument("--anchor-kl-weight", type=float, default=0.02)
+    policy_rl_cmd.add_argument("--entropy-weight", type=float, default=0.001)
+    policy_rl_cmd.add_argument("--sampling-temperature", type=float, default=1.0)
+    policy_rl_cmd.add_argument("--file-batch-size", type=_positive_int, default=8)
+    policy_rl_cmd.add_argument(
+        "--duplicate-challenger-only",
+        action="store_true",
+        help="train only the challenger POV from OneVsThree a/b/c/d logs",
+    )
+    policy_rl_cmd.set_defaults(func=_cmd_policy_rl)
+
+    improve_cmd = subparsers.add_parser(
+        "improve",
+        help="iterate stochastic self-play, policy updates, and duplicate gating",
+    )
+    improve_cmd.add_argument("--init", required=True)
+    improve_cmd.add_argument("--out", required=True)
+    improve_cmd.add_argument("--control", default="weights/mortal.pth")
+    improve_cmd.add_argument(
+        "--no-control", action="store_const", dest="control", const=None
+    )
+    improve_cmd.add_argument("--rounds", type=_positive_int, default=4)
+    improve_cmd.add_argument("--rollout-games", type=_positive_int, default=256)
+    improve_cmd.add_argument("--updates", type=_positive_int, default=128)
+    improve_cmd.add_argument("--batch-size", type=_positive_int, default=512)
+    improve_cmd.add_argument("--duel-games", type=_positive_int, default=512)
+    improve_cmd.add_argument("--device", default="auto")
+    improve_cmd.add_argument("--seed", type=_u64, default=20270000)
+    improve_cmd.add_argument("--lr", type=float, default=1e-4)
+    improve_cmd.add_argument("--rollout-temperature", type=float, default=1.0)
+    improve_cmd.add_argument("--clip-ratio", type=float, default=0.2)
+    improve_cmd.add_argument("--target-kl", type=float, default=0.03)
+    improve_cmd.add_argument("--anchor-kl-weight", type=float, default=0.02)
+    improve_cmd.add_argument("--entropy-weight", type=float, default=0.001)
+    improve_cmd.add_argument("--promotion-z", type=float, default=1.0)
+    improve_cmd.add_argument("--promotion-margin", type=float, default=0.0)
+    improve_cmd.set_defaults(func=_cmd_improve)
+
+    duel_cmd = subparsers.add_parser(
+        "duel", help="1-vs-3 duplicate match between two checkpoints"
+    )
+    duel_cmd.add_argument("--challenger", required=True)
+    duel_cmd.add_argument("--champion", default="weights/mortal.pth")
+    duel_cmd.add_argument("--games", type=_positive_int, default=64)
+    duel_cmd.add_argument("--seed", type=_u64, default=20000)
+    duel_cmd.add_argument("--device", default="auto")
+    duel_cmd.add_argument(
+        "--challenger-policy",
+        action="store_true",
+        help="challenger plays with its policy head",
+    )
+    duel_cmd.add_argument(
+        "--champion-policy",
+        action="store_true",
+        help="champion plays with its policy head",
+    )
+    duel_cmd.add_argument("--log-dir")
+    duel_cmd.set_defaults(func=_cmd_duel)
+
     return parser
 
 
@@ -611,7 +874,9 @@ def _summary_by_seed(
 
 def _reconstruct_summary(events: list[dict[str, Any]], path: Path) -> GameSummary:
     seed = _seed_from_events_or_path(events, path)
-    start_game = next((event for event in events if event.get("type") == "start_game"), {})
+    start_game = next(
+        (event for event in events if event.get("type") == "start_game"), {}
+    )
     names = [str(name) for name in start_game.get("names") or []]
     if len(names) != 4:
         names = [f"P{seat}" for seat in range(4)]
@@ -639,8 +904,7 @@ def _reconstruct_summary(events: list[dict[str, Any]], path: Path) -> GameSummar
         deltas = event.get("deltas")
         if isinstance(deltas, list) and len(deltas) == 4:
             scores = [
-                score + int(delta)
-                for score, delta in zip(scores, deltas, strict=True)
+                score + int(delta) for score, delta in zip(scores, deltas, strict=True)
             ]
 
     if any(event.get("type") == "end_game" for event in events):
@@ -649,7 +913,9 @@ def _reconstruct_summary(events: list[dict[str, Any]], path: Path) -> GameSummar
             leader = min(range(4), key=lambda seat: (-scores[seat], seat))
             scores[leader] += outstanding_kyotaku
 
-    return GameSummary(seed=seed, names=names, scores=scores, placements=_placements(names, scores))
+    return GameSummary(
+        seed=seed, names=names, scores=scores, placements=_placements(names, scores)
+    )
 
 
 def _placements(names: Sequence[str], scores: Sequence[int]) -> dict[str, int]:
@@ -761,7 +1027,16 @@ def build_replay_bundle(run_dir: Path, game: str | None = None) -> dict[str, Any
 
 def _print_summary(summary: dict[str, Any]) -> None:
     engines = list(summary.get("leaderboard") or [])
-    headers = ["engine", "games", "place", "score", "rating", "match", "fallbacks", "cost"]
+    headers = [
+        "engine",
+        "games",
+        "place",
+        "score",
+        "rating",
+        "match",
+        "fallbacks",
+        "cost",
+    ]
     rows = []
     for engine in engines:
         fallback_rate = engine.get("fallback_rate")
@@ -792,7 +1067,9 @@ def _print_table(headers: list[str], rows: list[list[str]]) -> None:
         else len(headers[index])
         for index in range(len(headers))
     ]
-    print("  ".join(header.ljust(widths[index]) for index, header in enumerate(headers)))
+    print(
+        "  ".join(header.ljust(widths[index]) for index, header in enumerate(headers))
+    )
     for row in rows:
         print("  ".join(cell.ljust(widths[index]) for index, cell in enumerate(row)))
 
@@ -831,8 +1108,12 @@ def _print_leaderboard(board: dict[str, Any]) -> None:
                 f"{float(engine.get('avg_placement') or 0.0):.2f}",
                 "/".join(str(count) for count in engine.get("placement_counts") or []),
                 f"{float(engine.get('avg_score') or 0.0):.0f}",
-                f"{float(engine.get('mean_rating') or 0.0) * 100:.2f}" if reviewed else "n/a",
-                f"{float(engine.get('match_rate') or 0.0) * 100:.1f}%" if reviewed else "n/a",
+                f"{float(engine.get('mean_rating') or 0.0) * 100:.2f}"
+                if reviewed
+                else "n/a",
+                f"{float(engine.get('match_rate') or 0.0) * 100:.1f}%"
+                if reviewed
+                else "n/a",
                 fallbacks,
                 _cost(engine.get("cost")),
             ]

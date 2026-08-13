@@ -26,7 +26,10 @@ class SeatState(vf.State):
     waits: str = ""
     simulate: dict[str, str] = {}
     notes: list[str] = []
+    kyoku_id: tuple[str, int, int] | None = None
     budget: int | None = None
+    refused_tool_calls: int = 0
+    fallback_choice: int = 0
     """Tool calls left in the current decision, or None for no cap. The env republishes
     it at every decision; each call spends one. Without it a seat that keeps querying
     resends a conversation that grows with every turn, which costs quadratically and
@@ -60,6 +63,7 @@ class SeatToolset(vf.Toolset[vf.ToolsetConfig, SeatState]):
         if budget is None:
             return None
         if budget <= 0:
+            self.state.refused_tool_calls += 1
             return BUDGET_SPENT
         self.state.budget = budget - 1
         return None

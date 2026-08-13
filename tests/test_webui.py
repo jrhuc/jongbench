@@ -3,11 +3,11 @@ from __future__ import annotations
 import http.client
 import io
 import json
-from pathlib import Path
 import sys
 import tempfile
 import threading
 import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -76,6 +76,7 @@ def test_terminal_statuses_and_transition_history_are_stable() -> None:
 
 
 def test_frame_retention_is_bounded() -> None:
+    assert webui._MAX_SESSION_FRAMES >= 1800
     session = _session()
     for seq in range(webui._MAX_SESSION_FRAMES + 10):
         session.frames.append({"seq": seq, "event": {}, "snapshot": {}})
@@ -101,6 +102,11 @@ def test_terminal_sse_late_join_sends_frames_then_current_status() -> None:
         for line in body.splitlines()
         if line.startswith("event: ")
     ] == ["frame", "status"]
+    assert [
+        line.removeprefix("id: ")
+        for line in body.splitlines()
+        if line.startswith("id: ")
+    ] == ["1"]
     status_payload = json.loads(
         next(
             line.removeprefix("data: ")
@@ -111,30 +117,30 @@ def test_terminal_sse_late_join_sends_frames_then_current_status() -> None:
     assert status_payload["status"] == "done"
 
 
-def test_evaluation_stops_at_player_boundary_after_abort() -> None:
+def test_evaluation_stops_during_batched_review_after_abort() -> None:
     with tempfile.TemporaryDirectory(prefix="jongbench-eval-cancel-") as tempdir:
         run_dir = Path(tempdir)
         (run_dir / "logs").mkdir()
         (run_dir / "review").mkdir()
         (run_dir / "logs" / "game.json").write_text("{}\n", encoding="utf-8")
         cancel = threading.Event()
-        reviewed: list[int] = []
+        calls = 0
         originals = (
             evaluate.load_mjai_log,
             evaluate.load_engine,
-            evaluate.review_player,
+            evaluate.review_game,
         )
 
-        def review_player(*args: Any, **kwargs: Any) -> dict[str, Any]:
-            del kwargs
-            seat = int(args[1])
-            reviewed.append(seat)
+        def review_game(*args: Any, check_cancelled, **kwargs: Any):
+            del args, kwargs
+            nonlocal calls
+            calls += 1
             cancel.set()
-            return {"entries": [], "total_reviewed": 0, "total_matches": 0}
+            check_cancelled()
 
         evaluate.load_mjai_log = lambda path: []
         evaluate.load_engine = lambda weights: object()
-        evaluate.review_player = review_player
+        evaluate.review_game = review_game
         try:
             try:
                 webui._evaluate_run(
@@ -156,9 +162,9 @@ def test_evaluation_stops_at_player_boundary_after_abort() -> None:
             (
                 evaluate.load_mjai_log,
                 evaluate.load_engine,
-                evaluate.review_player,
+                evaluate.review_game,
             ) = originals
-        assert reviewed == [0]
+        assert calls == 1
 
     successful = _session()
     successful.set_status("running")
@@ -184,9 +190,24 @@ def test_pending_option_metadata() -> None:
         "label": "discard 0m (red)",
         "tile": "5mr",
     }
-    assert webui._pending_option(0, 2, {"label": "tsumo (win)", "event": {"type": "hora", "target": 2}})["action"] == "tsumo"
-    assert webui._pending_option(1, 2, {"label": "ron (win)", "event": {"type": "hora", "target": 1}})["action"] == "ron"
-    assert webui._pending_option(2, 2, {"label": "pass", "event": {"type": "none"}})["action"] == "pass"
+    assert (
+        webui._pending_option(
+            0, 2, {"label": "tsumo (win)", "event": {"type": "hora", "target": 2}}
+        )["action"]
+        == "tsumo"
+    )
+    assert (
+        webui._pending_option(
+            1, 2, {"label": "ron (win)", "event": {"type": "hora", "target": 1}}
+        )["action"]
+        == "ron"
+    )
+    assert (
+        webui._pending_option(2, 2, {"label": "pass", "event": {"type": "none"}})[
+            "action"
+        ]
+        == "pass"
+    )
 
 
 def test_engine_names_carry_spec_reasoning_and_dedupe() -> None:
@@ -212,9 +233,7 @@ def test_error_diagnostic_file() -> None:
             raise RuntimeError("deliberate failure")
         except RuntimeError as exc:
             webui._write_run_error(Path(tempdir), "test", exc)
-        payload = json.loads(
-            (Path(tempdir) / "error.json").read_text(encoding="utf-8")
-        )
+        payload = json.loads((Path(tempdir) / "error.json").read_text(encoding="utf-8"))
         assert payload["stage"] == "test"
         assert payload["type"] == "RuntimeError"
         assert payload["message"] == "deliberate failure"
@@ -232,7 +251,9 @@ class _Server:
         self.httpd.shutdown()
         self.httpd.server_close()
 
-    def request_text(self, method: str, path: str, body: dict[str, Any] | None = None) -> tuple[int, str]:
+    def request_text(
+        self, method: str, path: str, body: dict[str, Any] | None = None
+    ) -> tuple[int, str]:
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
         headers = {}
         raw: bytes | None = None
@@ -246,7 +267,9 @@ class _Server:
         conn.close()
         return status, data
 
-    def request_json(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
+    def request_json(
+        self, method: str, path: str, body: dict[str, Any] | None = None
+    ) -> Any:
         status, text = self.request_text(method, path, body)
         data = json.loads(text or "null")
         if not 200 <= status < 300:
@@ -264,7 +287,9 @@ class _Server:
             time.sleep(0.2)
         raise AssertionError("run timed out")
 
-    def collect_frames(self, since: int, min_frames: int, timeout: float) -> list[dict[str, Any]]:
+    def collect_frames(
+        self, since: int, min_frames: int, timeout: float
+    ) -> list[dict[str, Any]]:
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=timeout)
         conn.request("GET", f"/api/events?since={since}")
         response = conn.getresponse()

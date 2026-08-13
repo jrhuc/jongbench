@@ -255,7 +255,7 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
   `GET /api/review` once evaluation finishes.
 - Aborting sets the session's cancel_event (checked by every engine around react_batch,
   raising engines.GameAborted) and atomically unblocks a waiting WebHumanIO.
-- Frames retention is 256 immutable frames; SSE backlog reads copy only frame references.
+- Frame retention is 4,096 immutable frames; SSE backlog reads copy only frame references.
 - `start_session()` + `serve_session()` are the testable seams; `run_watch_server()`
   wires them, opens the browser, and blocks until the game ends.
 
@@ -314,13 +314,15 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
 ### environments/riichi_hanchan_v1/
 - A verifiers multi-agent `Env`: one episode is one hanchan, each seat a live interaction
   (`seat0`..`seat3` as `AgentConfig` fields), refereed by the vendored arena.
-- One interaction per seat PER KYOKU, not per episode: the harness replays a trace's whole
-  branch on every model call, and the engine reopens each kyoku with a full board render
-  anyway, so a single episode-long conversation would drag dead kyoku through every later
-  request (~3x the input tokens, measured). The bridge marks kyoku-opening turns
-  (`ask(prompt, fresh)`); the env closes the old interaction and opens the next, and after
-  the game records the seat's final placement on every kyoku trace — a seat's mean reward
-  IS its placement reward, and each trace stays a valid training sample.
+- Normally one interaction per seat PER KYOKU, not per episode: the harness replays a
+  trace's whole branch on every model call, and the engine reopens each kyoku with a
+  full board render anyway, so a single episode-long conversation would drag dead
+  kyoku through every later request (~3x the input tokens, measured). The bridge marks
+  kyoku-opening turns (`ask(prompt, fresh)`); the env closes the old interaction and
+  opens the next. A seat that repeatedly calls tools after exhausting its per-decision
+  budget is stopped, assigned the safe fallback, and reopened at the next decision;
+  that pathological kyoku has two traces instead of aborting the table. After the game,
+  every trace receives the seat's final placement.
 - The arena is a synchronous Rust loop and `Env.run` is async, so the arena runs in a
   worker thread (`asyncio.to_thread`) and each decision is marshalled back onto the loop
   with `run_coroutine_threadsafe`, blocking that seat until the model answers. Same shape
@@ -343,12 +345,13 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
   notes back after each turn. Same information boundary as the hints path — rule-derived
   only, nothing from Mortal. See docs/tool-seats-scoping.md for what this changes.
 - Crash recovery: with `log_dir` set, every decision appends to the episode's
-  `journal.jsonl` (header = seed + models + prompt-shaping config). The arena is
-  deterministic given seed + actions, so a rerun replays complete hands straight from
-  the journal (`LLMEngine` consumes the records before calling the model, verifying
-  each recorded menu against the live one) and goes live from the first unrecorded
-  hand — only the in-flight hand is repaid. Auto-passed reactions leave no record, so
-  during replay any declinable menu with no matching next record is passed again.
+  `journal.jsonl`. The header binds seed, models, rotation, prompt-shaping config, tool
+  budget, and Mortal weights path. Resume atomically compacts the journal to complete
+  hands before replay; a mismatched header fails without overwriting the old journal.
+  The arena is deterministic given seed + actions, so a rerun replays those hands
+  without model calls (`LLMEngine` verifies each recorded menu against the live one)
+  and goes live from the first unrecorded hand. Auto-passed reactions leave no record,
+  so during replay a declinable menu with no matching next record is passed again.
   Composes with verifiers `--resume`, which skips already-accepted episodes.
 - Expensive by nature (~1,000 model calls per episode) and every seat sees a board the
   other three steered. riichi-decision-v1 is the cheap, separable comparison.

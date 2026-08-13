@@ -4,6 +4,7 @@ import numpy as np
 from torch.distributions import Normal, Categorical
 from typing import *
 
+
 class MortalEngine:
     def __init__(
         self,
@@ -11,21 +12,31 @@ class MortalEngine:
         dqn,
         is_oracle,
         version,
-        device = None,
-        stochastic_latent = False,
-        enable_amp = False,
-        enable_quick_eval = True,
-        enable_rule_based_agari_guard = False,
-        name = 'NoName',
-        boltzmann_epsilon = 0,
-        boltzmann_temp = 1,
-        top_p = 1,
+        device=None,
+        stochastic_latent=False,
+        enable_amp=False,
+        enable_quick_eval=True,
+        enable_rule_based_agari_guard=False,
+        name="NoName",
+        boltzmann_epsilon=0,
+        boltzmann_temp=1,
+        top_p=1,
+        policy=None,
+        aux_net=None,
+        confidence=None,
+        use_policy=False,
     ):
-        self.engine_type = 'mortal'
-        self.device = device or torch.device('cpu')
+        self.engine_type = "mortal"
+        self.device = device or torch.device("cpu")
         assert isinstance(self.device, torch.device)
         self.brain = brain.to(self.device).eval()
         self.dqn = dqn.to(self.device).eval()
+        self.policy = policy.to(self.device).eval() if policy is not None else None
+        self.aux_net = aux_net.to(self.device).eval() if aux_net is not None else None
+        self.confidence = (
+            confidence.to(self.device).eval() if confidence is not None else None
+        )
+        self.use_policy = bool(use_policy) and self.policy is not None
         self.is_oracle = is_oracle
         self.version = version
         self.stochastic_latent = stochastic_latent
@@ -47,13 +58,15 @@ class MortalEngine:
             ):
                 return self._react_batch(obs, masks, invisible_obs)
         except Exception as ex:
-            raise Exception(f'{ex}\n{traceback.format_exc()}')
+            raise Exception(f"{ex}\n{traceback.format_exc()}")
 
     def _react_batch(self, obs, masks, invisible_obs):
         obs = torch.as_tensor(np.stack(obs, axis=0), device=self.device)
         masks = torch.as_tensor(np.stack(masks, axis=0), device=self.device)
         if invisible_obs is not None:
-            invisible_obs = torch.as_tensor(np.stack(invisible_obs, axis=0), device=self.device)
+            invisible_obs = torch.as_tensor(
+                np.stack(invisible_obs, axis=0), device=self.device
+            )
         batch_size = obs.shape[0]
 
         match self.version:
@@ -64,20 +77,40 @@ class MortalEngine:
                 else:
                     latent = mu
                 q_out = self.dqn(latent, masks)
+                play_source = latent
             case 2 | 3 | 4:
                 phi = self.brain(obs)
                 q_out = self.dqn(phi, masks)
+                play_source = phi
+
+        play_logits = (
+            self.policy(play_source, masks)
+            if self.use_policy and self.version != 1
+            else q_out
+        )
 
         if self.boltzmann_epsilon > 0:
-            is_greedy = torch.full((batch_size,), 1-self.boltzmann_epsilon, device=self.device).bernoulli().to(torch.bool)
-            logits = (q_out / self.boltzmann_temp).masked_fill(~masks, -torch.inf)
+            is_greedy = (
+                torch.full(
+                    (batch_size,), 1 - self.boltzmann_epsilon, device=self.device
+                )
+                .bernoulli()
+                .to(torch.bool)
+            )
+            logits = (play_logits / self.boltzmann_temp).masked_fill(~masks, -torch.inf)
             sampled = sample_top_p(logits, self.top_p)
-            actions = torch.where(is_greedy, q_out.argmax(-1), sampled)
+            actions = torch.where(is_greedy, play_logits.argmax(-1), sampled)
         else:
             is_greedy = torch.ones(batch_size, dtype=torch.bool, device=self.device)
-            actions = q_out.argmax(-1)
+            actions = play_logits.argmax(-1)
 
-        return actions.tolist(), q_out.tolist(), masks.tolist(), is_greedy.tolist()
+        return (
+            actions.tolist(),
+            play_logits.tolist(),
+            masks.tolist(),
+            is_greedy.tolist(),
+        )
+
 
 def sample_top_p(logits, p):
     if p >= 1:
@@ -88,6 +121,6 @@ def sample_top_p(logits, p):
     probs_sort, probs_idx = probs.sort(-1, descending=True)
     probs_sum = probs_sort.cumsum(-1)
     mask = probs_sum - probs_sort > p
-    probs_sort[mask] = 0.
+    probs_sort[mask] = 0.0
     sampled = probs_idx.gather(-1, probs_sort.multinomial(1)).squeeze(-1)
     return sampled

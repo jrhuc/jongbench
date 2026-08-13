@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from collections import deque
-from copy import deepcopy
 import re
 import sys
 import threading
 import time
+from collections import deque
+from copy import deepcopy
 from typing import Any, Callable
 
 from .tiles import deaka, fmt_tile, sort_tiles
-
 
 _SEAT_WINDS = ("E", "S", "W", "N")
 _ROUND_NAMES = {"E": "East", "S": "South", "W": "West", "N": "North"}
@@ -48,7 +47,9 @@ class TableState:
             raise ValueError(f"expected 4 scores, got {len(scores)}")
         self.scores = [int(score) for score in scores]
 
-    def finish(self, names: list[str] | None = None, scores: list[int] | None = None) -> None:
+    def finish(
+        self, names: list[str] | None = None, scores: list[int] | None = None
+    ) -> None:
         if names is not None:
             if len(names) != 4:
                 raise ValueError(f"expected 4 names, got {len(names)}")
@@ -96,9 +97,7 @@ class TableState:
             self._apply_ryukyoku(event)
         elif event_type == "end_game":
             if self.kyotaku:
-                leader = min(
-                    range(4), key=lambda seat: (-self.scores[seat], seat)
-                )
+                leader = min(range(4), key=lambda seat: (-self.scores[seat], seat))
                 self.scores[leader] += self.kyotaku * 1000
                 self.kyotaku = 0
             self.done = True
@@ -125,11 +124,6 @@ class TableState:
         return {
             "names": list(self.names),
             "scores": list(self.scores),
-            "hands": [list(hand) for hand in self.hands],
-            "melds": deepcopy(self.melds),
-            "discards": deepcopy(self.discards),
-            "riichi_declared": list(self.riichi_declared),
-            "riichi_accepted": list(self.riichi_accepted),
             "seats": seats,
             "bakaze": self.bakaze,
             "kyoku": self.kyoku,
@@ -142,7 +136,9 @@ class TableState:
             "kyoku_index": self.kyoku_index,
             "done": self.done,
             "final_names": None if self.final_names is None else list(self.final_names),
-            "final_scores": None if self.final_scores is None else list(self.final_scores),
+            "final_scores": None
+            if self.final_scores is None
+            else list(self.final_scores),
         }
 
     def seat_wind(self, seat: int) -> str:
@@ -168,7 +164,9 @@ class TableState:
             self.set_scores(scores)
         tehais = event.get("tehais") or [[], [], [], []]
         self.hands = [
-            sort_tiles([str(tile) for tile in tehais[seat]]) if seat < len(tehais) else []
+            sort_tiles([str(tile) for tile in tehais[seat]])
+            if seat < len(tehais)
+            else []
             for seat in range(4)
         ]
         self.hand = self.hands
@@ -230,9 +228,7 @@ class TableState:
         self._mark_called(target)
         kind = str(event.get("type"))
         tiles = [*consumed, str(pai)]
-        self.melds[actor].append(
-            {"kind": kind, "tiles": tiles, "from_seat": target}
-        )
+        self.melds[actor].append({"kind": kind, "tiles": tiles, "from_seat": target})
         self._tick(f"P{actor} called {kind} on P{target}'s {fmt_tile(str(pai))}")
 
     def _apply_ankan(self, event: dict[str, Any]) -> None:
@@ -290,7 +286,10 @@ class TableState:
     def _apply_hora(self, event: dict[str, Any]) -> None:
         deltas = event.get("deltas")
         if isinstance(deltas, list) and len(deltas) == 4:
-            self.scores = [score + int(delta) for score, delta in zip(self.scores, deltas, strict=True)]
+            self.scores = [
+                score + int(delta)
+                for score, delta in zip(self.scores, deltas, strict=True)
+            ]
         self.kyotaku = 0
         actor = _actor(event)
         target = _target(event)
@@ -313,7 +312,10 @@ class TableState:
     def _apply_ryukyoku(self, event: dict[str, Any]) -> None:
         deltas = event.get("deltas")
         if isinstance(deltas, list) and len(deltas) == 4:
-            self.scores = [score + int(delta) for score, delta in zip(self.scores, deltas, strict=True)]
+            self.scores = [
+                score + int(delta)
+                for score, delta in zip(self.scores, deltas, strict=True)
+            ]
         self._tick("Hand ended in draw")
 
     def _find_pon_meld(self, actor: int, tile: str) -> dict[str, Any] | None:
@@ -385,9 +387,12 @@ class Spectator:
                     time.sleep(delay_seconds)
             self._applied_len = len(events)
 
-    def events_since(self, seq: int) -> list[dict[str, Any]]:
+    def events_since(
+        self, seq: int, *, copy_events: bool = True
+    ) -> list[dict[str, Any]]:
         with self._lock:
-            return [deepcopy(item) for item in self._feed if int(item["seq"]) > seq]
+            items = [item for item in self._feed if int(item["seq"]) > seq]
+            return deepcopy(items) if copy_events else items
 
     def finish(
         self,
@@ -532,7 +537,9 @@ def _remove_tile(hand: list[str], tile: str) -> None:
 
 
 def _seat_title(table: TableState, seat: int) -> str:
-    tag = " RIICHI" if table.riichi_declared[seat] or table.riichi_accepted[seat] else ""
+    tag = (
+        " RIICHI" if table.riichi_declared[seat] or table.riichi_accepted[seat] else ""
+    )
     return f"P{seat} {table.names[seat]}{tag}"
 
 
@@ -583,7 +590,11 @@ def _discard_lines(
     visible = discards[-max_rows * 6 :]
     rows = []
     for start in range(0, len(visible), 6):
-        rows.append(" ".join(_discard_cell(discard, glyphs) for discard in visible[start : start + 6]))
+        rows.append(
+            " ".join(
+                _discard_cell(discard, glyphs) for discard in visible[start : start + 6]
+            )
+        )
     return rows
 
 
@@ -628,7 +639,11 @@ def _put_center_box(
         _box_line(_round_label(table), inner),
         _box_line(f"honba {table.honba}  kyotaku {table.kyotaku}", inner),
         _box_line(f"tiles left {table.tiles_left}", inner),
-        _box_line("dora " + " ".join(_tile_cell(tile, glyphs) for tile in table.dora_indicators), inner),
+        _box_line(
+            "dora "
+            + " ".join(_tile_cell(tile, glyphs) for tile in table.dora_indicators),
+            inner,
+        ),
         _box_line(_score_line(table, (pov + 2) % 4), inner),
         _box_line(
             f"{_score_line(table, (pov + 3) % 4):<17}"
@@ -667,7 +682,11 @@ def _format_yaku(value: Any) -> str:
         if not isinstance(item, (list, tuple)) or len(item) != 2:
             continue
         name, han = item
-        if not isinstance(name, str) or not isinstance(han, int) or isinstance(han, bool):
+        if (
+            not isinstance(name, str)
+            or not isinstance(han, int)
+            or isinstance(han, bool)
+        ):
             continue
         labels.append(f"{han} dora" if name == "dora" else name)
     return ", ".join(labels)

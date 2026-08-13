@@ -26,11 +26,11 @@ from datetime import datetime, timezone
 from itertools import count
 from pathlib import Path
 
+import verifiers.v1 as vf
+
 from jongbench import arena, bridge, engines, prompts, providers
 from jongbench.artifacts import decision_filename
 from riichi_hanchan_v1.tools import SeatState, SeatToolset
-
-import verifiers.v1 as vf
 
 SEATS = ("seat0", "seat1", "seat2", "seat3")
 
@@ -92,6 +92,10 @@ class SeatToolsTask(vf.Task):
     def toolsets(cls, config) -> list[vf.Toolset]:
         return [SeatToolset(vf.ToolsetConfig(colocated=True))]
 
+    @vf.stop
+    async def tool_budget_exhausted(self, trace: vf.Trace) -> bool:
+        return getattr(trace.state, "refused_tool_calls", 0) >= 2
+
 
 class RiichiHanchanConfig(vf.TasksetConfig):
     pass
@@ -142,10 +146,20 @@ class _Journal:
     so a rerun replays the journal's complete hands without a single model call and
     goes live from the first unrecorded hand."""
 
-    def __init__(self, path: Path, header: dict) -> None:
+    def __init__(
+        self, path: Path, header: dict, records: list[dict] | None = None
+    ) -> None:
         self._lock = threading.Lock()
-        self._handle = path.open("w", encoding="utf-8")
-        self._write(header)
+        temporary = path.with_name(f".{path.name}.tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
+            for row in [header, *(records or [])]:
+                handle.write(
+                    json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
+                )
+            if records:
+                handle.write('{"checkpoint":true}\n')
+        temporary.replace(path)
+        self._handle = path.open("a", encoding="utf-8")
 
     def append(self, seat: str, record: dict) -> None:
         self._write({"seat": seat, **record})
@@ -168,23 +182,24 @@ def _journal_header(
     seed: int, config: RiichiHanchanEnvConfig, models: list[str], rotation: int
 ) -> dict:
     return {
-        "journal": 1,
+        "journal": 2,
         "seed": seed,
         "models": list(models),
         "rotation": rotation,
         "state_hints": bool(config.state_hints),
         "auto_pass_reactions": bool(config.auto_pass_reactions),
         "tools": bool(config.tools),
+        "max_tool_calls": int(config.max_tool_calls),
+        "weights": str(config.weights),
     }
 
 
 def _read_journal(path: Path, header: dict) -> list[dict]:
-    """The journal's replayable records: nothing on a missing file or a header that
-    names a different game, and - unless the episode finished - nothing from the last
-    recorded hand, which may have been cut mid-write and is re-run live instead."""
+    """Return replayable records while preserving the last known-complete prefix."""
     if not path.exists():
         return []
     finished = False
+    committed = 0
     records: list[dict] = []
     with path.open(encoding="utf-8") as handle:
         for index, line in enumerate(handle):
@@ -194,26 +209,30 @@ def _read_journal(path: Path, header: dict) -> list[dict]:
                 break
             if index == 0:
                 if row != header:
-                    return []
+                    raise ValueError(
+                        f"{path} belongs to a different hanchan configuration"
+                    )
                 continue
+            if not isinstance(row, dict):
+                break
             if row.get("end") is True:
                 finished = True
                 break
-            if not isinstance(row, dict) or not {
-                "seat",
-                "menu",
-                "choice",
-                "kyoku",
-                "honba",
-            } <= row.keys():
+            if row.get("checkpoint") is True:
+                committed = len(records)
+                continue
+            if not {"seat", "menu", "choice", "kyoku", "honba"} <= row.keys():
                 break
             records.append(row)
-    if not records:
-        return []
-    if not finished:
-        last = max((row["kyoku"], row["honba"]) for row in records)
-        records = [row for row in records if (row["kyoku"], row["honba"]) < last]
-    return records
+    if finished or not records:
+        return records
+    tail = records[committed:]
+    if not tail:
+        return records
+    last = max((row["kyoku"], row["honba"]) for row in tail)
+    return records[:committed] + [
+        row for row in tail if (row["kyoku"], row["honba"]) < last
+    ]
 
 
 class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
@@ -240,6 +259,9 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
         open_cms: list = [None, None, None, None]
         current: list = [None, None, None, None]
         seat_traces: list[list] = [[] for _ in SEATS]
+        trace_kyokus: list[list[int]] = [[] for _ in SEATS]
+        current_kyokus = [0, 0, 0, 0]
+        next_kyokus = [0, 0, 0, 0]
         seat_calls = [0, 0, 0, 0]
         tools = bool(self.config.tools)
         seat_notes: list[list[str]] = [[] for _ in SEATS]
@@ -247,6 +269,11 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
         tool_turns = [0, 0, 0, 0]
         tool_budget = self.config.max_tool_calls or None
         budget_spent = [0, 0, 0, 0]
+        decision_snapshots: list[dict | None] = [None, None, None, None]
+        active_kyoku_ids: list[tuple[str, int, int] | None] = [None] * len(SEATS)
+        remaining_budgets = [tool_budget, tool_budget, tool_budget, tool_budget]
+        remaining_refusals = [0, 0, 0, 0]
+        exhausted_budgets = [False, False, False, False]
         system_prompt = prompts.SYSTEM
         if tools:
             system_prompt += prompts.TOOLS_APPENDIX
@@ -258,7 +285,7 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
             return task_cls(
                 vf.TaskData(
                     idx=task.data.idx,
-                    name=f"{SEATS[index]}-k{hands_replayed + len(seat_traces[index])}",
+                    name=f"{SEATS[index]}-k{current_kyokus[index]}",
                     prompt=None,  # each kyoku converses through its interaction
                     system_prompt=system_prompt,
                 )
@@ -268,20 +295,35 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
             if open_cms[index] is None:
                 return
             seat_traces[index].append(current[index].trace)
+            trace_kyokus[index].append(current_kyokus[index])
             cm, open_cms[index], current[index] = open_cms[index], None, None
             await cm.__aexit__(None, None, None)
 
         async def _seat_turn(index: int, prompt: str, fresh: bool):
-            if fresh or current[index] is None:
+            snapshot = seats[index].decision_snapshot(0) or {} if tools else {}
+            if fresh:
                 await _close_current(index)
+                kyoku_id = snapshot.get("kyoku_id")
+                if not tools or kyoku_id != active_kyoku_ids[index]:
+                    current_kyokus[index] = next_kyokus[index]
+                    next_kyokus[index] += 1
+                active_kyoku_ids[index] = kyoku_id
+            if current[index] is None:
                 cm = seat_agents[index].interaction(_seat_task(index))
                 current[index] = await cm.__aenter__()
                 open_cms[index] = cm
                 seat_calls[index] = 0
             if tools:
-                snapshot = seats[index].decision_snapshot(0) or {}
+                if snapshot is not decision_snapshots[index]:
+                    decision_snapshots[index] = snapshot
+                    remaining_budgets[index] = tool_budget
+                    remaining_refusals[index] = 0
+                    exhausted_budgets[index] = False
                 current[index].trace.state = SeatState(
-                    **snapshot, notes=list(seat_notes[index]), budget=tool_budget
+                    **snapshot,
+                    notes=list(seat_notes[index]),
+                    budget=remaining_budgets[index],
+                    refused_tool_calls=remaining_refusals[index],
                 )
             segment = await current[index].turn(prompt)
             if tools:
@@ -289,15 +331,30 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
                 notes = getattr(state, "notes", None)
                 if notes is not None:
                     seat_notes[index] = list(notes)
-                budget_spent[index] += getattr(state, "budget", None) == 0
+                remaining_budgets[index] = getattr(state, "budget", None)
+                remaining_refusals[index] = getattr(state, "refused_tool_calls", 0)
+                if remaining_budgets[index] == 0 and not exhausted_budgets[index]:
+                    budget_spent[index] += 1
+                    exhausted_budgets[index] = True
                 called = _tools_called(segment)
                 seat_tools[index] += called
                 tool_turns[index] += bool(called)
             # The trace's calls accumulate over the whole kyoku, so a decision costs
             # only the ones this turn added.
-            trace_calls = current[index].trace.calls
-            calls, seat_calls[index] = trace_calls[seat_calls[index] :], len(trace_calls)
-            return segment, calls
+            trace = current[index].trace
+            trace_calls = trace.calls
+            calls, seat_calls[index] = (
+                trace_calls[seat_calls[index] :],
+                len(trace_calls),
+            )
+            forced_choice = (
+                getattr(trace.state, "fallback_choice", 0)
+                if getattr(trace, "stop_condition", None) == "tool_budget_exhausted"
+                else None
+            )
+            if forced_choice is not None:
+                await _close_current(index)
+            return segment, calls, forced_choice
 
         def ask_from(index: int):
             def ask(prompt: str, fresh: bool) -> providers.Completion:
@@ -306,13 +363,22 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
                 future = asyncio.run_coroutine_threadsafe(
                     _seat_turn(index, prompt, fresh), loop
                 )
-                segment, calls = future.result()
-                if segment.terminated:
+                segment, calls, forced_choice = future.result()
+                if segment.terminated and forced_choice is None:
                     raise engines.GameAborted(f"{SEATS[index]} ended its rollout")
+                text = (
+                    json.dumps({"choice": forced_choice})
+                    if forced_choice is not None
+                    else segment.last_reply
+                )
                 return providers.Completion(
-                    text=segment.last_reply,
+                    text=text,
                     reasoning=_segment_reasoning(segment),
                     usage=_usage_of(calls),
+                    fallback_reason=(
+                        "tool_budget_exhausted" if forced_choice is not None else None
+                    ),
+                    reset_conversation=forced_choice is not None,
                 )
 
             return ask
@@ -320,19 +386,30 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
         logs: list[list[dict]] = [[] for _ in SEATS]
         journal: _Journal | None = None
         replayed: dict[str, list[dict]] = {name: [] for name in SEATS}
+        replay_remaining = [0, 0, 0, 0]
         hands_replayed = 0
         if episode_dir is not None:
             header = _journal_header(seed, self.config, models, rotation)
-            past = _read_journal(episode_dir / "journal.jsonl", header)
+            journal_path = episode_dir / "journal.jsonl"
+            past = _read_journal(journal_path, header)
             hands_replayed = len({(row["kyoku"], row["honba"]) for row in past})
+            journal = _Journal(journal_path, header, past)
             for row in past:
-                replayed[row.pop("seat")].append(row)
-            journal = _Journal(episode_dir / "journal.jsonl", header)
+                seat = str(row["seat"])
+                index = SEATS.index(seat)
+                replayed[seat].append(
+                    {key: value for key, value in row.items() if key != "seat"}
+                )
+                replay_remaining[index] += 1
+        current_kyokus[:] = [hands_replayed] * len(SEATS)
+        next_kyokus[:] = [hands_replayed] * len(SEATS)
 
         def _sink_for(index: int):
             def sink(record: dict) -> None:
                 logs[index].append(record)
-                if journal is not None:
+                if replay_remaining[index]:
+                    replay_remaining[index] -= 1
+                elif journal is not None:
                     journal.append(SEATS[index], record)
 
             return sink
@@ -358,7 +435,9 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
         # Table position is list position, and it decides the winds. Rotating the list
         # while every engine keeps its agent name means the seat that answers, the
         # decision log it writes and the placement it is paid all still line up.
-        table = [seats[(position - rotation) % len(SEATS)] for position in range(len(SEATS))]
+        table = [
+            seats[(position - rotation) % len(SEATS)] for position in range(len(SEATS))
+        ]
 
         try:
             # One hanchan per episode: a single engine driving several games at once
@@ -389,7 +468,9 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
         scores = dict(zip(summary.names, summary.scores, strict=True))
         for index, name in enumerate(SEATS):
             placement = summary.placements[name]
-            for kyoku, trace in enumerate(seat_traces[index]):
+            for kyoku, trace in zip(
+                trace_kyokus[index], seat_traces[index], strict=True
+            ):
                 # 1st -> 1.0, 4th -> 0.0. Every kyoku trace carries the seat's final
                 # placement, so a seat's mean reward IS its placement reward.
                 trace.record_reward("placement", (4 - placement) / 3)
@@ -416,8 +497,8 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
                     "seed": seed,
                     "seat_order": list(summary.names),
                     "table_position": (index + rotation) % len(SEATS),
-                    "kyoku": hands_replayed + kyoku,
-                    "kyoku_count": hands_replayed + len(seat_traces[index]),
+                    "kyoku": kyoku,
+                    "kyoku_count": hands_replayed + len(set(trace_kyokus[index])),
                 }
                 if tools:
                     trace.info["hanchan"]["tools"] = dict(seat_tools[index])
@@ -451,11 +532,16 @@ def _write_episode_artifacts(
                 "games": 1,
                 "seed_start": [seed, 1],
                 "rotation": rotation,
-                "table": [SEATS[(position - rotation) % len(SEATS)] for position in range(len(SEATS))],
+                "table": [
+                    SEATS[(position - rotation) % len(SEATS)]
+                    for position in range(len(SEATS))
+                ],
                 # the effective value: tools mode replaces inline hints, so a run dir
                 # would otherwise claim hints the seats never saw.
                 "state_hints": bool(config.state_hints) and not config.tools,
                 "tools": bool(config.tools),
+                "max_tool_calls": int(config.max_tool_calls),
+                "weights": str(config.weights),
                 "final": {
                     "names": list(summary.names),
                     "scores": list(summary.scores),

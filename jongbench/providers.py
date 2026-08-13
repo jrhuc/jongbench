@@ -4,7 +4,6 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_ENV_KEY = "OPENROUTER_API_KEY"
 
@@ -43,6 +42,8 @@ class Completion:
     reasoning: str = ""
     usage: dict[str, float] = field(default_factory=dict)
     served_by: str | None = None
+    fallback_reason: str | None = None
+    reset_conversation: bool = False
 
 
 def parse_spec(s: str) -> ProviderSpec:

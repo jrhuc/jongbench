@@ -14,7 +14,6 @@ from typing import Any
 
 from . import actions, prompts, providers
 
-
 DecisionSink = list[dict[str, Any]] | Callable[[dict[str, Any]], None]
 
 
@@ -43,26 +42,30 @@ def _decision_coords(player_id: int, events: list[dict[str, Any]]) -> dict[str, 
     `tiles_left` counts down from 70 — each derived the same way `review_player` derives
     it, so the two sides join without a positional guess.
     """
-    kyoku = honba = 0
+    kyoku = honba = junme = 0
+    tiles_left = 70
     for event in events:
-        if event.get("type") == "start_kyoku":
-            kyoku = _BAKAZE_ORDER.get(str(event.get("bakaze")), 0) * 4 + int(
-                event.get("kyoku", 1)
-            ) - 1
+        event_type = event.get("type")
+        if event_type == "start_kyoku":
+            kyoku = (
+                _BAKAZE_ORDER.get(str(event.get("bakaze")), 0) * 4
+                + int(event.get("kyoku", 1))
+                - 1
+            )
             honba = int(event.get("honba", 0))
-            break
-    junme = sum(
-        1
-        for event in events
-        if event.get("actor") == player_id
-        and event.get("type") in {"tsumo", "chi", "pon"}
-    )
-    tiles_left = 70 - sum(1 for event in events if event.get("type") == "tsumo")
+            junme = 0
+            tiles_left = 70
+        elif event_type == "tsumo":
+            tiles_left -= 1
+            if event.get("actor") == player_id:
+                junme += 1
+        elif event_type in {"chi", "pon"} and event.get("actor") == player_id:
+            junme += 1
     return {"kyoku": kyoku, "honba": honba, "junme": junme, "tiles_left": tiles_left}
 
 
 def _kyoku_id(events: list[dict[str, Any]]) -> tuple[Any, ...] | None:
-    for event in events:
+    for event in reversed(events):
         if event.get("type") == "start_kyoku":
             return (event.get("bakaze"), event.get("kyoku"), event.get("honba"))
     return None
@@ -78,9 +81,16 @@ class ReplayDiverged(RuntimeError):
     to run it fresh."""
 
 
-def sanitize_events(events: list[dict[str, Any]], player_id: int) -> list[dict[str, Any]]:
-    sanitized = copy.deepcopy(events)
-    for event in sanitized:
+def sanitize_events(
+    events: list[dict[str, Any]], player_id: int
+) -> list[dict[str, Any]]:
+    return _sanitize_events_in_place(copy.deepcopy(events), player_id)
+
+
+def _sanitize_events_in_place(
+    events: list[dict[str, Any]], player_id: int
+) -> list[dict[str, Any]]:
+    for event in events:
         if event.get("type") == "start_kyoku":
             tehais = event.get("tehais")
             if isinstance(tehais, list):
@@ -90,7 +100,7 @@ def sanitize_events(events: list[dict[str, Any]], player_id: int) -> list[dict[s
         elif event.get("type") == "tsumo" and event.get("actor") != player_id:
             if "pai" in event:
                 event["pai"] = "?"
-    return sanitized
+    return events
 
 
 class BaseEngine(ABC):
@@ -134,7 +144,7 @@ class BaseEngine(ABC):
             if self.spectator is not None:
                 self.spectator.publish(game_index, player_id, raw_events)
 
-            events = sanitize_events(raw_events, player_id)
+            events = _sanitize_events_in_place(raw_events, player_id)
             menu = actions.build_menu(game_state.state)
             auto = self.auto_reaction(game_state.state, menu, events, game_index)
             if not menu:
@@ -144,7 +154,9 @@ class BaseEngine(ABC):
             elif auto is not None:
                 reactions[index] = auto
             else:
-                jobs.append((index, game_index, player_id, game_state.state, events, menu))
+                jobs.append(
+                    (index, game_index, player_id, game_state.state, events, menu)
+                )
 
         if jobs:
             if self.concurrency == 1 or len(jobs) == 1:
@@ -156,7 +168,12 @@ class BaseEngine(ABC):
                 with ThreadPoolExecutor(max_workers=self.concurrency) as executor:
                     futures = [
                         executor.submit(
-                            self.decide, player_id, state, events, menu, game_index=game_index
+                            self.decide,
+                            player_id,
+                            state,
+                            events,
+                            menu,
+                            game_index=game_index,
                         )
                         for _, game_index, player_id, state, events, menu in jobs
                     ]
@@ -314,9 +331,10 @@ class LLMEngine(BaseEngine):
         labels = [str(item["label"]) for item in menu]
         if self._replay:
             return self._replay_decision(labels, menu)
-        prompt_events = _prompt_safe_events(events)
+        prompt_events = _prompt_safe_events_in_place(events)
         if self.snapshot_decisions:
             snapshot = prompts.decision_snapshot(player_id, state, prompt_events, menu)
+            snapshot["fallback_choice"] = _fallback_choice(menu)
             with self._snapshot_lock:
                 self._snapshots[game_index] = snapshot
         history, opening = self._open_turn(game_index, prompt_events)
@@ -348,9 +366,13 @@ class LLMEngine(BaseEngine):
         usage_total = _empty_usage()
         fallback: str | None = None
         choice: int | None = None
+        reset_conversation = False
 
-        def complete_once(user_prompt: str, *, correcting: bool = False) -> providers.Completion:
+        def complete_once(
+            user_prompt: str, *, correcting: bool = False
+        ) -> providers.Completion:
             nonlocal calls, raw_response, raw_reasoning, served_by
+            nonlocal fallback, reset_conversation
             calls += 1
             turns = list(history.messages)
             if correcting:
@@ -372,6 +394,8 @@ class LLMEngine(BaseEngine):
             raw_response = result.text
             raw_reasoning = result.reasoning
             served_by = result.served_by or served_by
+            fallback = result.fallback_reason or fallback
+            reset_conversation = reset_conversation or result.reset_conversation
             _add_usage(usage_total, result.usage)
             return result
 
@@ -417,6 +441,10 @@ class LLMEngine(BaseEngine):
         # The transcript records what was actually played, fallbacks included, so the
         # seat's next turn reasons from the real board rather than an answer it never gave.
         self._close_turn(history, prompt, choice, len(prompt_events))
+        if reset_conversation:
+            with self._conversation_lock:
+                if self._conversations.get(game_index) is history:
+                    del self._conversations[game_index]
 
         latency_ms = (time.perf_counter() - started) * 1000.0
         record = {
@@ -452,7 +480,9 @@ class LLMEngine(BaseEngine):
                 f"{self.name}: journal recorded menu {record.get('menu')} but the game "
                 f"offers {labels}; delete the episode's journal.jsonl to run it fresh"
             )
-        self._record_decision(record, 0, _empty_usage(), bool(record.get("fallback")), 0)
+        self._record_decision(
+            record, 0, _empty_usage(), bool(record.get("fallback")), 0
+        )
         return menu[int(record["choice"])]["event"]
 
     def decision_snapshot(self, game_index: int = 0) -> dict[str, Any] | None:
@@ -610,11 +640,16 @@ def _fallback_choice(menu: list[actions.MenuItem]) -> int:
 
 
 def _prompt_safe_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    safe_events = copy.deepcopy(events)
-    for event in safe_events:
+    return _prompt_safe_events_in_place(copy.deepcopy(events))
+
+
+def _prompt_safe_events_in_place(
+    events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    for event in events:
         if event.get("type") == "tsumo" and event.get("pai") == "?":
             event.pop("pai", None)
-    return safe_events
+    return events
 
 
 class HumanIO(ABC):

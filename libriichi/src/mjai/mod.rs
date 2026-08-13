@@ -4,7 +4,7 @@ mod event;
 pub use event::{Event, EventExt, EventWithCanAct, Metadata, OutOfBoundError};
 
 use crate::py_helper::add_submodule;
-use bot::Bot;
+use bot::{BatchBot, Bot};
 
 use pyo3::prelude::*;
 
@@ -15,5 +15,6 @@ pub(crate) fn register_module(
 ) -> PyResult<()> {
     let m = PyModule::new(py, "mjai")?;
     m.add_class::<Bot>()?;
+    m.add_class::<BatchBot>()?;
     add_submodule(py, prefix, super_mod, &m)
 }

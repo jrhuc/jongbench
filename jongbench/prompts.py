@@ -204,7 +204,9 @@ def render_state(
 def render_hand(player_id: int, state: Any, events: list[dict[str, Any]]) -> str:
     """`events` need only reach back to this seat's last draw; the meld count comes from
     the state, so a delta slice renders the same line a full history would."""
-    meld_count = len(state.chis) + len(state.pons) + len(state.minkans) + len(state.ankans)
+    meld_count = (
+        len(state.chis) + len(state.pons) + len(state.minkans) + len(state.ankans)
+    )
     hand_tiles = tiles_from_counts(list(state.tehai), list(state.akas_in_hand))
     line = (
         f"Your concealed hand ({len(hand_tiles)} tiles; "
@@ -252,7 +254,11 @@ def build_user_prompt(
     if calls_enabled is not None:
         lines.append(call_policy_line(calls_enabled))
     lines.extend(
-        ["", "Choose your action:", render_menu(menu, state=state, state_hints=state_hints)]
+        [
+            "",
+            "Choose your action:",
+            render_menu(menu, state=state, state_hints=state_hints),
+        ]
     )
     if error_feedback:
         lines.extend(
@@ -282,14 +288,20 @@ def build_followup_prompt(
     it, so resending it would only cost tokens and break the cached prefix."""
     lines = []
     narrated = [_event_words(ev) for ev in new_events]
-    lines.append("Since your last action: " + ("; ".join(narrated) if narrated else "nothing"))
+    lines.append(
+        "Since your last action: " + ("; ".join(narrated) if narrated else "nothing")
+    )
     lines.append(render_hand(player_id, state, new_events))
     if state_hints:
         lines.extend(_state_hint_lines(state))
     if calls_enabled is not None:
         lines.append(call_policy_line(calls_enabled))
     lines.extend(
-        ["", "Choose your action:", render_menu(menu, state=state, state_hints=state_hints)]
+        [
+            "",
+            "Choose your action:",
+            render_menu(menu, state=state, state_hints=state_hints),
+        ]
     )
     if error_feedback:
         lines.extend(
@@ -313,9 +325,9 @@ Tool results describe the current decision point only.
 Call any tools first, then end with the same single JSON object reply."""
 
 BUDGET_LINE = """
-Each decision allows at most {budget} tool calls; past that every tool answers
-"budget spent" and you must reply with your choice. Spend them on what you cannot work
-out from the board itself."""
+Each decision allows at most {budget} tool calls. Past that, tools answer "budget
+spent"; repeated tool use then ends the turn and plays the safe fallback. Spend calls
+on what you cannot work out from the board itself."""
 
 
 def decision_snapshot(
@@ -328,7 +340,14 @@ def decision_snapshot(
     The toolset answering the model runs in another process and cannot reach the live
     Rust state, so each answer is rendered here — from exactly the information the
     prompt path may use — and served from the rollout's state channel."""
-    discard_rows, riichi = _discards_and_riichi(this_kyoku(events))
+    current_events = this_kyoku(events)
+    start = _start_kyoku(current_events)
+    kyoku_id = (
+        str(start.get("bakaze", "?")),
+        int(start.get("kyoku", 0)),
+        int(start.get("honba", 0)),
+    )
+    discard_rows, riichi = _discards_and_riichi(current_events)
     discards = {
         f"P{seat}": (
             f"riichi {'yes' if riichi[seat] else 'no'}; discards "
@@ -345,7 +364,8 @@ def decision_snapshot(
         if summary:
             simulate[_prompt_tile(str(event.get("pai", "?")))] = summary
     return {
-        "board": render_state(player_id, state, events),
+        "board": render_state(player_id, state, current_events),
+        "kyoku_id": kyoku_id,
         "discards": discards,
         "waits": shape_summary(state),
         "simulate": simulate,
@@ -356,7 +376,7 @@ def call_policy_line(calls_enabled: bool) -> str:
     state = "accepting" if calls_enabled else "declining"
     other = "off" if calls_enabled else "on"
     return (
-        f'Call policy: currently {state} calls on other players\' discards. '
+        f"Call policy: currently {state} calls on other players' discards. "
         f'Add "calls":"{other}" to your reply to change it; ron and tsumo are unaffected.'
     )
 
@@ -442,7 +462,9 @@ def _dora_indicators(events: list[dict[str, Any]]) -> str:
         for ev in events
         if ev.get("type") == "dora" and "dora_marker" in ev
     )
-    return ", ".join(_prompt_tile(str(tile)) for tile in indicators) if indicators else "-"
+    return (
+        ", ".join(_prompt_tile(str(tile)) for tile in indicators) if indicators else "-"
+    )
 
 
 def _melds_by_player(events: list[dict[str, Any]]) -> list[list[str]]:
@@ -493,9 +515,7 @@ def _melds_by_player(events: list[dict[str, Any]]) -> list[list[str]]:
                 tiles = [*ev.get("consumed", []), ev.get("pai")]
                 melds[seat].append(f"kakan {_format_tiles(tiles)}")
             elif event_type == "ankan":
-                melds[seat].append(
-                    f"ankan {_format_tiles(ev.get('consumed', []))}"
-                )
+                melds[seat].append(f"ankan {_format_tiles(ev.get('consumed', []))}")
     return melds
 
 
@@ -574,7 +594,9 @@ def _event_words(ev: dict[str, Any]) -> str:
     if event_type == "reach_accepted":
         return f"P{actor} riichi accepted"
     if event_type == "dora":
-        return f"Dora indicator revealed {_prompt_tile(str(ev.get('dora_marker', '?')))}"
+        return (
+            f"Dora indicator revealed {_prompt_tile(str(ev.get('dora_marker', '?')))}"
+        )
     if event_type == "hora":
         return f"P{actor} won"
     if event_type == "ryukyoku":
@@ -633,7 +655,7 @@ def _after_summary(state: Any, event: Any) -> str | None:
         shanten, waits_mask, furiten = summarize(
             json.dumps(event, separators=(",", ":"))
         )
-    except Exception:
+    except (RuntimeError, TypeError):
         return None
     parts = [_shanten_text(int(shanten))]
     if int(shanten) == 0:
