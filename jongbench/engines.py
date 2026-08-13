@@ -250,7 +250,7 @@ class LLMEngine(BaseEngine):
         api_key: str | None = None,
         decision_log: DecisionSink | None = None,
         temperature: float = 0.6,
-        max_tokens: int = 1200,
+        max_tokens: int = 4096,
         spectator: Any | None = None,
         concurrency: int = 4,
         state_hints: bool = True,
@@ -271,10 +271,15 @@ class LLMEngine(BaseEngine):
         self.temperature = temperature
         self.max_tokens = max_tokens
         if reasoning not in {None, "off"}:
-            floor = 32000 if reasoning in {"xhigh", "max"} else 16000
+            # A truncated reply is billed for the whole cap and scores zero, so a tight
+            # cap costs money and data at once: deepseek-v4-flash at effort low ran the
+            # 128-position bank for $0.42 either way, but 16k truncated 36% of replies
+            # (reward 0.584) against 4% at 32k (reward 0.834). The cap exists to stop a
+            # runaway loop, not to limit spend.
+            floor = 96000 if reasoning in {"xhigh", "max"} else 64000
             self.max_tokens = max(self.max_tokens, floor)
         self.state_hints = bool(state_hints)
-        self.totals = {
+        self.totals: dict[str, float] = {
             "calls": 0,
             "input_tokens": 0,
             "output_tokens": 0,
@@ -428,8 +433,8 @@ class LLMEngine(BaseEngine):
             "state_hints": self.state_hints,
             "calls_enabled": history.calls_enabled,
             "fallback": fallback,
-            "raw_response": raw_response[:4000],
-            "raw_reasoning": raw_reasoning[:16000],
+            "raw_response": raw_response[:32000],
+            "raw_reasoning": raw_reasoning[:200000],
             "served_by": served_by,
             "usage": usage_total,
             "latency_ms": latency_ms,
@@ -531,7 +536,7 @@ class LLMEngine(BaseEngine):
         self,
         record: dict[str, Any],
         calls: int,
-        usage: dict[str, int],
+        usage: dict[str, float],
         did_fallback: bool,
         retries: int,
     ) -> None:
@@ -539,6 +544,8 @@ class LLMEngine(BaseEngine):
             self.totals["calls"] += calls
             for key in _USAGE_KEYS:
                 self.totals[key] += usage.get(key, 0)
+            if "cost" in usage:
+                self.totals["cost"] = self.totals.get("cost", 0.0) + usage["cost"]
             self.totals["fallbacks"] += int(did_fallback)
             self.totals["retries"] += retries
             if callable(self.decision_log):
@@ -575,13 +582,16 @@ _USAGE_KEYS = (
 )
 
 
-def _empty_usage() -> dict[str, int]:
+def _empty_usage() -> dict[str, float]:
     return dict.fromkeys(_USAGE_KEYS, 0)
 
 
-def _add_usage(total: dict[str, int], usage: dict[str, Any] | None) -> None:
+def _add_usage(total: dict[str, float], usage: dict[str, Any] | None) -> None:
     for key in _USAGE_KEYS:
         total[key] += int((usage or {}).get(key, 0) or 0)
+    cost = (usage or {}).get("cost")
+    if cost is not None:
+        total["cost"] = total.get("cost", 0.0) + float(cost)
 
 
 def _fallback_choice(menu: list[actions.MenuItem]) -> int:

@@ -131,6 +131,21 @@ def test_streams_text_and_reasoning_with_usage() -> None:
     assert completions.calls[0]["temperature"] == 0.6
 
 
+def test_metered_cost_rides_the_usage_chunk() -> None:
+    usage = SimpleNamespace(prompt_tokens=10, completion_tokens=1, cost=0.00123)
+    provider, _ = _provider([_chunk(content="ok"), _chunk(usage=usage)])
+
+    assert provider.complete([{"role": "user", "content": "go"}]).usage["cost"] == 0.00123
+
+
+def test_unmetered_provider_reports_no_cost_at_all() -> None:
+    usage = SimpleNamespace(prompt_tokens=10, completion_tokens=1)
+    provider, _ = _provider([_chunk(content="ok"), _chunk(usage=usage)])
+
+    # Absent, not 0.0: an unmetered provider reports no cost.
+    assert "cost" not in provider.complete([{"role": "user", "content": "go"}]).usage
+
+
 def test_usage_absent_details_defaults_to_zero() -> None:
     usage = SimpleNamespace(prompt_tokens=10, completion_tokens=1)
     provider, _ = _provider([_chunk(content="ok"), _chunk(usage=usage)])

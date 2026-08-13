@@ -91,6 +91,175 @@ def write_report(run_dir: str) -> str:
     return str(path)
 
 
+def leaderboard(batch_dir: str) -> dict[str, Any]:
+    """Pool a batch of episode directories into one table keyed by model spec.
+
+    A hanchan batch writes one run directory per episode, so a spec's placement
+    distribution only exists across directories. Seat rotation moves a spec between
+    engine names, which is why the pooling key is the spec and not the name."""
+    root = Path(batch_dir)
+    runs = (
+        [root]
+        if (root / "config.json").exists()
+        else sorted(path.parent for path in root.glob("*/config.json"))
+    )
+    accum: dict[str, dict[str, Any]] = {}
+    episodes: list[dict[str, Any]] = []
+
+    for run in runs:
+        summary = summarize(str(run))
+        config = summary.get("config") or {}
+        specs = {name: engine["spec"] or name for name, engine in summary["engines"].items()}
+
+        for name, engine in summary["engines"].items():
+            acc = accum.setdefault(specs[name], _new_batch_accumulator(specs[name]))
+            acc["names"].add(name)
+            # A spec can hold more than one seat in an episode, so count directories.
+            acc["episodes"].add(str(run))
+            records = int(engine.get("decision_records") or 0)
+            acc["decision_records"] += records
+            acc["fallback_count"] += int(engine.get("fallback_count") or 0)
+            acc["input_tokens"] += int(engine.get("input_tokens") or 0)
+            acc["output_tokens"] += int(engine.get("output_tokens") or 0)
+            if engine.get("cost") is not None:
+                acc["cost"] = (acc["cost"] or 0.0) + float(engine["cost"])
+            latency = engine.get("mean_latency_ms")
+            if latency is not None and records:
+                acc["latency_sum"] += float(latency) * records
+                acc["latency_records"] += records
+
+        graded = bool(summary["games"])
+        for row in summary["games"] or _final_players(config):
+            for player in row["players"]:
+                spec = specs.get(player["name"], player["name"])
+                acc = accum.setdefault(spec, _new_batch_accumulator(spec))
+                acc["names"].add(player["name"])
+                acc["table_positions"].add(int(player["seat"]))
+                _add_player(acc, player)
+                if not graded:
+                    # An ungraded episode has no rating; a zero would read as a bad one.
+                    acc["ratings"].pop()
+                placement = _int_or_none(player.get("placement"))
+                if placement is not None and 1 <= placement <= 4:
+                    acc["placement_counts"][placement - 1] += 1
+
+        episodes.append(
+            {
+                "run_dir": str(run),
+                "label": run.name,
+                "seed": (config.get("seed_start") or [None])[0],
+                "rotation": config.get("rotation"),
+                "table": config.get("table") or list(specs),
+                "specs": specs,
+                "reviewed": bool(summary["games"]),
+                "placements": (config.get("final") or {}).get("placements") or {},
+                "scores": dict(
+                    zip(
+                        (config.get("final") or {}).get("names") or [],
+                        (config.get("final") or {}).get("scores") or [],
+                        strict=False,
+                    )
+                ),
+            }
+        )
+
+    engines = [_finalize_batch_engine(acc) for acc in accum.values()]
+    engines.sort(
+        key=lambda item: (
+            float(item["avg_placement"]) if item["games"] else 99.0,
+            -float(item["mean_rating"]),
+            item["spec"],
+        )
+    )
+    for index, engine in enumerate(engines):
+        engine["rank"] = index + 1
+
+    board = {
+        "batch_dir": str(root),
+        "generated": datetime.now(timezone.utc).isoformat(),
+        "episodes": episodes,
+        "leaderboard": engines,
+        "engines": {engine["spec"]: engine for engine in engines},
+        "episode_count": len(episodes),
+        "reviewed_count": sum(1 for episode in episodes if episode["reviewed"]),
+    }
+    (root / "leaderboard.json").write_text(
+        json.dumps(board, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return board
+
+
+def _final_players(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Placement rows for an episode that finished but has not been graded yet, so a
+    batch reads as standings before the Mortal review pass runs."""
+    final = config.get("final") or {}
+    names = [str(name) for name in final.get("names") or []]
+    scores = list(final.get("scores") or [])
+    placements = final.get("placements") or {}
+    if not names or not placements:
+        return []
+    players = [
+        {
+            "seat": seat,
+            "name": name,
+            "score": _number_or_none(scores[seat] if seat < len(scores) else None),
+            "placement": _int_or_none(placements.get(name)),
+            "rating": None,
+            "total_reviewed": 0,
+            "total_matches": 0,
+            "loss_sum": 0.0,
+        }
+        for seat, name in enumerate(names)
+    ]
+    return [{"players": players}]
+
+
+def _new_batch_accumulator(spec: str) -> dict[str, Any]:
+    acc = _new_accumulator(spec, spec)
+    acc.update(
+        {
+            "names": set(),
+            "table_positions": set(),
+            "episodes": set(),
+            "placement_counts": [0, 0, 0, 0],
+            "decision_records": 0,
+            "fallback_count": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost": None,
+            "latency_sum": 0.0,
+            "latency_records": 0,
+        }
+    )
+    return acc
+
+
+def _finalize_batch_engine(acc: dict[str, Any]) -> dict[str, Any]:
+    engine = _finalize_engine(acc)
+    records = int(acc["decision_records"])
+    engine.update(
+        {
+            "spec": acc["spec"],
+            "names": sorted(acc["names"]),
+            "table_positions": sorted(acc["table_positions"]),
+            "episodes": len(acc["episodes"]),
+            "placement_counts": list(acc["placement_counts"]),
+            "decision_records": records,
+            "fallback_count": int(acc["fallback_count"]),
+            "fallback_rate": int(acc["fallback_count"]) / records if records else None,
+            "input_tokens": int(acc["input_tokens"]),
+            "output_tokens": int(acc["output_tokens"]),
+            "cost": acc["cost"],
+            "mean_latency_ms": (
+                acc["latency_sum"] / acc["latency_records"] if acc["latency_records"] else None
+            ),
+        }
+    )
+    engine.pop("name", None)
+    return engine
+
+
 def _new_accumulator(name: str, spec: str) -> dict[str, Any]:
     return {
         "name": name,
@@ -292,6 +461,7 @@ def _decision_stats(decisions_dir: Path, name: str) -> dict[str, Any]:
             "fallback_rate": None,
             "input_tokens": 0,
             "output_tokens": 0,
+            "cost": None,
             "mean_latency_ms": None,
         }
 
@@ -299,6 +469,7 @@ def _decision_stats(decisions_dir: Path, name: str) -> dict[str, Any]:
     fallback_count = 0
     input_tokens = 0
     output_tokens = 0
+    cost: float | None = None
     latencies = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -312,6 +483,8 @@ def _decision_stats(decisions_dir: Path, name: str) -> dict[str, Any]:
         usage = record.get("usage") or {}
         input_tokens += int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
         output_tokens += int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+        if usage.get("cost") is not None:
+            cost = (cost or 0.0) + float(usage["cost"])
         latency = record.get("latency_ms")
         if isinstance(latency, int | float):
             latencies.append(float(latency))
@@ -322,6 +495,7 @@ def _decision_stats(decisions_dir: Path, name: str) -> dict[str, Any]:
         "fallback_rate": fallback_count / records if records else 0.0,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
+        "cost": cost,
         "mean_latency_ms": _mean(latencies) if latencies else None,
     }
 
@@ -1002,7 +1176,7 @@ _JS = r'''
     const head = '<thead><tr>' +
       '<th class="num">rank</th><th>engine</th><th class="num">games</th><th class="num">avg placement</th>' +
       '<th class="num">avg score</th><th class="num">rating</th><th class="num">match %</th>' +
-      '<th class="num">mean prob loss</th><th class="num">fallbacks %</th><th class="num">tokens (in/out)</th><th class="num">mean latency</th>' +
+      '<th class="num">mean prob loss</th><th class="num">fallbacks %</th><th class="num">tokens (in/out)</th><th class="num">cost</th><th class="num">mean latency</th>' +
       '</tr></thead>';
     const body = '<tbody>' + engines.map(function (engine) {
       return '<tr>' +
@@ -1016,6 +1190,7 @@ _JS = r'''
         '<td class="num">' + percent(engine.mean_prob_loss, 1) + '</td>' +
         '<td class="num">' + nullablePercent(engine.fallback_rate, 1) + '</td>' +
         '<td class="num">' + tokenPair(engine) + '</td>' +
+        '<td class="num">' + nullableCost(engine.cost) + '</td>' +
         '<td class="num">' + nullableMs(engine.mean_latency_ms) + '</td>' +
         '</tr>';
     }).join("") + '</tbody>';
@@ -1223,6 +1398,10 @@ _JS = r'''
 
   function nullableMs(value) {
     return value === null || value === undefined ? "—" : fixed(value, 0) + " ms";
+  }
+
+  function nullableCost(value) {
+    return value === null || value === undefined ? "—" : "$" + fixed(value, 4);
   }
 
   function tokenPair(engine) {

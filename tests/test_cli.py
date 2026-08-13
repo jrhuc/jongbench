@@ -66,6 +66,19 @@ def test_cli_workflow() -> None:
         assert first["event"]["type"] == "start_game"
         assert "seats" in first["snapshot"]
 
+        code = cli.main(["leaderboard", str(runs_root)])
+        assert code == 0
+        board = json.loads((runs_root / "leaderboard.json").read_text(encoding="utf-8"))
+        assert board["episode_count"] == 1
+        assert board["reviewed_count"] == 1
+        # Four `random` seats are one spec: the pooled row covers the whole table.
+        assert [engine["spec"] for engine in board["leaderboard"]] == ["random"]
+        assert board["leaderboard"][0]["episodes"] == 1
+        assert board["leaderboard"][0]["placement_counts"] == [1, 1, 1, 1]
+        # A run directory is its own single-episode batch.
+        assert cli.main(["leaderboard", str(run_dir)]) == 0
+        assert (run_dir / "leaderboard.json").exists()
+
     print("OK")
 
 

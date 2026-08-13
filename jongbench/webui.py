@@ -31,7 +31,10 @@ from .spectator import Spectator, TableState
 _ACTIVE_STATUSES = {"starting", "running", "evaluating"}
 _TERMINAL_STATUSES = {"done", "error", "aborted"}
 _BODY_LIMIT = 64 * 1024
-_MAX_SESSION_FRAMES = 256
+# A hanchan produces about 1,800 frames of ~7KB each (measured: 1,772). At 256 a
+# reconnecting viewer only received the last hand. 4096 holds a whole match and still
+# bounds an endless session.
+_MAX_SESSION_FRAMES = 4096
 _DRAW_TICKER_RE = re.compile(r"^P([0-3]) drew .+$")
 
 

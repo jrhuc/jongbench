@@ -41,7 +41,7 @@ class ProviderSpec:
 class Completion:
     text: str
     reasoning: str = ""
-    usage: dict[str, int] = field(default_factory=dict)
+    usage: dict[str, float] = field(default_factory=dict)
     served_by: str | None = None
 
 
@@ -120,7 +120,7 @@ class Provider:
         self,
         messages: list[dict[str, Any]],
         *,
-        max_tokens: int = 1200,
+        max_tokens: int = 4096,
         temperature: float | None = None,
     ) -> Completion:
         params: dict[str, Any] = {
@@ -147,7 +147,7 @@ class Provider:
 
         text: list[str] = []
         reasoning: list[str] = []
-        usage: dict[str, int] = {}
+        usage: dict[str, float] = {}
         served_by: str | None = None
 
         for chunk in self._get_client().chat.completions.create(**params):
@@ -203,15 +203,20 @@ def _extra(obj: Any, key: str) -> Any:
     return None
 
 
-def _normalize_usage(usage: Any) -> dict[str, int]:
+def _normalize_usage(usage: Any) -> dict[str, float]:
     details = getattr(usage, "prompt_tokens_details", None)
     cached = _extra(details, "cached_tokens") if details is not None else None
-    return {
+    normalized: dict[str, float] = {
         "input_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
         "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
         "cached_input_tokens": int(cached or 0),
         "reasoning_tokens": int(_reasoning_tokens(usage) or 0),
     }
+    cost = _extra(usage, "cost")
+    if cost is not None:
+        # Only metering providers report a cost. Absent is not the same as 0.0.
+        normalized["cost"] = float(cost)
+    return normalized
 
 
 def _reasoning_tokens(usage: Any) -> int | None:

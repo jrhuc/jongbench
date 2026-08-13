@@ -17,29 +17,29 @@ the eval, backed by a shared harness:
   Set `log_dir` and each rollout is also a jongbench run dir that `review` and
   `reasoning` grade post-hoc.
 
-Both measure the same quantity — agreement with Mortal — two ways: cheap and
-separable, or in full self-steered play.
+Both measure agreement with Mortal. The decision env does it cheaply, one position at
+a time; the hanchan env does it in full self-steered play.
 
 ## Why riichi
 
 - **Imperfect information, stochastic deals.** Every decision is a probability
   judgment against hidden hands and a hidden wall; board states effectively never
   repeat, so there are no memorized lines to retrieve.
-- **Genuinely zero-sum, four players.** Placement rewards are a permutation of 1–4
-  (they always sum to 2.0), and every board a seat faces was steered by the other
-  three — a real multi-agent credit-assignment setting, not self-play against a copy.
+- **Zero-sum, four players.** Placement rewards are a permutation of 1–4 and always
+  sum to 2.0, and every board a seat faces was steered by the other three. It is a
+  multi-agent credit-assignment setting, not self-play against a copy.
 - **Long horizon.** A seat makes ~170 decisions per hanchan, and the cost of a bad
   push/fold call often lands many turns later.
 - **A strong non-LLM oracle.** Mortal prices every legal action per decision, so the
-  signal is dense (per-decision Q-advantage), not just win/lose — one game yields
+  signal is dense (per-decision Q-advantage) rather than win/lose. One game yields
   hundreds of graded decisions instead of one outcome bit.
 - **Hard to reward-hack.** The grader is a frozen external model, every action is
   validated against the legal menu by the Rust engine, and there is no tool surface
-  or environment state to game — the failure mode long-horizon game evals usually
-  suffer.
+  or environment state to game.
 - **Headroom.** On the shipped decision bank, uniform-random guessing scores 0.367
-  reward (18.9% match) and Mortal scores 1.0 by construction; measured models land
-  well inside that gap (deepseek-v4-flash 0.649, gpt-5-mini 0.727).
+  reward (18.9% match), always picking the first option scores 0.341, and Mortal
+  scores 1.0 by construction. Measured models land inside that gap: gpt-5.6-luna
+  0.776, deepseek-v4-flash-0731 0.834, gemini-3.5-flash-lite 0.844.
 
 ## Setup
 
@@ -74,6 +74,9 @@ $ jongbench review runs/<stamp>/
 
 # read a model's reasoning against Mortal's verdict on the same decisions
 $ jongbench reasoning runs/<stamp>/ --worst 5
+
+# pool a directory of runs into one table, keyed by model spec
+$ jongbench leaderboard runs/<batch>/ --review
 
 # watch one game live (terminal board, or --ui web for the browser board;
 # a seat spec of `human` puts you at the table)

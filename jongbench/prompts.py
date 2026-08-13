@@ -160,6 +160,7 @@ def render_state(
     *,
     state_hints: bool = False,
 ) -> str:
+    events = this_kyoku(events)
     start = _start_kyoku(events)
     bakaze = start.get("bakaze", "?")
     kyoku = int(start.get("kyoku", 0))
@@ -311,6 +312,11 @@ survives into later hands of this match; notes() returns everything you have sav
 Tool results describe the current decision point only.
 Call any tools first, then end with the same single JSON object reply."""
 
+BUDGET_LINE = """
+Each decision allows at most {budget} tool calls; past that every tool answers
+"budget spent" and you must reply with your choice. Spend them on what you cannot work
+out from the board itself."""
+
 
 def decision_snapshot(
     player_id: int,
@@ -322,7 +328,7 @@ def decision_snapshot(
     The toolset answering the model runs in another process and cannot reach the live
     Rust state, so each answer is rendered here — from exactly the information the
     prompt path may use — and served from the rollout's state channel."""
-    discard_rows, riichi = _discards_and_riichi(events)
+    discard_rows, riichi = _discards_and_riichi(this_kyoku(events))
     discards = {
         f"P{seat}": (
             f"riichi {'yes' if riichi[seat] else 'no'}; discards "
@@ -396,6 +402,17 @@ def extract_choice(text: str, n_options: int) -> int:
         return choice
 
     raise ValueError("no choice found")
+
+
+def this_kyoku(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The tail of `events` belonging to the hand in progress. A live seat is handed one
+    kyoku at a time, but a position replayed out of a finished game carries the whole
+    match, so the discards, melds and wall count are wrong unless the earlier hands are
+    cut off."""
+    for index in range(len(events) - 1, -1, -1):
+        if events[index].get("type") == "start_kyoku":
+            return events[index:]
+    return events
 
 
 def _start_kyoku(events: list[dict[str, Any]]) -> dict[str, Any]:

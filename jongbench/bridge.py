@@ -35,7 +35,9 @@ class CallbackProvider:
     """
 
     def __init__(
-        self, ask: Callable[[str, bool], str], name: str = "callback"
+        self,
+        ask: Callable[[str, bool], "str | providers.Completion"],
+        name: str = "callback",
     ) -> None:
         self.ask = ask
         self.model = name
@@ -48,19 +50,22 @@ class CallbackProvider:
         self,
         messages: list[dict[str, Any]],
         *,
-        max_tokens: int = 1200,
+        max_tokens: int = 4096,
         temperature: float | None = None,
     ) -> providers.Completion:
         del max_tokens, temperature
         fresh = sum(1 for m in messages if m["role"] == "user") == 1
-        return providers.Completion(
-            text=self.ask(newest_user_text(messages), fresh) or ""
-        )
+        reply = self.ask(newest_user_text(messages), fresh)
+        # A consumer that knows what the call cost returns a whole `Completion`, so the
+        # decision record carries its tokens and reasoning like a direct provider call.
+        if isinstance(reply, providers.Completion):
+            return reply
+        return providers.Completion(text=reply or "")
 
 
 def make_bridged_engine(
     name: str,
-    ask: Callable[[str, bool], str],
+    ask: Callable[[str, bool], "str | providers.Completion"],
     *,
     decision_log: engines.DecisionSink | None = None,
     state_hints: bool = True,

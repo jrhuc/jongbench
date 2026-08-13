@@ -303,6 +303,29 @@ def _cmd_review(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_leaderboard(args: argparse.Namespace) -> int:
+    batch_dir = Path(args.batch_dir)
+    runs = (
+        [batch_dir]
+        if (batch_dir / "config.json").exists()
+        else sorted(path.parent for path in batch_dir.glob("*/config.json"))
+    )
+    if not runs:
+        print(f"no finished episodes under {batch_dir}")
+        return 1
+
+    if args.review:
+        for run in runs:
+            if _reviews_missing(run):
+                print(f"reviewing {run.name}")
+                _evaluate_run(run, args.weights, progress=False)
+
+    board = report.leaderboard(str(batch_dir))
+    _print_leaderboard(board)
+    print(f"leaderboard: {batch_dir / 'leaderboard.json'}")
+    return 0
+
+
 def _cmd_reasoning(args: argparse.Namespace) -> int:
     from jongbench import reasoning as reasoning_module
 
@@ -513,6 +536,12 @@ def _build_parser() -> argparse.ArgumentParser:
     review_cmd.add_argument("--weights", default="weights/mortal.pth")
     review_cmd.add_argument("--force", action="store_true")
     review_cmd.set_defaults(func=_cmd_review)
+
+    leaderboard_cmd = subparsers.add_parser("leaderboard")
+    leaderboard_cmd.add_argument("batch_dir")
+    leaderboard_cmd.add_argument("--weights", default="weights/mortal.pth")
+    leaderboard_cmd.add_argument("--review", action="store_true")
+    leaderboard_cmd.set_defaults(func=_cmd_leaderboard)
 
     selfcheck = subparsers.add_parser("selfcheck")
     selfcheck.add_argument("--runs-root", default="runs")
@@ -732,7 +761,7 @@ def build_replay_bundle(run_dir: Path, game: str | None = None) -> dict[str, Any
 
 def _print_summary(summary: dict[str, Any]) -> None:
     engines = list(summary.get("leaderboard") or [])
-    headers = ["engine", "games", "place", "score", "rating", "match", "fallbacks"]
+    headers = ["engine", "games", "place", "score", "rating", "match", "fallbacks", "cost"]
     rows = []
     for engine in engines:
         fallback_rate = engine.get("fallback_rate")
@@ -749,9 +778,14 @@ def _print_summary(summary: dict[str, Any]) -> None:
                 f"{float(engine.get('mean_rating') or 0.0) * 100:.2f}",
                 f"{float(engine.get('match_rate') or 0.0) * 100:.1f}%",
                 fallbacks,
+                _cost(engine.get("cost")),
             ]
         )
 
+    _print_table(headers, rows)
+
+
+def _print_table(headers: list[str], rows: list[list[str]]) -> None:
     widths = [
         max(len(headers[index]), *(len(row[index]) for row in rows))
         if rows
@@ -761,6 +795,54 @@ def _print_summary(summary: dict[str, Any]) -> None:
     print("  ".join(header.ljust(widths[index]) for index, header in enumerate(headers)))
     for row in rows:
         print("  ".join(cell.ljust(widths[index]) for index, cell in enumerate(row)))
+
+
+def _print_leaderboard(board: dict[str, Any]) -> None:
+    print(
+        f"{board['episode_count']} episode(s), {board['reviewed_count']} reviewed"
+        f" -> {board['batch_dir']}"
+    )
+    headers = [
+        "#",
+        "spec",
+        "eps",
+        "place",
+        "1/2/3/4",
+        "score",
+        "rating",
+        "match",
+        "fallbacks",
+        "cost",
+    ]
+    rows = []
+    for engine in board.get("leaderboard") or []:
+        fallback_rate = engine.get("fallback_rate")
+        fallbacks = (
+            "n/a"
+            if fallback_rate is None
+            else f"{float(fallback_rate) * 100:.1f}% ({int(engine.get('fallback_count') or 0)})"
+        )
+        reviewed = int(engine.get("total_reviewed") or 0)
+        rows.append(
+            [
+                str(engine.get("rank") or ""),
+                str(engine.get("spec") or ""),
+                str(int(engine.get("episodes") or 0)),
+                f"{float(engine.get('avg_placement') or 0.0):.2f}",
+                "/".join(str(count) for count in engine.get("placement_counts") or []),
+                f"{float(engine.get('avg_score') or 0.0):.0f}",
+                f"{float(engine.get('mean_rating') or 0.0) * 100:.2f}" if reviewed else "n/a",
+                f"{float(engine.get('match_rate') or 0.0) * 100:.1f}%" if reviewed else "n/a",
+                fallbacks,
+                _cost(engine.get("cost")),
+            ]
+        )
+    _print_table(headers, rows)
+
+
+def _cost(value: Any) -> str:
+    # Only metering providers report a cost; a local or unmetered seat has none.
+    return "n/a" if value is None else f"${float(value):.4f}"
 
 
 def _print_seat_ratings(run_dir: Path) -> None:

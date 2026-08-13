@@ -24,11 +24,23 @@ from riichi_hanchan_v1.env import (  # noqa: E402
 )
 
 
+def _fake_call(index: int) -> SimpleNamespace:
+    """A `ModelCall`-shaped record: the env reads `usage` off the trace's calls."""
+    usage = SimpleNamespace(
+        prompt_tokens=100 + index,
+        completion_tokens=10,
+        cached_input_tokens=5,
+        reasoning_tokens=7,
+    )
+    return SimpleNamespace(usage=usage)
+
+
 class FakeTrace:
     def __init__(self) -> None:
         self.rewards: dict[str, float] = {}
         self.metrics: dict[str, float] = {}
         self.info: dict = {}
+        self.calls: list = []
 
     def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
         self.rewards[name] = value
@@ -53,14 +65,23 @@ class FakeInteraction:
         assert not self.closed, "turn() on a closed interaction"
         self.prompts.append(message)
         self.thread_ids.add(threading.get_ident())
-        return SimpleNamespace(last_reply='{"choice": 0}', terminated=False)
+        # A real turn appends to the trace's running call list and answers with the
+        # messages it just added.
+        self.trace.calls.append(_fake_call(len(self.prompts)))
+        return SimpleNamespace(
+            last_reply='{"choice": 0}',
+            terminated=False,
+            messages=[SimpleNamespace(reasoning_content=f"thought {len(self.prompts)}")],
+        )
 
 
 class FakeAgent:
     """Hands out a fresh interaction per `interaction(task)` call, one per kyoku."""
 
-    def __init__(self, interaction_cls=FakeInteraction) -> None:
+    def __init__(self, interaction_cls=FakeInteraction, model="fake/model") -> None:
         self.interaction_cls = interaction_cls
+        # A real vf.Agent always carries a resolved model; the env reads it back.
+        self.config = SimpleNamespace(model=model)
         self.interactions: list[FakeInteraction] = []
 
     def interaction(self, task):
@@ -88,8 +109,10 @@ class FakeAgent:
 
 
 class FakeAgents:
-    def __init__(self, interaction_cls=FakeInteraction) -> None:
-        self.seats = [FakeAgent(interaction_cls) for _ in SEATS]
+    def __init__(self, interaction_cls=FakeInteraction, config=None) -> None:
+        config = config or RiichiHanchanEnvConfig()
+        models = [getattr(config, name).model or "fake/model" for name in SEATS]
+        self.seats = [FakeAgent(interaction_cls, model) for model in models]
         for name, agent in zip(SEATS, self.seats, strict=True):
             setattr(self, name, agent)
 
@@ -191,6 +214,45 @@ def test_episode_persists_as_a_jongbench_run_dir(played, episode_dir) -> None:
         assert all("choice" in record for record in lines)
 
 
+def test_decisions_carry_what_the_turn_cost(played, episode_dir) -> None:
+    """A bridged seat is billed like a direct provider call: each decision records the
+    tokens and reasoning of the turn that produced it, and only that turn's."""
+    import json
+
+    run_dir = episode_dir / "hanchan-00000"
+    for name in SEATS:
+        lines = (run_dir / "decisions" / f"{name}.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        records = [json.loads(line) for line in lines]
+        assert records
+        for record in records:
+            # The fake numbers its turns within a kyoku; a decision must carry its own.
+            turn = int(record["raw_reasoning"].removeprefix("thought "))
+            # jongbench folds cache reads into input_tokens; verifiers splits them out.
+            assert record["usage"] == {
+                "input_tokens": 100 + turn + 5,
+                "output_tokens": 10,
+                "cached_input_tokens": 5,
+                "reasoning_tokens": 7,
+            }
+
+
+def test_metered_turns_carry_the_provider_s_price() -> None:
+    """A provider meters some calls and not others; the seam sums what is reported and
+    stays absent otherwise, because a 0.0 would read as free rather than unknown."""
+    from riichi_hanchan_v1.env import _usage_of
+
+    def metered(cost: float) -> SimpleNamespace:
+        call = _fake_call(0)
+        call.usage.cost = cost
+        return call
+
+    assert _usage_of([metered(0.0004), metered(0.0002)])["cost"] == pytest.approx(0.0006)
+    assert _usage_of([metered(0.0004), _fake_call(1)])["cost"] == pytest.approx(0.0004)
+    assert "cost" not in _usage_of([_fake_call(1)])
+
+
 class ToolUsingInteraction(FakeInteraction):
     """Records the SeatState served for each turn and saves one note per turn, the way
     a note() tool push would."""
@@ -198,12 +260,28 @@ class ToolUsingInteraction(FakeInteraction):
     def __init__(self, task) -> None:
         super().__init__(task)
         self.states: list = []
+        self.served_budgets: list = []
 
     async def turn(self, message: str) -> SimpleNamespace:
         state = self.trace.state
         self.states.append(state)
+        self.served_budgets.append(state.budget)
         state.notes.append(f"note-{len(state.notes)}")
-        return await super().turn(message)
+        segment = await super().turn(message)
+        # Every other turn looks the board up before answering, the way a tool-using
+        # seat does: the harness leaves the tool-calling message in the segment.
+        if len(self.prompts) % 2 == 0:
+            segment.messages.insert(
+                0,
+                SimpleNamespace(
+                    tool_calls=[
+                        SimpleNamespace(name="board"),
+                        SimpleNamespace(name="waits"),
+                    ]
+                ),
+            )
+            state.budget = 0  # and it queried until the decision's budget ran out
+        return segment
 
 
 @pytest.fixture(scope="module")
@@ -250,6 +328,33 @@ def test_notes_survive_kyoku_resets(played_tools) -> None:
         assert seat.interactions[-1].trace.metrics["notes_saved"] == turns_before
 
 
+def test_tool_calls_are_counted_per_seat(played_tools) -> None:
+    for seat in played_tools.seats:
+        querying = sum(len(inter.states) // 2 for inter in seat.interactions)
+        assert querying
+        metrics = seat.interactions[-1].trace.metrics
+        assert metrics["tool_turns"] == querying
+        assert metrics["tool_calls"] == 2 * querying
+        assert seat.interactions[-1].trace.info["hanchan"]["tools"] == {
+            "board": querying,
+            "waits": querying,
+        }
+
+
+def test_each_decision_gets_its_budget_back(played_tools) -> None:
+    default = RiichiHanchanEnvConfig().max_tool_calls
+    for seat in played_tools.seats:
+        # The fake drains the budget on every querying turn; the next decision must
+        # still open with a full one or a seat would go mute for the rest of the kyoku.
+        assert all(
+            budget == default
+            for inter in seat.interactions
+            for budget in inter.served_budgets
+        )
+        querying = sum(len(inter.states) // 2 for inter in seat.interactions)
+        assert seat.interactions[-1].trace.metrics["budget_spent"] == querying
+
+
 def test_seat_toolset_answers_from_its_state() -> None:
     from riichi_hanchan_v1.tools import SeatState, SeatToolset, normalize_tile
 
@@ -281,10 +386,24 @@ def test_seat_toolset_answers_from_its_state() -> None:
     assert normalize_tile(" 3p ") == "3p"
 
 
+def test_a_budgeted_decision_stops_answering_when_it_runs_out() -> None:
+    from riichi_hanchan_v1.tools import BUDGET_SPENT, SeatState, SeatToolset
+
+    toolset = SeatToolset(vf.ToolsetConfig(colocated=True))
+    toolset._inert_state = SeatState(board="Round: East 1", waits="tenpai", budget=2)
+
+    assert toolset.board().startswith("Round:")
+    assert toolset.waits() == "tenpai"
+    assert toolset.board() == BUDGET_SPENT
+    assert toolset.note("read me later") == BUDGET_SPENT
+    assert toolset.state.notes == []  # a refused call must not have a side effect
+
+
 def test_journal_read_trims_and_guards(tmp_path) -> None:
     from riichi_hanchan_v1.env import _Journal, _journal_header, _read_journal
 
-    header = _journal_header(7, RiichiHanchanEnvConfig())
+    models = ["fake/model"] * len(SEATS)
+    header = _journal_header(7, RiichiHanchanEnvConfig(), models, 0)
     path = tmp_path / "journal.jsonl"
     journal = _Journal(path, header)
     for seat, kyoku, honba in [
@@ -299,7 +418,10 @@ def test_journal_read_trims_and_guards(tmp_path) -> None:
     rows = _read_journal(path, header)
     assert [(r["kyoku"], r["honba"]) for r in rows] == [(1, 0), (1, 0), (1, 1)]
 
-    assert _read_journal(path, _journal_header(8, RiichiHanchanEnvConfig())) == []
+    stale = _journal_header(8, RiichiHanchanEnvConfig(), models, 0)
+    assert _read_journal(path, stale) == []
+    rotated = _journal_header(7, RiichiHanchanEnvConfig(), models, 1)
+    assert _read_journal(path, rotated) == []
     assert _read_journal(tmp_path / "missing.jsonl", header) == []
 
     with path.open("a", encoding="utf-8") as handle:
@@ -421,7 +543,7 @@ def played_mortal(tmp_path_factory):
     root = tmp_path_factory.mktemp("hanchan-mortal")
     env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
     env.config = _mortal_config(root)
-    agents = FakeAgents()
+    agents = FakeAgents(config=env.config)
     task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
     asyncio.run(env.run(task, agents))
     return agents, root / "hanchan-00000"
@@ -474,7 +596,7 @@ def test_mortal_seat_replays_deterministically(played_mortal, tmp_path_factory) 
 
     env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
     env.config = _mortal_config(replay_root)
-    agents = FakeAgents()
+    agents = FakeAgents(config=env.config)
     task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
     asyncio.run(env.run(task, agents))
 
@@ -482,6 +604,37 @@ def test_mortal_seat_replays_deterministically(played_mortal, tmp_path_factory) 
     original = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
     replayed = json.loads((new_run / "config.json").read_text(encoding="utf-8"))
     assert replayed["final"] == original["final"]
+
+
+def test_seat_rotation_moves_the_table_without_moving_attribution(
+    tmp_path_factory,
+) -> None:
+    import json
+
+    root = tmp_path_factory.mktemp("hanchan-rotation")
+    env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
+    env.config = RiichiHanchanEnvConfig(log_dir=str(root), seat_rotation=True)
+    agents = FakeAgents()
+    loaded = RiichiHanchanTaskset(RiichiHanchanConfig()).load()
+    tasks = [t for t, _ in zip(loaded, range(2), strict=False)]
+    asyncio.run(env.run(tasks[1], agents))
+
+    run_dir = root / "hanchan-00001"
+    config = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+    assert config["rotation"] == 1
+    assert config["table"] == ["seat3", "seat0", "seat1", "seat2"]
+    assert sorted(config["final"]["placements"]) == list(SEATS)
+
+    for index, seat in enumerate(agents.seats):
+        info = seat.interactions[-1].trace.info["hanchan"]
+        assert info["seat"] == SEATS[index]
+        assert info["table_position"] == (index + 1) % len(SEATS)
+        assert info["seat_order"] == config["table"]
+        assert info["placement"] == config["final"]["placements"][SEATS[index]]
+        lines = (run_dir / "decisions" / f"{SEATS[index]}.jsonl").read_text(
+            encoding="utf-8"
+        )
+        assert len(lines.splitlines()) == len(seat.prompts)
 
 
 def test_taskset_is_an_infinite_seeded_generator() -> None:
