@@ -655,7 +655,7 @@ def _after_summary(state: Any, event: Any) -> str | None:
         shanten, waits_mask, furiten = summarize(
             json.dumps(event, separators=(",", ":"))
         )
-    except Exception:
+    except (RuntimeError, TypeError):
         return None
     parts = [_shanten_text(int(shanten))]
     if int(shanten) == 0:
