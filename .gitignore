@@ -43,6 +43,7 @@ webui/node_modules/
 !.env.example
 .DS_Store
 outputs/
+.prime/
 
 # Self-play logs and training scratch
 /training/
