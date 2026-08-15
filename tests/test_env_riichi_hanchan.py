@@ -211,6 +211,8 @@ def test_episode_persists_as_a_jongbench_run_dir(played, episode_dir) -> None:
     )
     assert header["max_tool_calls"] == config["max_tool_calls"]
     assert header["weights"] == config["weights"]
+    assert config["weights_sha256"] is None
+    assert config["weights_use_policy"] is False
 
     for name, seat in zip(SEATS, played.seats, strict=True):
         lines = [
@@ -499,6 +501,24 @@ def test_a_budgeted_decision_stops_answering_when_it_runs_out() -> None:
     assert asyncio.run(SeatToolsTask.tool_budget_exhausted(None, trace))
 
 
+def test_journal_records_remote_reviewer_identity(monkeypatch) -> None:
+    from riichi_hanchan_v1.env import _journal_header
+
+    digest = "a" * 64
+    monkeypatch.setenv("JONGBENCH_WEIGHTS_URL", "https://example.test/reviewer.pth")
+    monkeypatch.setenv("JONGBENCH_WEIGHTS_SHA256", digest)
+    monkeypatch.setenv("JONGBENCH_WEIGHTS_USE_POLICY", "1")
+    header = _journal_header(
+        7,
+        RiichiHanchanEnvConfig(),
+        ["fake/model", "fake/model", "fake/model", "mortal"],
+        0,
+    )
+    assert header["weights"] == "auto"
+    assert header["weights_sha256"] == digest
+    assert header["weights_use_policy"] is True
+
+
 def test_journal_read_trims_and_guards(tmp_path) -> None:
     from riichi_hanchan_v1.env import _Journal, _journal_header, _read_journal
 
@@ -639,17 +659,11 @@ def test_finished_journal_replays_the_episode_for_free(
     assert replayed["final"] == original["final"]
 
 
-WEIGHTS = ROOT / "weights" / "mortal.pth"
-mortal_weights = pytest.mark.skipif(
-    not WEIGHTS.exists(), reason="needs weights/mortal.pth"
-)
-
-
 def _mortal_config(log_dir: Path) -> RiichiHanchanEnvConfig:
     return RiichiHanchanEnvConfig(
         seat3=vf.AgentConfig(harness={"id": "null"}, model="mortal"),
         log_dir=str(log_dir),
-        weights=str(WEIGHTS),
+        weights="auto",
     )
 
 
@@ -664,7 +678,6 @@ def played_mortal(tmp_path_factory):
     return agents, root / "hanchan-00000"
 
 
-@mortal_weights
 def test_mortal_control_seat_opens_no_interactions(played_mortal) -> None:
     agents, _ = played_mortal
     assert agents.seat3.interactions == []
@@ -679,7 +692,6 @@ def test_mortal_control_seat_opens_no_interactions(played_mortal) -> None:
     assert all(any(r == pytest.approx(s) for s in steps) for r in rewards)
 
 
-@mortal_weights
 def test_mortal_seat_leaves_no_decisions_or_journal_rows(played_mortal) -> None:
     import json
 
@@ -695,7 +707,6 @@ def test_mortal_seat_leaves_no_decisions_or_journal_rows(played_mortal) -> None:
     assert sorted(config["final"]["placements"].values()) == [1, 2, 3, 4]
 
 
-@mortal_weights
 def test_mortal_seat_replays_deterministically(played_mortal, tmp_path_factory) -> None:
     """The journal holds only the bridged seats' choices; a replay recomputes the
     mortal seat live, which reproduces the game only if its engine is deterministic."""

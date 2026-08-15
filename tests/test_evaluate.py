@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import jongbench
+import jongbench  # noqa: F401
 import libriichi
 from jongbench.evaluate import load_engine, load_mjai_log, review_game, review_player
 
@@ -79,7 +79,7 @@ def test_mortal_review() -> None:
     )
     events = events[: end_kyoku_idx + 1] + [{"type": "end_game"}]
 
-    engine = load_engine("weights/mortal.pth")
+    engine = load_engine("auto")
     review = review_player(events, 0, engine)
 
     assert review["total_reviewed"] > 0

@@ -10,13 +10,14 @@ import torch
 
 from jongbench.selfplay import DUPLICATE_PTS, DuelResult, duel
 from jongbench.train import PolicyRLConfig, train_policy_rl
+from jongbench.weights import AUTO_MORTAL_WEIGHTS, resolve_mortal_weights
 
 
 @dataclass
 class ImproveConfig:
     init: str
     out_dir: str
-    control: str | None = "weights/mortal.pth"
+    control: str | None = AUTO_MORTAL_WEIGHTS
     rounds: int = 4
     rollout_games: int = 256
     updates: int = 128
@@ -62,8 +63,7 @@ def improve_policy(cfg: ImproveConfig) -> dict[str, Any]:
     initial = Path(cfg.init)
     if not initial.is_file():
         raise FileNotFoundError(f"initial checkpoint does not exist: {initial}")
-    if cfg.control is not None and not Path(cfg.control).is_file():
-        raise FileNotFoundError(f"control checkpoint does not exist: {cfg.control}")
+    control = None if cfg.control is None else str(resolve_mortal_weights(cfg.control))
 
     out = Path(cfg.out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -177,10 +177,10 @@ def improve_policy(cfg: ImproveConfig) -> dict[str, Any]:
         )
         final_evaluations["initial_policy"] = initial_result.as_dict()
         final_seed += cfg.duel_games // 4
-    if cfg.control is not None:
+    if control is not None:
         control_result = duel(
             challenger_weights=str(champion_out),
-            champion_weights=cfg.control,
+            champion_weights=control,
             games=cfg.duel_games,
             seed=final_seed,
             device=cfg.device,

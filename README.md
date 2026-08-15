@@ -20,6 +20,67 @@ the eval, backed by a shared harness:
 Both measure agreement with Mortal. The decision env does it cheaply, one position at
 a time; the hanchan env does it in full self-steered play.
 
+## Publishing to the Environments Hub
+
+Both packages target the Verifiers v1 `Taskset` API. Use the v1 `eval` and
+`validate` CLIs; the legacy `verifiers.load_environment(...)` entry point is not
+implemented.
+
+The checked-in environment versions are release candidates. Publish them privately
+before consuming `0.1.0`:
+
+```console
+$ git push origin <release-branch>
+$ gh pr create --base main --head <release-branch>
+$ gh pr checks --watch
+$ gh pr merge --merge --delete-branch
+$ prime upgrade
+$ prime login
+$ prime whoami
+$ prime env push --path environments/riichi_decision_v1 --visibility PRIVATE --plain
+$ prime env push --path environments/riichi_hanchan_v1 --visibility PRIVATE --plain
+```
+
+Merging Git first is required: `riichi-hanchan-v1` pins `jongbench` to an
+immutable Git commit so the Hub's clean build container does not depend on an
+unpublished registry package. For each private package:
+
+1. Wait for its Hub Action to report `SUCCESS`.
+2. Install it in a fresh Python 3.12 environment using the command on its Hub page.
+3. Run `validate riichi_decision_v1 --runtime.type subprocess` or
+   `validate riichi_hanchan_v1 --runtime.type subprocess -n 4`.
+4. Run a four-task decision smoke evaluation and one complete hanchan evaluation.
+
+Only after those gates pass, change each package version from `0.1.0rc1` to `0.1.0`
+and push it with `--visibility PUBLIC`. The hanchan smoke is intentionally last: one
+episode costs roughly 1,000 model calls.
+
+A trained Phoenix reviewer checkpoint is an external model artifact, not environment
+package data. Configure a private hanchan environment's Hub **Variables** with a
+public checkpoint URL, its required digest, and policy mode:
+
+```text
+JONGBENCH_WEIGHTS_URL=https://.../reviewer-phoenix.pth
+JONGBENCH_WEIGHTS_SHA256=<64-character SHA-256>
+JONGBENCH_WEIGHTS_USE_POLICY=1
+```
+
+Environment Actions and hosted evaluations receive those variables automatically.
+The checkpoint is downloaded into the normal verified cache; an incomplete pair,
+bad digest, or checkpoint without a reviewer policy head fails closed. Without the
+variables, `auto` remains the pinned Mortal 298k checkpoint and Q policy. The
+decision environment is unaffected because its Mortal rewards are frozen into the
+published bank.
+
+Local v1 validation does not require a Prime account:
+
+```console
+$ uv run --with verifiers==0.3.0 --with ./environments/riichi_decision_v1 \
+    validate riichi_decision_v1 --runtime.type subprocess
+$ uv run --with verifiers==0.3.0 --with ./environments/riichi_hanchan_v1 \
+    validate riichi_hanchan_v1 --runtime.type subprocess -n 4
+```
+
 ## Why riichi
 
 - **Imperfect information, stochastic deals.** Every decision is a probability
@@ -43,15 +104,26 @@ a time; the hanchan env does it in full self-steered play.
 
 ## Setup
 
+Python 3.12–3.13 and a Rust toolchain are required when installing from source.
+The benchmark extra installs provider and Mortal dependencies; setuptools-rust
+builds `libriichi` as part of the package:
+
 ```console
-$ uv venv --python 3.12 .venv && uv pip install -p .venv/bin/python -e .
-$ (cd libriichi && PYO3_PYTHON=../.venv/bin/python cargo build --release --lib)
-$ cp libriichi/target/release/libriichi.dylib jongbench/libriichi.so
-$ curl -L -o weights/mortal.pth https://huggingface.co/VoidShine/mortal-298k/resolve/main/mortal_298k.pth
+$ uv sync --python 3.12 --extra benchmark
 ```
 
-All models are reached through [OpenRouter](https://openrouter.ai); set
-`OPENROUTER_API_KEY`.
+Prefix the commands below with `uv run`, or run them from an activated project
+environment.
+
+The AGPL-3.0 Mortal checkpoint is downloaded from
+[VoidShine/mortal-298k](https://huggingface.co/VoidShine/mortal-298k) on first use,
+verified by SHA-256, and cached under `${XDG_CACHE_HOME:-~/.cache}/jongbench`.
+Set `JONGBENCH_CACHE_DIR` to override the cache root, or pass `--weights PATH` for
+a local checkpoint.
+
+Standalone model calls use [OpenRouter](https://openrouter.ai); set
+`OPENROUTER_API_KEY`. The Hub environments use the Verifiers client and default to
+Prime Inference instead.
 
 ## Usage
 

@@ -75,3 +75,42 @@ def test_improve_policy_promotes_only_candidate_above_bound(
         "initial_policy",
         "control_q",
     }
+
+
+def test_improve_policy_resolves_auto_control(tmp_path: Path, monkeypatch) -> None:
+    initial = tmp_path / "initial.pth"
+    control = tmp_path / "control.pth"
+    initial.write_bytes(b"initial")
+    control.write_bytes(b"control")
+    duel_calls = []
+
+    def fake_train(config):
+        Path(config.out).write_bytes(b"candidate")
+        return {"updates": float(config.steps)}
+
+    def fake_duel(**kwargs):
+        duel_calls.append(kwargs)
+        return _result(0.0, 1.0)
+
+    monkeypatch.setattr("jongbench.improve.train_policy_rl", fake_train)
+    monkeypatch.setattr("jongbench.improve.duel", fake_duel)
+    monkeypatch.setattr(
+        "jongbench.improve.resolve_mortal_weights",
+        lambda value: control if value == "auto" else Path(value),
+    )
+    out = tmp_path / "league"
+    manifest = improve_policy(
+        ImproveConfig(
+            init=str(initial),
+            out_dir=str(out),
+            rounds=1,
+            rollout_games=4,
+            updates=1,
+            batch_size=8,
+            duel_games=8,
+            device="cpu",
+        )
+    )
+
+    assert manifest["promotions"] == 0
+    assert duel_calls[-1]["champion_weights"] == str(control)

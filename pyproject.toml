@@ -2,19 +2,30 @@
 name = "jongbench"
 version = "0.1.0"
 description = "Benchmark LLMs playing riichi mahjong, graded by the Mortal deep-RL model"
-requires-python = ">=3.12"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
 license = "AGPL-3.0-or-later"
-dependencies = [
-    "torch>=2.4",
-    "numpy>=1.26",
-    "openai>=1.50",
+license-files = ["LICENSE"]
+keywords = ["benchmark", "evaluation", "mahjong", "multi-agent", "riichi"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
+dependencies = ["numpy>=1.26"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3"]
+providers = ["openai>=1.50"]
+mortal = ["torch>=2.4"]
+benchmark = ["openai>=1.50", "torch>=2.4"]
+dev = ["openai>=1.50", "pytest>=8.3", "torch>=2.4", "verifiers>=0.3.0,<0.4"]
 
 [project.scripts]
 jongbench = "jongbench.cli:main"
+
+[project.urls]
+Repository = "https://github.com/jrhuc/jongbench"
+Documentation = "https://github.com/jrhuc/jongbench#readme"
 
 [build-system]
 requires = ["setuptools>=77", "setuptools-rust>=1.11,<2"]

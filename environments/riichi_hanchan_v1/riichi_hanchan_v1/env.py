@@ -28,7 +28,16 @@ from pathlib import Path
 
 import verifiers.v1 as vf
 
-from jongbench import arena, bridge, engines, prompts, providers
+from jongbench import (
+    arena,
+    bridge,
+    engines,
+    prompts,
+    providers,
+)
+from jongbench import (
+    weights as weights_module,
+)
 from jongbench.artifacts import decision_filename
 from riichi_hanchan_v1.tools import SeatState, SeatToolset
 
@@ -134,7 +143,7 @@ class RiichiHanchanEnvConfig(vf.EnvConfig):
     """Persist each episode as a jongbench run dir - mjai log, per-seat decision logs,
     config.json - so `jongbench review` and `jongbench reasoning` grade the rollout
     afterwards with the Mortal checkpoint."""
-    weights: str = "weights/mortal.pth"
+    weights: str = "auto"
     """Checkpoint for any seat whose model is `mortal` - the Mortal NN playing as a
     control seat. Such a seat runs on CPU, produces no traces, and earns no reward;
     the LLM seats' placements are measured against it."""
@@ -178,6 +187,23 @@ class _Journal:
             self._handle.flush()
 
 
+def _weights_identity(
+    config: RiichiHanchanEnvConfig, models: list[str]
+) -> dict[str, str | bool | None]:
+    use_weights = "mortal" in models
+    return {
+        "weights": str(config.weights),
+        "weights_sha256": (
+            weights_module.auto_weights_sha256()
+            if use_weights and config.weights == "auto"
+            else None
+        ),
+        "weights_use_policy": (
+            weights_module.auto_weights_use_policy() if use_weights else False
+        ),
+    }
+
+
 def _journal_header(
     seed: int, config: RiichiHanchanEnvConfig, models: list[str], rotation: int
 ) -> dict:
@@ -190,7 +216,7 @@ def _journal_header(
         "auto_pass_reactions": bool(config.auto_pass_reactions),
         "tools": bool(config.tools),
         "max_tool_calls": int(config.max_tool_calls),
-        "weights": str(config.weights),
+        **_weights_identity(config, models),
     }
 
 
@@ -541,7 +567,7 @@ def _write_episode_artifacts(
                 "state_hints": bool(config.state_hints) and not config.tools,
                 "tools": bool(config.tools),
                 "max_tool_calls": int(config.max_tool_calls),
-                "weights": str(config.weights),
+                **_weights_identity(config, models),
                 "final": {
                     "names": list(summary.names),
                     "scores": list(summary.scores),

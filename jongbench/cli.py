@@ -11,11 +11,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import arena, evaluate, providers, report
+from . import arena, providers, report
 from .arena import GameSummary
 from .artifacts import decision_filename
 from .engines import RandomEngine, TerminalHumanIO, make_engine
 from .spectator import Spectator, TerminalRenderer
+from .weights import AUTO_MORTAL_WEIGHTS
+
+
+def _mortal_evaluate():
+    try:
+        from . import evaluate
+    except ModuleNotFoundError as exc:
+        if exc.name == "torch":
+            raise RuntimeError(
+                "Mortal features require `pip install 'jongbench[mortal]'`"
+            ) from exc
+        raise
+    return evaluate
 
 
 def _new_run_dir(runs_root: str | Path, label: str) -> Path:
@@ -94,6 +107,7 @@ def _evaluate_run(
     | Mapping[tuple[int, int], GameSummary]
     | None = None,
 ) -> None:
+    evaluate = _mortal_evaluate()
     run = Path(run_dir)
     log_paths = sorted((run / "logs").glob("*.json.gz"), key=_log_sort_key)
     if not log_paths:
@@ -437,7 +451,7 @@ def _cmd_positions(args: argparse.Namespace) -> int:
         for events in logs:
             for position in positions_module.extract_positions(events, engine):
                 handle.write(
-                    json.dumps(position.to_dict(), separators=(",", ":")) + "\n"
+                    json.dumps(position.to_task_dict(), separators=(",", ":")) + "\n"
                 )
                 extracted.append(position)
 
@@ -634,7 +648,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--seed", type=_u64, default=10000)
     run.add_argument("--label", default="run")
     run.add_argument("--runs-root", default="runs")
-    run.add_argument("--weights", default="weights/mortal.pth")
+    run.add_argument("--weights", default=AUTO_MORTAL_WEIGHTS)
     run.add_argument("--no-eval", action="store_true")
     run.add_argument("--concurrency", type=_positive_int, default=4)
     run.add_argument("--temperature", type=_temperature, default=0.6)
@@ -657,7 +671,7 @@ def _build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--seed", type=_u64, default=10000)
     watch.add_argument("--label", default="watch")
     watch.add_argument("--runs-root", default="runs")
-    watch.add_argument("--weights", default="weights/mortal.pth")
+    watch.add_argument("--weights", default=AUTO_MORTAL_WEIGHTS)
     watch.add_argument("--no-eval", action="store_true")
     watch.add_argument("--delay", type=_nonnegative_float, default=0.4)
     watch.add_argument("--glyphs", action="store_true")
@@ -683,19 +697,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
     review_cmd = subparsers.add_parser("review")
     review_cmd.add_argument("run_dir")
-    review_cmd.add_argument("--weights", default="weights/mortal.pth")
+    review_cmd.add_argument("--weights", default=AUTO_MORTAL_WEIGHTS)
     review_cmd.add_argument("--force", action="store_true")
     review_cmd.set_defaults(func=_cmd_review)
 
     leaderboard_cmd = subparsers.add_parser("leaderboard")
     leaderboard_cmd.add_argument("batch_dir")
-    leaderboard_cmd.add_argument("--weights", default="weights/mortal.pth")
+    leaderboard_cmd.add_argument("--weights", default=AUTO_MORTAL_WEIGHTS)
     leaderboard_cmd.add_argument("--review", action="store_true")
     leaderboard_cmd.set_defaults(func=_cmd_leaderboard)
 
     selfcheck = subparsers.add_parser("selfcheck")
     selfcheck.add_argument("--runs-root", default="runs")
-    selfcheck.add_argument("--weights", default="weights/mortal.pth")
+    selfcheck.add_argument("--weights", default=AUTO_MORTAL_WEIGHTS)
     selfcheck.set_defaults(func=_cmd_selfcheck)
 
     reasoning_cmd = subparsers.add_parser("reasoning")
@@ -708,7 +722,7 @@ def _build_parser() -> argparse.ArgumentParser:
     positions_cmd.add_argument("--out", default="bank.jsonl")
     positions_cmd.add_argument("--games", type=int, default=1)
     positions_cmd.add_argument("--seed", type=int, default=20260101)
-    positions_cmd.add_argument("--weights", default="weights/mortal.pth")
+    positions_cmd.add_argument("--weights", default=AUTO_MORTAL_WEIGHTS)
     positions_cmd.add_argument(
         "--from-log",
         action="append",
@@ -727,7 +741,7 @@ def _build_parser() -> argparse.ArgumentParser:
     selfplay_cmd = subparsers.add_parser(
         "selfplay", help="generate Mortal self-play logs for training"
     )
-    selfplay_cmd.add_argument("--weights", default="weights/mortal.pth")
+    selfplay_cmd.add_argument("--weights", default=AUTO_MORTAL_WEIGHTS)
     selfplay_cmd.add_argument("--out", default="training/selfplay")
     selfplay_cmd.add_argument("--games", type=_positive_int, default=256)
     selfplay_cmd.add_argument("--seed", type=_u64, default=10000)
@@ -746,7 +760,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "train", help="train a policy/value reviewer from mjai logs"
     )
     train_cmd.add_argument("--logs", default="training/selfplay")
-    train_cmd.add_argument("--init", default="weights/mortal.pth")
+    train_cmd.add_argument("--init", default=AUTO_MORTAL_WEIGHTS)
     train_cmd.add_argument("--out", default="weights/reviewer.pth")
     train_cmd.add_argument("--steps", type=_positive_int, default=4000)
     train_cmd.add_argument("--batch-size", type=_positive_int, default=256)
@@ -795,7 +809,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     improve_cmd.add_argument("--init", required=True)
     improve_cmd.add_argument("--out", required=True)
-    improve_cmd.add_argument("--control", default="weights/mortal.pth")
+    improve_cmd.add_argument("--control", default=AUTO_MORTAL_WEIGHTS)
     improve_cmd.add_argument(
         "--no-control", action="store_const", dest="control", const=None
     )
@@ -820,7 +834,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "duel", help="1-vs-3 duplicate match between two checkpoints"
     )
     duel_cmd.add_argument("--challenger", required=True)
-    duel_cmd.add_argument("--champion", default="weights/mortal.pth")
+    duel_cmd.add_argument("--champion", default=AUTO_MORTAL_WEIGHTS)
     duel_cmd.add_argument("--games", type=_positive_int, default=64)
     duel_cmd.add_argument("--seed", type=_u64, default=20000)
     duel_cmd.add_argument("--device", default="auto")
@@ -991,6 +1005,8 @@ def build_replay_bundle(run_dir: Path, game: str | None = None) -> dict[str, Any
     """One game as the web replay viewer wants it: every mjai event paired with the
     table snapshot after it, plus standings and the Mortal review when present."""
     from .spectator import TableState
+
+    evaluate = _mortal_evaluate()
 
     log_path = _select_log(run_dir, game)
     events = evaluate.load_mjai_log(str(log_path))

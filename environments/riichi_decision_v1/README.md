@@ -41,38 +41,41 @@ They were worth about +0.09 reward to gpt-5-mini on the pre-fix render, so they
 stay the default. The size of that gap has not been remeasured.
 
 For a serious ranking, build a bigger bank from Mortal self-play or grade an
-existing mjai log — banks are one `jongbench.positions.Position` JSON per line,
-plain or gzipped:
+existing mjai log. `jongbench positions` freezes both prompt variants and Mortal's
+grading into each compressed JSONL row:
 
 ```console
 $ jongbench positions --out bank.jsonl --games 4          # ~600 positions per game
 $ jongbench positions --out bank.jsonl --from-log runs/<stamp>/logs/g0.json.gz
 ```
 
-Grading is baked in at build time, so evaluation needs neither a runtime nor the
-Mortal checkpoint — scoring is pure trace.
+Rendering and grading happen when the bank is built. Evaluation needs neither
+`jongbench`, a native runtime, Torch, nor the Mortal checkpoint.
 
 ## Run
 
-From the repo root (the package imports `jongbench`, which runs from the checkout):
+From the Environments Hub:
 
 ```console
-$ PYTHONPATH=".:environments/riichi_decision_v1" .venv/bin/eval riichi_decision_v1 \
-    -m anthropic/claude-sonnet-5 \
-    --client.base-url https://openrouter.ai/api/v1 \
-    --client.api-key-var OPENROUTER_API_KEY \
-    --no-push
+$ uvx --from verifiers==0.3.0 eval <owner>/riichi-decision-v1 \
+    -m deepseek/deepseek-v4-flash -n 128 -r 1 -c 16 --no-push
 ```
 
-`eval` is the verifiers v1 CLI — call it by path, the shell builtin shadows the
-name. `--no-push` keeps the run local instead of uploading it to the Prime
-platform. The package bundles verifiers' plain chat harness as its default, so
-no harness or runtime flags are needed.
-
-The offline integration check (no model, no key) is:
+For local development from the repository root:
 
 ```console
-$ PYTHONPATH=".:environments/riichi_decision_v1" .venv/bin/validate riichi_decision_v1 \
+$ uv run --with ./environments/riichi_decision_v1 eval riichi_decision_v1 \
+    -m deepseek/deepseek-v4-flash -n 128 -r 1 -c 16 --no-push
+```
+
+Both commands use Prime Inference and `PRIME_API_KEY` by default. Point
+`client.base_url` and `client.api_key_var` at any OpenAI-compatible provider when
+needed.
+
+The offline integration check needs no model or API key:
+
+```console
+$ uv run --with ./environments/riichi_decision_v1 validate riichi_decision_v1 \
     --runtime.type subprocess
 ```
 
@@ -80,8 +83,8 @@ $ PYTHONPATH=".:environments/riichi_decision_v1" .venv/bin/validate riichi_decis
 
 | key           | default             | meaning                                              |
 |---------------|---------------------|------------------------------------------------------|
-| `bank`        | shipped sample bank | path to a position bank (`.jsonl` or `.jsonl.gz`)     |
-| `state_hints` | `true`              | include rule-derived shanten/waits/furiten in prompts |
+| `bank`        | shipped sample bank | rendered task bank (`.jsonl` or `.jsonl.gz`)           |
+| `state_hints` | `true`              | select the frozen prompt variant with rule-derived hints |
 
 ## Rewards and metrics
 
@@ -94,9 +97,8 @@ $ PYTHONPATH=".:environments/riichi_decision_v1" .venv/bin/validate riichi_decis
 
 ## Notes
 
-- verifiers does not force Prime inference: point `client.base_url` and
-  `client.api_key_var` at any OpenAI-compatible endpoint (jongbench itself uses
-  OpenRouter).
+- This is a verifiers v1 taskset. Run it with the v1 `eval` entrypoint rather
+  than the legacy `verifiers.load_environment` API.
 - A bank drawn from random self-play contains mostly poor boards. For ranking
-  strong models, generate source games from Mortal self-play (the default) or from
-  real logs.
+  strong models, generate source games from Mortal self-play (the default) or
+  from real logs.

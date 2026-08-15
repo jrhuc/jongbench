@@ -28,8 +28,7 @@ from jongbench.evaluate import (
 from jongbench.mortal_model import ACTION_SPACE, DQN, ConfidenceHead, PolicyHead
 from jongbench.selfplay import DUPLICATE_PTS, duel
 from jongbench.train import PolicyRLConfig, TrainConfig, train, train_policy_rl
-
-WEIGHTS = ROOT / "weights" / "mortal.pth"
+from jongbench.weights import resolve_mortal_weights
 
 
 class TsumogiriEngine:
@@ -231,22 +230,27 @@ def test_discover_logs_includes_plain_json(tmp_path: Path) -> None:
     assert discover_logs(tmp_path) == [str(log)]
 
 
-@pytest.mark.skipif(not WEIGHTS.exists(), reason="mortal.pth is not present")
-def test_load_engine_accepts_device_and_missing_policy() -> None:
-    engine = load_engine(str(WEIGHTS), device="cpu", use_policy=True)
+@pytest.fixture(scope="module")
+def mortal_weights() -> Path:
+    return resolve_mortal_weights()
+
+
+def test_load_engine_accepts_device_and_missing_policy(
+    mortal_weights: Path,
+) -> None:
+    engine = load_engine(str(mortal_weights), device="cpu", use_policy=True)
     assert engine.policy is None
     assert engine.use_policy is False
     assert engine.device.type == "cpu"
 
 
-@pytest.mark.skipif(not WEIGHTS.exists(), reason="mortal.pth is not present")
-def test_train_two_steps_on_tsumogiri_log(tmp_path: Path) -> None:
+def test_train_two_steps_on_tsumogiri_log(tmp_path: Path, mortal_weights: Path) -> None:
     log = _write_tsumogiri_log(tmp_path)
     out = tmp_path / "reviewer.pth"
     stats = train(
         TrainConfig(
             logs=str(tmp_path),
-            init=str(WEIGHTS),
+            init=str(mortal_weights),
             out=str(out),
             steps=2,
             batch_size=8,
@@ -265,7 +269,7 @@ def test_train_two_steps_on_tsumogiri_log(tmp_path: Path) -> None:
     )
     ckpt = torch.load(out, weights_only=True, map_location="cpu")
     assert "policy" in ckpt
-    init_ckpt = load_checkpoint(str(WEIGHTS))
+    init_ckpt = load_checkpoint(str(mortal_weights))
     _, initial_dqn, _, _, _, _ = networks_from_checkpoint(init_ckpt)
     initial_policy = PolicyHead.from_dqn(initial_dqn, temperature=0.1)
     assert any(

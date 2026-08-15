@@ -60,6 +60,27 @@ class Position:
             state_hints=state_hints,
         )
 
+    def to_task_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "name": f"kyoku{self.kyoku}-junme{self.junme}-seat{self.player_id}",
+            "prompt": self.prompt(state_hints=True),
+            "prompt_without_state_hints": self.prompt(state_hints=False),
+            "system_prompt": prompts.SYSTEM,
+            "menu": list(self.menu),
+            "rewards": list(self.rewards),
+            "best_index": self.best_index,
+            "info": {
+                "seat": self.player_id,
+                "kyoku": self.kyoku,
+                "honba": self.honba,
+                "junme": self.junme,
+                "tiles_left": self.tiles_left,
+                "shanten": self.shanten,
+                "at_furiten": self.at_furiten,
+            },
+        }
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 

@@ -102,12 +102,16 @@ def _position(**overrides) -> dict:
     return data
 
 
+def _task_row(**overrides) -> dict:
+    row = positions.Position.from_dict(_position()).to_task_dict()
+    row.update(overrides)
+    return row
+
+
 @pytest.fixture
 def taskset(tmp_path) -> RiichiDecisionTaskset:
     bank = tmp_path / "bank.jsonl"
-    bank.write_text(
-        json.dumps(_position()) + "\n" + json.dumps(_position(player_id=2)) + "\n"
-    )
+    bank.write_text(json.dumps(_task_row()) + "\n" + json.dumps(_task_row()) + "\n")
     return RiichiDecisionTaskset(RiichiDecisionConfig(bank=str(bank)))
 
 
@@ -120,8 +124,8 @@ def test_taskset_renders_a_prompt_and_carries_the_grading(taskset) -> None:
     assert len(tasks) == 2
     task = tasks[0]
     assert "Choose your action:" in (task.data.prompt or "")
-    assert task.data.menu == _position()["menu"]
-    assert task.data.rewards == _position()["rewards"]
+    assert task.data.menu == _task_row()["menu"]
+    assert task.data.rewards == _task_row()["rewards"]
     assert task.data.info["seat"] == 2
 
 
@@ -182,22 +186,35 @@ def test_package_bundles_the_chat_harness_as_its_default() -> None:
 
 
 def test_a_real_bank_round_trips_through_the_taskset(tmp_path) -> None:
-    """The bank the CLI writes must be loadable verbatim: Position -> JSON -> task."""
+    """The rendered bank the CLI writes must be loadable without jongbench."""
     position = positions.Position.from_dict(_position())
+    row = position.to_task_dict()
     bank = tmp_path / "bank.jsonl"
-    bank.write_text(json.dumps(position.to_dict(), separators=(",", ":")) + "\n")
+    bank.write_text(json.dumps(row, separators=(",", ":")) + "\n")
     task = next(
         iter(RiichiDecisionTaskset(RiichiDecisionConfig(bank=str(bank))).load())
     )
-    assert task.data.prompt == position.prompt()
+    assert task.data.prompt == row["prompt"]
+    assert task.data.system_prompt == row["system_prompt"]
 
 
-def test_bank_menu_must_match_the_prompted_position(tmp_path) -> None:
-    menu = list(_position()["menu"])
-    menu[1], menu[2] = menu[2], menu[1]
-    data = _position(menu=menu)
+def test_state_hints_select_the_frozen_prompt_variant(tmp_path) -> None:
+    row = _task_row(prompt="with hints", prompt_without_state_hints="without hints")
     bank = tmp_path / "bank.jsonl"
-    bank.write_text(json.dumps(data) + "\n")
-    taskset = RiichiDecisionTaskset(RiichiDecisionConfig(bank=str(bank)))
-    with pytest.raises(ValueError, match="stored menu does not match"):
-        list(taskset.load())
+    bank.write_text(json.dumps(row) + "\n")
+    taskset = RiichiDecisionTaskset(
+        RiichiDecisionConfig(bank=str(bank), state_hints=False)
+    )
+    assert next(iter(taskset.load())).data.prompt == "without hints"
+
+
+def test_bank_schema_and_grading_lengths_are_validated(tmp_path) -> None:
+    bank = tmp_path / "bank.jsonl"
+    for row, message in (
+        ({**_task_row(), "schema_version": 0}, "unsupported schema_version"),
+        ({**_task_row(), "rewards": [1.0]}, "mismatched menu and rewards"),
+    ):
+        bank.write_text(json.dumps(row) + "\n")
+        taskset = RiichiDecisionTaskset(RiichiDecisionConfig(bank=str(bank)))
+        with pytest.raises(ValueError, match=message):
+            list(taskset.load())
