@@ -14,11 +14,45 @@ MORTAL_WEIGHTS_SHA256 = (
 )
 MORTAL_WEIGHTS_FILENAME = f"mortal-298k-{MORTAL_WEIGHTS_SHA256[:12]}.pth"
 
+WEIGHTS_URL_ENV = "JONGBENCH_WEIGHTS_URL"
+WEIGHTS_SHA256_ENV = "JONGBENCH_WEIGHTS_SHA256"
+WEIGHTS_USE_POLICY_ENV = "JONGBENCH_WEIGHTS_USE_POLICY"
+
+
+def auto_weights_use_policy() -> bool:
+    value = os.environ.get(WEIGHTS_USE_POLICY_ENV, "").strip().lower()
+    if value in {"", "0", "false", "no", "off"}:
+        return False
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    raise ValueError(
+        f"{WEIGHTS_USE_POLICY_ENV} must be one of 1, true, yes, on, 0, false, no, off"
+    )
+
+
+def _auto_source() -> tuple[str, str, str]:
+    configured_url = os.environ.get(WEIGHTS_URL_ENV)
+    configured_sha256 = os.environ.get(WEIGHTS_SHA256_ENV)
+    if bool(configured_url) != bool(configured_sha256):
+        raise ValueError(
+            f"{WEIGHTS_URL_ENV} and {WEIGHTS_SHA256_ENV} must be set together"
+        )
+    if configured_url and configured_sha256:
+        sha256 = configured_sha256.lower()
+        if len(sha256) != 64 or any(char not in "0123456789abcdef" for char in sha256):
+            raise ValueError(f"{WEIGHTS_SHA256_ENV} must be a SHA-256 hex digest")
+        return configured_url, sha256, f"weights-{sha256[:12]}.pth"
+    return MORTAL_WEIGHTS_URL, MORTAL_WEIGHTS_SHA256, MORTAL_WEIGHTS_FILENAME
+
+
+def auto_weights_sha256() -> str:
+    return _auto_source()[1]
+
 
 def mortal_weights_cache_path() -> Path:
     cache = os.environ.get("JONGBENCH_CACHE_DIR") or os.environ.get("XDG_CACHE_HOME")
     root = Path(cache).expanduser() if cache else Path.home() / ".cache"
-    return root / "jongbench" / MORTAL_WEIGHTS_FILENAME
+    return root / "jongbench" / _auto_source()[2]
 
 
 def _sha256(path: Path) -> str:
@@ -36,23 +70,24 @@ def resolve_mortal_weights(weights: str | Path = AUTO_MORTAL_WEIGHTS) -> Path:
             raise FileNotFoundError(f"Mortal checkpoint not found: {path}")
         return path
 
+    url, expected_sha256, _ = _auto_source()
     path = mortal_weights_cache_path()
-    if path.is_file() and _sha256(path) == MORTAL_WEIGHTS_SHA256:
+    if path.is_file() and _sha256(path) == expected_sha256:
         return path
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     digest = hashlib.sha256()
-    request = Request(MORTAL_WEIGHTS_URL, headers={"User-Agent": "jongbench/0.1"})
+    request = Request(url, headers={"User-Agent": "jongbench/0.1"})
     try:
         with urlopen(request, timeout=60) as response, temporary.open("wb") as handle:
             while chunk := response.read(1024 * 1024):
                 digest.update(chunk)
                 handle.write(chunk)
         actual = digest.hexdigest()
-        if actual != MORTAL_WEIGHTS_SHA256:
+        if actual != expected_sha256:
             raise ValueError(
-                f"Mortal checkpoint checksum mismatch: {actual} != {MORTAL_WEIGHTS_SHA256}"
+                f"Mortal checkpoint checksum mismatch: {actual} != {expected_sha256}"
             )
         temporary.replace(path)
     finally:

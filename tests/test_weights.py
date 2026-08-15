@@ -42,6 +42,36 @@ def test_auto_checkpoint_is_downloaded_verified_and_cached(
     assert calls == 1
 
 
+def test_auto_checkpoint_can_use_a_verified_environment_source(
+    tmp_path, monkeypatch
+) -> None:
+    payload = b"reviewer checkpoint"
+    digest = hashlib.sha256(payload).hexdigest()
+    monkeypatch.setenv("JONGBENCH_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("JONGBENCH_WEIGHTS_URL", "https://example.test/reviewer.pth")
+    monkeypatch.setenv("JONGBENCH_WEIGHTS_SHA256", digest.upper())
+
+    def open_checkpoint(request, timeout):
+        assert request.full_url == "https://example.test/reviewer.pth"
+        assert timeout == 60
+        return io.BytesIO(payload)
+
+    monkeypatch.setattr(weights, "urlopen", open_checkpoint)
+
+    path = weights.resolve_mortal_weights()
+    assert path == tmp_path / "jongbench" / f"weights-{digest[:12]}.pth"
+    assert path.read_bytes() == payload
+    assert weights.auto_weights_sha256() == digest
+
+
+def test_auto_checkpoint_environment_source_requires_url_and_digest(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("JONGBENCH_WEIGHTS_URL", "https://example.test/reviewer.pth")
+    with pytest.raises(ValueError, match="must be set together"):
+        weights.resolve_mortal_weights()
+
+
 def test_bad_checkpoint_is_not_cached(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("JONGBENCH_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(weights, "MORTAL_WEIGHTS_SHA256", "0" * 64)

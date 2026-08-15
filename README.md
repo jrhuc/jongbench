@@ -52,6 +52,23 @@ Only after those gates pass, change each package version from `0.1.0rc1` to `0.1
 and push it with `--visibility PUBLIC`. The hanchan smoke is intentionally last: one
 episode costs roughly 1,000 model calls.
 
+A trained Phoenix reviewer checkpoint is an external model artifact, not environment
+package data. Configure a private hanchan environment's Hub **Variables** with a
+public checkpoint URL, its required digest, and policy mode:
+
+```text
+JONGBENCH_WEIGHTS_URL=https://.../reviewer-phoenix.pth
+JONGBENCH_WEIGHTS_SHA256=<64-character SHA-256>
+JONGBENCH_WEIGHTS_USE_POLICY=1
+```
+
+Environment Actions and hosted evaluations receive those variables automatically.
+The checkpoint is downloaded into the normal verified cache; an incomplete pair,
+bad digest, or checkpoint without a reviewer policy head fails closed. Without the
+variables, `auto` remains the pinned Mortal 298k checkpoint and Q policy. The
+decision environment is unaffected because its Mortal rewards are frozen into the
+published bank.
+
 Local v1 validation does not require a Prime account:
 
 ```console

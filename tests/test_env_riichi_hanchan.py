@@ -211,6 +211,8 @@ def test_episode_persists_as_a_jongbench_run_dir(played, episode_dir) -> None:
     )
     assert header["max_tool_calls"] == config["max_tool_calls"]
     assert header["weights"] == config["weights"]
+    assert config["weights_sha256"] is None
+    assert config["weights_use_policy"] is False
 
     for name, seat in zip(SEATS, played.seats, strict=True):
         lines = [
@@ -497,6 +499,24 @@ def test_a_budgeted_decision_stops_answering_when_it_runs_out() -> None:
 
     trace = SimpleNamespace(state=toolset.state)
     assert asyncio.run(SeatToolsTask.tool_budget_exhausted(None, trace))
+
+
+def test_journal_records_remote_reviewer_identity(monkeypatch) -> None:
+    from riichi_hanchan_v1.env import _journal_header
+
+    digest = "a" * 64
+    monkeypatch.setenv("JONGBENCH_WEIGHTS_URL", "https://example.test/reviewer.pth")
+    monkeypatch.setenv("JONGBENCH_WEIGHTS_SHA256", digest)
+    monkeypatch.setenv("JONGBENCH_WEIGHTS_USE_POLICY", "1")
+    header = _journal_header(
+        7,
+        RiichiHanchanEnvConfig(),
+        ["fake/model", "fake/model", "fake/model", "mortal"],
+        0,
+    )
+    assert header["weights"] == "auto"
+    assert header["weights_sha256"] == digest
+    assert header["weights_use_policy"] is True
 
 
 def test_journal_read_trims_and_guards(tmp_path) -> None:

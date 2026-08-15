@@ -91,6 +91,23 @@ Crash recovery still works. The journal records only the bridged seats, and the
 control seat recomputes its choices live on replay, reproducing the identical
 game.
 
+### Phoenix reviewer as the control
+
+A trained reviewer checkpoint adds a policy head to Mortal and is about 130 MB, so it
+is hosted as a model artifact rather than bundled into this environment. Set these
+plain Hub **Variables** to make every `mortal` control seat use it:
+
+```text
+JONGBENCH_WEIGHTS_URL=https://.../reviewer-phoenix.pth
+JONGBENCH_WEIGHTS_SHA256=<64-character SHA-256>
+JONGBENCH_WEIGHTS_USE_POLICY=1
+```
+
+The URL and digest must be set together. The environment downloads the artifact once
+into its cache, verifies it before loading, and rejects policy mode if the checkpoint
+has no reviewer policy head. Its crash journal records the effective digest and
+policy mode. With no variables, `mortal` remains the pinned Mortal 298k Q policy.
+
 ## Seat rotation
 
 Table position is not neutral: the dealer wins more, and a fixed seating measures a

@@ -12,7 +12,9 @@ if str(ROOT) not in sys.path:
 
 from types import SimpleNamespace
 
-import jongbench
+import pytest
+
+import jongbench  # noqa: F401
 import libriichi
 from jongbench import engines as engines_module
 from jongbench import prompts, providers
@@ -463,13 +465,44 @@ def test_auto_pass_reactions_skips_calls_without_any_conversation() -> None:
 def test_make_engine_mortal_loads_the_checkpoint(monkeypatch) -> None:
     from jongbench import evaluate, positions
 
-    loaded: list[str] = []
-    monkeypatch.setattr(
-        evaluate, "load_engine", lambda weights: loaded.append(weights) or object()
-    )
+    loaded: list[tuple[str, bool]] = []
+
+    def load_engine(weights, *, use_policy):
+        loaded.append((weights, use_policy))
+        return SimpleNamespace(use_policy=use_policy)
+
+    monkeypatch.setattr(evaluate, "load_engine", load_engine)
     engine = engines_module.make_engine(
         "seat3", "mortal", weights="w.pth", decision_log=[], temperature=0.7
     )
     assert isinstance(engine, positions.MortalArenaEngine)
     assert engine.name == "seat3"
-    assert loaded == ["w.pth"]
+    assert loaded == [("w.pth", False)]
+
+
+def test_make_engine_mortal_can_use_configured_reviewer_policy(monkeypatch) -> None:
+    from jongbench import evaluate
+
+    monkeypatch.setenv("JONGBENCH_WEIGHTS_USE_POLICY", "true")
+    loaded: list[bool] = []
+
+    def load_engine(weights, *, use_policy):
+        loaded.append(use_policy)
+        return SimpleNamespace(use_policy=True)
+
+    monkeypatch.setattr(evaluate, "load_engine", load_engine)
+    engines_module.make_engine("seat3", "mortal", weights="reviewer.pth")
+    assert loaded == [True]
+
+
+def test_make_engine_rejects_policy_mode_without_a_policy_head(monkeypatch) -> None:
+    from jongbench import evaluate
+
+    monkeypatch.setenv("JONGBENCH_WEIGHTS_USE_POLICY", "1")
+    monkeypatch.setattr(
+        evaluate,
+        "load_engine",
+        lambda weights, *, use_policy: SimpleNamespace(use_policy=False),
+    )
+    with pytest.raises(ValueError, match="no reviewer policy head"):
+        engines_module.make_engine("seat3", "mortal")
