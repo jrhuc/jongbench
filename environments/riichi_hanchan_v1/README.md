@@ -80,33 +80,34 @@ Setting a seat's model to the bare spec `mortal` seats the Mortal NN itself:
     --env.seat3.model mortal
 ```
 
-The control seat plays deterministically and locally: no API calls, no
-interactions, no traces, and an empty decision log. It anchors the table. The
-LLM seats' placements are measured against a known-strength opponent instead of
-only each other, and `jongbench review` grades everyone with the same model that
-is sitting at the table. With a control seat in play the 2.0 reward sum no longer
-holds, because the control absorbs whatever placement it wins.
+The control runs locally and deterministically. It makes no API calls and
+creates no interactions or traces. Its decision log is empty. LLM placement
+results include this control seat. A run with a control seat does not have a
+fixed reward sum of 2.0 because the control can receive placement reward.
 
-Crash recovery still works. The journal records only the bridged seats, and the
-control seat recomputes its choices live on replay, reproducing the identical
-game.
+The crash journal records only bridged seats. During recovery, the control
+recomputes its decisions from the saved game state.
 
-### Phoenix reviewer as the control
+### Phoenix reviewer control
 
-A trained reviewer checkpoint adds a policy head to Mortal and is about 130 MB, so it
-is hosted as a model artifact rather than bundled into this environment. Set these
-plain Hub **Variables** to make every `mortal` control seat use it:
+Phoenix reviewer v1 uses the Mortal v4 encoder. The checkpoint retains the
+Mortal Q head and adds a policy head, a next-rank head, and a confidence head.
+The hanchan control seat uses the policy head for action selection. The rank
+and confidence heads do not affect play.
+
+The checkpoint is a separate release asset. Set these Hub **Variables**:
 
 ```text
-JONGBENCH_WEIGHTS_URL=https://.../reviewer-phoenix.pth
-JONGBENCH_WEIGHTS_SHA256=<64-character SHA-256>
+JONGBENCH_WEIGHTS_URL=https://github.com/jrhuc/jongbench/releases/download/reviewer-phoenix-2026-v1/reviewer-phoenix-2026-v1.pth
+JONGBENCH_WEIGHTS_SHA256=1ba7f63a2ae0555ce1a99c76fed45d44c20162689015afe3568b2befabe693ab
 JONGBENCH_WEIGHTS_USE_POLICY=1
 ```
 
-The URL and digest must be set together. The environment downloads the artifact once
-into its cache, verifies it before loading, and rejects policy mode if the checkpoint
-has no reviewer policy head. Its crash journal records the effective digest and
-policy mode. With no variables, `mortal` remains the pinned Mortal 298k Q policy.
+The URL and digest must be set together. The environment downloads the file
+to the jongbench cache and verifies the digest before loading it. Policy mode
+fails if the checkpoint has no policy head. The crash journal records the
+digest and policy mode. Without these variables, a `mortal` seat uses the
+pinned Mortal 298k checkpoint and its Q head.
 
 ## Seat rotation
 
