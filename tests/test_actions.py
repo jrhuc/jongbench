@@ -37,7 +37,9 @@ class MenuRandomEngine:
             assert menu, state.brief_info()
 
             for item in menu:
-                state.validate_reaction(json.dumps(item["event"], separators=(",", ":")))
+                state.validate_reaction(
+                    json.dumps(item["event"], separators=(",", ":"))
+                )
 
             hora = [item for item in menu if item["kind"] == "hora"]
             if hora:

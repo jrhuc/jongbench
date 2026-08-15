@@ -12,7 +12,9 @@ if str(ROOT) not in sys.path:
 from jongbench import engines, reasoning
 
 
-def _record(kyoku=0, honba=0, junme=1, tiles_left=69, label="discard 1m", why="", **extra):
+def _record(
+    kyoku=0, honba=0, junme=1, tiles_left=69, label="discard 1m", why="", **extra
+):
     return {
         "player_id": 0,
         "kyoku": kyoku,
@@ -41,7 +43,9 @@ def _entry(kyoku=0, honba=0, junme=1, tiles_left=69, actual_index=0, probs=(0.7,
 
 
 def test_prob_loss_is_the_gap_to_mortals_favourite() -> None:
-    assert reasoning.prob_loss(_entry(actual_index=1, probs=(0.7, 0.3))) == pytest.approx(0.4)
+    assert reasoning.prob_loss(
+        _entry(actual_index=1, probs=(0.7, 0.3))
+    ) == pytest.approx(0.4)
     assert reasoning.prob_loss(_entry(actual_index=0, probs=(0.7, 0.3))) == 0.0
     assert reasoning.prob_loss({"details": [], "actual_index": 0}) == 0.0
     assert reasoning.prob_loss({"details": [{"prob": 0.5}], "actual_index": 9}) == 0.0

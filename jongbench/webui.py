@@ -27,6 +27,15 @@ from urllib.parse import parse_qs, urlparse
 from . import arena, prompts, providers
 from .artifacts import decision_filename
 from .engines import GameAborted, HumanIO, make_engine, sanitize_events
+from .run_artifacts import (
+    create_run_dir,
+    engine_names,
+    record_gameplay_checkpoints,
+    record_reviewer_checkpoint,
+    review_log,
+    write_review,
+    write_run_config,
+)
 from .spectator import Spectator, TableState
 from .weights import AUTO_MORTAL_WEIGHTS
 
@@ -283,10 +292,8 @@ def start_session(
         raise ValueError("only one human seat is supported")
     human_seat = human_seats[0] if human_seats else None
 
-    names = _engine_names(parsed)
-    run_dir = _make_run_dir(Path(runs_root), label)
-    for directory in ("logs", "decisions", "review"):
-        (run_dir / directory).mkdir(parents=True, exist_ok=True)
+    names = engine_names(model_specs)
+    run_dir = create_run_dir(runs_root, label)
 
     human_io = WebHumanIO()
     spectator = Spectator(delay=delay, names=names)
@@ -301,6 +308,7 @@ def start_session(
             human_io=human_io,
             decisions_dir=run_dir / "decisions",
             state_hints=state_hints,
+            weights=weights,
         )
         for seat in range(4)
     ]
@@ -311,7 +319,18 @@ def start_session(
         human_io=human_io,
         run_dir=str(run_dir),
     )
-    _write_config(run_dir, model_specs, session, seed, label, no_eval, state_hints)
+    write_run_config(
+        run_dir,
+        label=label,
+        models=model_specs,
+        names=session.names,
+        games=1,
+        seed_start=seed,
+        state_hints=state_hints,
+        human_seat=session.human_seat,
+        no_eval=no_eval,
+    )
+    record_gameplay_checkpoints(run_dir, engines)
     for engine in engines:
         engine.cancel_event = session.cancel_event
 
@@ -795,33 +814,19 @@ def _evaluate_run(
     )
     if not logs:
         raise RuntimeError("no mjai log was written")
-    events = evaluate.load_mjai_log(str(logs[0]))
-    check_cancelled()
-    mortal = evaluate.load_engine(weights)
-    check_cancelled()
-    reviews = evaluate.review_game(events, mortal, check_cancelled=check_cancelled)
-    check_cancelled()
-    players: dict[str, Any] = {}
-    for seat in range(4):
-        review = reviews[seat]
-        players[str(seat)] = {
-            "name": summary.names[seat],
-            "review": review,
-            "aggregates": evaluate.aggregates(review),
-        }
-    check_cancelled()
-    data = {
-        "seed": [int(summary.seed[0]), int(summary.seed[1])],
-        "names": list(summary.names),
-        "scores": list(summary.scores),
-        "placements": dict(summary.placements),
-        "players": players,
-    }
-    path = run_dir / "review" / f"{summary.seed[0]}_{summary.seed[1]}.json"
-    path.write_text(
-        json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
+    mortal = evaluate.load_engine(weights, use_policy=False)
+    checkpoint = getattr(mortal, "checkpoint", None)
+    if checkpoint is not None:
+        record_reviewer_checkpoint(run_dir, checkpoint)
+    payload = review_log(
+        logs[0],
+        summary,
+        mortal,
+        check_cancelled=check_cancelled,
     )
-    response = dict(data)
+    check_cancelled()
+    write_review(run_dir, payload)
+    response = dict(payload)
     response["run_dir"] = str(run_dir)
     return response
 
@@ -837,6 +842,7 @@ def _make_engine(
     human_io: WebHumanIO,
     decisions_dir: Path,
     state_hints: bool,
+    weights: str,
 ) -> Any:
     if spec.provider == "human":
         return make_engine(
@@ -845,6 +851,7 @@ def _make_engine(
     kwargs: dict[str, Any] = {
         "spectator": spectator,
         "state_hints": state_hints,
+        "weights": weights,
     }
     if spec.provider == "random":
         kwargs["seed"] = seed[0] + seat * 1009 + seed[1] * 97
@@ -861,60 +868,6 @@ def _prompt_safe_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if event.get("type") == "tsumo" and event.get("pai") == "?":
             event.pop("pai", None)
     return safe
-
-
-def _engine_names(parsed: list[providers.ProviderSpec]) -> list[str]:
-    seen: dict[str, int] = {}
-    names = []
-    for seat, spec in enumerate(parsed):
-        base = _safe_name(spec.display_name or f"P{seat}")
-        count = seen.get(base, 0) + 1
-        seen[base] = count
-        names.append(base if count == 1 else f"{base}-{count}")
-    return names
-
-
-def _safe_name(value: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9_.+-]+", "_", value.strip()).strip("._-")
-    return (cleaned or "player")[:60]
-
-
-def _make_run_dir(root: Path, label: str) -> Path:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    slug = _safe_name(label) if label.strip() else "watch"
-    name = f"{stamp}-{slug}"
-    path = root / name
-    suffix = 2
-    while path.exists():
-        path = root / f"{name}-{suffix}"
-        suffix += 1
-    return path
-
-
-def _write_config(
-    run_dir: Path,
-    model_specs: list[str],
-    session: GameSession,
-    seed: tuple[int, int],
-    label: str,
-    no_eval: bool,
-    state_hints: bool,
-) -> None:
-    config = {
-        "label": label or run_dir.name,
-        "created": datetime.now(timezone.utc).isoformat(),
-        "models": list(model_specs),
-        "names": list(session.names),
-        "games": 1,
-        "seed_start": [int(seed[0]), int(seed[1])],
-        "human_seat": session.human_seat,
-        "no_eval": bool(no_eval),
-        "state_hints": bool(state_hints),
-    }
-    (run_dir / "config.json").write_text(
-        json.dumps(config, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
 
 
 def _session_state(

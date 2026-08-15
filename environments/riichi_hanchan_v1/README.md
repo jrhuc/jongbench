@@ -1,56 +1,72 @@
 # riichi-hanchan-v1
 
-Four models play a full Tenhou-rules hanchan against each other. Multi-agent
-verifiers `Env`: one episode is one hanchan refereed by the vendored `libriichi`
-arena, each seat a live interaction, so every trace is a real rollout.
+One evaluated model plays a full Tenhou-rules hanchan against three fixed Mortal
+controls. One episode is one hanchan refereed by the vendored `libriichi` arena;
+the package defaults to four episodes with the evaluated seat rotated through every
+table position.
 
-Reward is placement. The four placements are a permutation of 1–4, so the rewards
-sum to 2.0 whatever the models do; the episode is zero-sum.
+Normalized placement rewards across all four seats are constant-sum (2.0), so pooling
+all seats—or playing only against copies of the evaluated model—cannot rank models.
+The standard environment therefore reports exactly one placement reward per episode
+for `seat0`. Symmetric four-model tournament mode remains available with
+`evaluated_agent=None`, but its per-agent results must be analyzed rather than treated
+as a scalar benchmark score.
 
-This is the expensive way to measure a model: about 1,000 calls per episode, and
-every seat sees a board the other three steered. For a cheaper comparison on
+This is the expensive way to measure a model. For a cheaper comparison on
 byte-identical prompts, use `riichi-decision-v1`, which grades single positions
 against Mortal.
 
 ## Agents
 
-`seat0`..`seat3`, each a `vf.AgentConfig`. A seat holds one conversation, and one
-verifiers interaction, per kyoku: an opening board, then per-decision deltas, on the
-same prompt path `jongbench run` uses, including the furo toggle and invalid-reply
-retries. Finished kyoku are not carried into later requests; dragging them measured
-at about 3x the input tokens. Each kyoku trace is a bounded training sample that
-carries the seat's final placement.
+`seat0`..`seat3` are `vf.AgentConfig` roles. By default, unpinned `seat0` uses the
+run's `-m` model and `seat1`..`seat3` are fixed `mortal` controls. A live model holds
+one interaction per kyoku: an opening board followed by decision deltas on the same
+prompt path as `jongbench run`. Finished kyoku are not carried into later requests.
+
+In evaluation, all per-kyoku traces retain a weight-zero `placement_return` for
+inspection, while only the final trace of the evaluated role is a trainable reward
+carrier. Verifiers therefore averages one placement per episode rather than one per
+kyoku. Training clients instead receive the placement return on every bounded kyoku
+trace.
 
 ## Run
 
-Install the package with the command shown on its Environments Hub page, then run
-one episode at a time. The Hub package pins SHA-256-verified CPython 3.12 and 3.13
-x86-64 manylinux wheels. Direct Hub installation on macOS or arm64 is not supported;
-use the source checkout described below on those platforms.
+Install the package with the command shown on its Environments Hub page. Published
+installs include the `mortal` extra and therefore PyTorch. The Hub artifact pins
+x86-64 manylinux core wheels; other platforms retain a mandatory core requirement but
+need the source checkout below because no compatible core binary is published.
+
+The standard benchmark uses the run model as `seat0` and the three default Mortal
+controls. Four episodes rotate it through every table position:
 
 ```console
 $ .venv/bin/eval riichi_hanchan_v1 \
-    --env.seat0.model anthropic/claude-sonnet-5 \
-    --env.seat1.model openai/gpt-5.2 \
-    --env.seat2.model google/gemini-3-pro \
-    --env.seat3.model deepseek/deepseek-v4 \
+    -m anthropic/claude-sonnet-5 \
     --env.log-dir episodes \
     --client.base-url https://openrouter.ai/api/v1 \
     --client.api-key-var OPENROUTER_API_KEY \
-    -n 1 --no-push
+    -n 4 --no-push
 ```
+
+Seats may be overridden with `--env.seatN.model` to use fixed LLM opponents. Set
+`evaluated_agent=None` only for a tournament/self-play run whose per-agent output is
+analyzed separately; the pooled tournament reward is the invariant constant-sum
+average, not a model score.
 
 For local development from this repository:
 
 ```console
-$ uv run --with verifiers==0.3.0 --with ./environments/riichi_hanchan_v1 \
+$ uv run --extra mortal --with-editable . --with verifiers==0.3.0 \
+    --with ./environments/riichi_hanchan_v1 \
     eval riichi_hanchan_v1 -n 1 --no-push
 ```
 
 `eval` is the Verifiers v1 CLI; calling its virtual-environment path avoids the
-POSIX shell builtin of the same name. `--no-push` keeps the run local instead of
-uploading it to Prime. A seat with no pinned model plays the run's `-m` model—the
-policy under evaluation.
+POSIX shell builtin of the same name. `--with-editable .` supplies the local core and
+`--extra mortal` installs its PyTorch dependency; both are required for a local run
+with a `mortal` seat. `--no-push`
+keeps the run local instead of uploading it to Prime. A seat with no pinned model
+plays the run's `-m` model—the policy under evaluation.
 
 ### Metered cost
 
@@ -63,59 +79,57 @@ responses that failed upstream. A provider that meters nothing leaves the column
 
 ## Config
 
-| key                   | default | meaning                                                       |
-|-----------------------|---------|---------------------------------------------------------------|
-| `state_hints`         | `true`  | rule-derived shanten/waits/furiten in prompts                  |
-| `auto_pass_reactions` | `false` | pass pure chi/pon/kan reactions without a model call (~15% of decisions; the seats then never call on discards) |
-| `tools`               | `false` | board-query tools instead of inline hints (below)              |
+| key                   | default | meaning |
+|-----------------------|---------|---------|
+| `seat0.model`         | run model | policy being evaluated |
+| `seat1..3.model`      | `mortal` | fixed deterministic control opponents |
+| `evaluated_agent`     | `seat0` | sole role contributing standard eval reward; `None` selects tournament mode |
+| `state_hints`         | `true`  | rule-derived shanten/waits/furiten in prompts |
+| `auto_pass_reactions` | `false` | pass pure chi/pon/kan reactions without a model call (~15% of decisions) |
+| `tools`               | `false` | board-query tools instead of inline hints (below) |
 | `max_tool_calls`      | `32`    | tool calls one decision may spend before the seat must commit (`0` lifts the cap) |
-| `seat_rotation`       | `false` | episode *i* seats `seat0` at table position *i*, so a batch of 4 gives every agent each position (below) |
-| `log_dir`             | `None`  | persist each episode as a jongbench run dir (below)            |
-| `weights`             | `auto`  | verified, cached Mortal checkpoint for a `mortal` control seat (below) |
+| `seat_rotation`       | `true`  | rotate the evaluated role through all chairs over the default four episodes |
+| `log_dir`             | `None`  | persist each episode as a jongbench run dir (below) |
+| `weights`             | `auto`  | verified, cached Mortal checkpoint for controls |
+| `control_use_policy`  | `false` | opt controls into a checkpoint's policy head instead of deterministic Q |
 
 ## Mortal as a control seat
 
-Setting a seat's model to the bare spec `mortal` seats the Mortal NN itself:
-
-```console
-    --env.seat3.model mortal
-```
-
-The control runs locally and deterministically. It makes no API calls and
-creates no interactions or traces. Its decision log is empty. LLM placement
-results include this control seat. A run with a control seat does not have a
-fixed reward sum of 2.0 because the control can receive placement reward.
-
-The crash journal records only bridged seats. During recovery, the control
-recomputes its decisions from the saved game state.
+The default `seat1`..`seat3` model spec `mortal` runs the Mortal NN locally. A
+control makes no API calls and creates no interactions or traces; only the evaluated
+role contributes the standard reward. Its placement still affects the evaluated
+role's outcome. The crash journal records bridged seats, while deterministic controls
+recompute their choices during recovery.
 
 ### Phoenix reviewer control
 
-Phoenix reviewer v1 uses the Mortal v4 encoder. The checkpoint retains the
-Mortal Q head and adds a policy head, a next-rank head, and a confidence head.
-The hanchan control seat uses the policy head for action selection. The rank
-and confidence heads do not affect play.
-
-The checkpoint is a separate release asset. Set these Hub **Variables**:
+Phoenix reviewer v1 retains Mortal's Q head and adds policy, next-rank, and confidence
+heads. To use its policy as the control opponent, set the checkpoint URL and digest as
+Hub variables and opt in explicitly:
 
 ```text
 JONGBENCH_WEIGHTS_URL=https://github.com/jrhuc/jongbench/releases/download/reviewer-phoenix-2026-v1/reviewer-phoenix-2026-v1.pth
 JONGBENCH_WEIGHTS_SHA256=1ba7f63a2ae0555ce1a99c76fed45d44c20162689015afe3568b2befabe693ab
-JONGBENCH_WEIGHTS_USE_POLICY=1
 ```
 
-The URL and digest must be set together. The environment downloads the file
-to the jongbench cache and verifies the digest before loading it. Policy mode
-fails if the checkpoint has no policy head. The crash journal records the
-digest and policy mode. Without these variables, a `mortal` seat uses the
-pinned Mortal 298k checkpoint and its Q head.
+```console
+$ .venv/bin/eval riichi_hanchan_v1 -m MODEL \
+    --env.control-use-policy true -n 4 --no-push
+```
+
+The URL and digest must be set together and are verified before loading. Policy mode
+fails if the checkpoint has no policy head. The resolved path, immutable digest,
+source, and policy mode are recorded in the journal and run artifact. Without these
+variables, controls use the pinned Mortal 298k checkpoint and its deterministic Q
+head.
 
 ## Seat rotation
 
-Table position is not neutral: the dealer wins more, and a fixed seating measures a
-model's placements from one chair. `--env.seat-rotation true` moves agent *i* to
-table position `(i + episode) % 4`, so a four-episode batch sits every agent in every
-chair exactly once and the position cancels out of the pooled result.
+Table position is not neutral. The package defaults to four examples and
+`seat_rotation=true`; episode *i* maps each role to table position
+`(role + episode) % 4`. The evaluated role therefore occupies every chair exactly
+once before its placement rewards are averaged. Override `-n` or set
+`--env.seat-rotation false` only for an intentionally unbalanced smoke run.
 
 Rewards, decision logs and `trace.info["hanchan"]` follow the agent, not the chair:
 `seat0`'s reward is `seat0`'s placement wherever it sat, and `table_position` records
@@ -158,14 +172,18 @@ mode needs the `PYTHONPATH` entries to be absolute (`$PWD` as above, not `.`).
 
 ## Rewards and metrics
 
-A seat normally produces one trace per kyoku; a forced tool-budget fallback may split
-that kyoku so the next decision can continue. Every trace carries the same seat-level
-signals:
+A live seat normally produces one trace per kyoku; a forced tool-budget fallback may
+split it. Evaluation and training intentionally use different aggregation units:
 
-- `placement` (reward) — 1st → 1.0, 4th → 0.0. A seat's mean reward is exactly its
-  placement reward, and the four seats' rewards sum to 2.0.
-- `final_score`, `decisions`, `fallbacks`, `calls_declined` (metrics, seat totals).
-- `trace.info["hanchan"]` — seat, placement, score, seed, seat order, kyoku index.
+- **Evaluation:** all kyoku traces record `placement_return` at weight zero. Exactly
+  one trace for `evaluated_agent` is marked trainable and receives weighted
+  `placement` (1st → 1.0, 4th → 0.0). The run-level mean is therefore one equally
+  weighted outcome per hanchan, independent of kyoku count.
+- **Training:** every evaluated-role kyoku trace is trainable and receives weighted
+  `placement_return`, preserving bounded training samples.
+- `final_score`, `decisions`, `fallbacks`, and `calls_declined` are seat-total metrics.
+- `trace.info["hanchan"]` records seat/model identity, placement, table position,
+  kyoku count, policy role, and whether the trace is the evaluation carrier.
 
 ## Post-hoc Mortal grading
 
@@ -194,8 +212,8 @@ hanchan, reviewed post-hoc as above):
 | openai/gpt-5.6-luna             | 4 4 2 2    | 3.00 | 63.4          | 51.7% | $0.15 |
 
 The two signals disagree at this sample size, which is why both are reported. Mortal
-grades deepseek's decisions best in every game, but zero-sum placement over four
-hanchan is noisy enough to leave it third; the per-decision rating converges orders
+grades deepseek's decisions best in every game, but constant-sum tournament
+placement over four hanchan is noisy enough to leave it third; per-decision rating converges orders
 of magnitude faster than the outcome. Spend tracks reasoning depth rather than rank.
 At effort `low` luna answered in about 190 completion tokens per decision while
 deepseek spent a median of about 6.8k, and produced the batch's only fallbacks: 10
@@ -293,7 +311,8 @@ not conversations, so a resumed seat starts its live hands with an empty scratch
 
 - Hard to reward-hack: placement is computed by the Rust referee from final scores,
   every action is validated against the legal menu, and post-hoc grading uses a
-  frozen external model. There is no tool surface or environment state to game.
+  frozen external model. Optional tools expose only rule-derived board information;
+  they cannot mutate the referee or grader.
 - One hanchan per episode. A seat holds one conversation, and driving several games
   through one engine would interleave their turns into it.
 - The taskset is an infinite seeded generator; episode `i` uses seed `20260000 + i`,

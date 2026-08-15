@@ -3,7 +3,15 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .tiles import akaize, deaka, fmt_tile, is_aka, label_to_tile, sort_tiles, tile_to_label
+from .tiles import (
+    akaize,
+    deaka,
+    fmt_tile,
+    is_aka,
+    label_to_tile,
+    sort_tiles,
+    tile_to_label,
+)
 from .tiles import tiles_from_counts
 
 MenuItem = dict[str, Any]
@@ -19,9 +27,21 @@ def build_menu(state: Any) -> list[MenuItem]:
     menu: list[MenuItem] = []
 
     if cans.can_tsumo_agari:
-        _add(menu, state, "tsumo (win)", {"type": "hora", "actor": actor, "target": target}, "hora")
+        _add(
+            menu,
+            state,
+            "tsumo (win)",
+            {"type": "hora", "actor": actor, "target": target},
+            "hora",
+        )
     if cans.can_ron_agari:
-        _add(menu, state, "ron (win)", {"type": "hora", "actor": actor, "target": target}, "hora")
+        _add(
+            menu,
+            state,
+            "ron (win)",
+            {"type": "hora", "actor": actor, "target": target},
+            "hora",
+        )
 
     if cans.can_riichi and _mask_allows(mask, 37):
         _add(menu, state, "riichi", {"type": "reach", "actor": actor}, "riichi")
@@ -34,20 +54,44 @@ def build_menu(state: Any) -> list[MenuItem]:
         if cans.can_chi_low and _mask_allows(mask, 38):
             consumed = _chi_consumed(state, pai, "low")
             event = _call_event("chi", actor, target, pai, consumed)
-            _add(menu, state, f"chi {fmt_tile(pai)} with {_tiles_text(consumed)}", event, "chi")
+            _add(
+                menu,
+                state,
+                f"chi {fmt_tile(pai)} with {_tiles_text(consumed)}",
+                event,
+                "chi",
+            )
         if cans.can_chi_mid and _mask_allows(mask, 39):
             consumed = _chi_consumed(state, pai, "mid")
             event = _call_event("chi", actor, target, pai, consumed)
-            _add(menu, state, f"chi {fmt_tile(pai)} with {_tiles_text(consumed)}", event, "chi")
+            _add(
+                menu,
+                state,
+                f"chi {fmt_tile(pai)} with {_tiles_text(consumed)}",
+                event,
+                "chi",
+            )
         if cans.can_chi_high and _mask_allows(mask, 40):
             consumed = _chi_consumed(state, pai, "high")
             event = _call_event("chi", actor, target, pai, consumed)
-            _add(menu, state, f"chi {fmt_tile(pai)} with {_tiles_text(consumed)}", event, "chi")
+            _add(
+                menu,
+                state,
+                f"chi {fmt_tile(pai)} with {_tiles_text(consumed)}",
+                event,
+                "chi",
+            )
 
         if cans.can_pon and _mask_allows(mask, 41):
             for consumed in _pon_consumed_variants(state, pai):
                 event = _call_event("pon", actor, target, pai, consumed)
-                if _add(menu, state, f"pon {fmt_tile(pai)} with {_tiles_text(consumed)}", event, "pon"):
+                if _add(
+                    menu,
+                    state,
+                    f"pon {fmt_tile(pai)} with {_tiles_text(consumed)}",
+                    event,
+                    "pon",
+                ):
                     break
 
         if cans.can_daiminkan and _mask_allows(mask, 42):
@@ -69,7 +113,12 @@ def build_menu(state: Any) -> list[MenuItem]:
         for tile in state.kakan_candidates():
             base = deaka(tile)
             for pai2, consumed in _kakan_variants(state, base):
-                event = {"type": "kakan", "actor": actor, "pai": pai2, "consumed": consumed}
+                event = {
+                    "type": "kakan",
+                    "actor": actor,
+                    "pai": pai2,
+                    "consumed": consumed,
+                }
                 label = f"kakan {fmt_tile(pai2)}"
                 if is_aka(pai2):
                     label += " (red)"
@@ -77,7 +126,9 @@ def build_menu(state: Any) -> list[MenuItem]:
                     break
 
     if cans.can_ryukyoku and _mask_allows(mask, 44):
-        _add(menu, state, "abort hand (nine terminals)", {"type": "ryukyoku"}, "ryukyoku")
+        _add(
+            menu, state, "abort hand (nine terminals)", {"type": "ryukyoku"}, "ryukyoku"
+        )
 
     if not cans.can_discard and bool(cans.can_pass) and _mask_allows(mask, 45):
         _add(menu, state, "pass", {"type": "none"}, "none")
@@ -85,7 +136,9 @@ def build_menu(state: Any) -> list[MenuItem]:
     return menu
 
 
-def _add(menu: list[MenuItem], state: Any, label: str, event: dict[str, Any], kind: str) -> bool:
+def _add(
+    menu: list[MenuItem], state: Any, label: str, event: dict[str, Any], kind: str
+) -> bool:
     if not _valid(state, event):
         return False
     menu.append({"label": label, "event": event, "kind": kind})
@@ -113,7 +166,9 @@ def _mask_allows(mask: list[bool] | None, idx: int) -> bool:
     return mask is None or idx < len(mask) and mask[idx]
 
 
-def _add_discards(menu: list[MenuItem], state: Any, actor: int, mask: list[bool] | None) -> None:
+def _add_discards(
+    menu: list[MenuItem], state: Any, actor: int, mask: list[bool] | None
+) -> None:
     drawn = state.last_self_tsumo()
     seen: set[str] = set()
     tiles = tiles_from_counts(list(state.tehai), list(state.akas_in_hand))
@@ -134,8 +189,16 @@ def _add_discards(menu: list[MenuItem], state: Any, actor: int, mask: list[bool]
         _add(menu, state, label, event, "discard")
 
 
-def _call_event(kind: str, actor: int, target: int, pai: str, consumed: list[str]) -> dict[str, Any]:
-    return {"type": kind, "actor": actor, "target": target, "pai": pai, "consumed": consumed}
+def _call_event(
+    kind: str, actor: int, target: int, pai: str, consumed: list[str]
+) -> dict[str, Any]:
+    return {
+        "type": kind,
+        "actor": actor,
+        "target": target,
+        "pai": pai,
+        "consumed": consumed,
+    }
 
 
 def _chi_consumed(state: Any, pai: str, which: str) -> list[str]:
@@ -165,19 +228,16 @@ def _has_chi_aka(
     pin: set[str],
     sou: set[str],
 ) -> bool:
-    return (
-        pai in man
-        and akas[0]
-        or pai in pin
-        and akas[1]
-        or pai in sou
-        and akas[2]
-    )
+    return pai in man and akas[0] or pai in pin and akas[1] or pai in sou and akas[2]
 
 
 def _pon_consumed_variants(state: Any, pai: str) -> list[list[str]]:
     base = deaka(pai)
-    if base in _AKA_INDEX and not is_aka(pai) and list(state.akas_in_hand)[_AKA_INDEX[base]]:
+    if (
+        base in _AKA_INDEX
+        and not is_aka(pai)
+        and list(state.akas_in_hand)[_AKA_INDEX[base]]
+    ):
         return [[akaize(base), base], [base, base]]
     return [[base, base]]
 

@@ -462,47 +462,90 @@ def test_auto_pass_reactions_skips_calls_without_any_conversation() -> None:
     assert engine.auto_reaction(_state(True), own_turn, _REACTION_EVENTS, 0) is None
 
 
-def test_make_engine_mortal_loads_the_checkpoint(monkeypatch) -> None:
+def test_make_engine_mortal_loads_one_resolved_checkpoint(
+    tmp_path: Path, monkeypatch
+) -> None:
     from jongbench import evaluate, positions
 
-    loaded: list[tuple[str, bool]] = []
+    checkpoint_path = tmp_path / "w.pth"
+    checkpoint_path.write_bytes(b"checkpoint")
+    loaded = []
 
-    def load_engine(weights, *, use_policy):
-        loaded.append((weights, use_policy))
-        return SimpleNamespace(use_policy=use_policy)
+    def load_engine(checkpoint):
+        loaded.append(checkpoint)
+        return SimpleNamespace(use_policy=checkpoint.use_policy)
 
     monkeypatch.setattr(evaluate, "load_engine", load_engine)
     engine = engines_module.make_engine(
-        "seat3", "mortal", weights="w.pth", decision_log=[], temperature=0.7
+        "seat3",
+        "mortal",
+        weights=checkpoint_path,
+        use_policy=False,
+        decision_log=[],
+        temperature=0.7,
     )
     assert isinstance(engine, positions.MortalArenaEngine)
     assert engine.name == "seat3"
-    assert loaded == [("w.pth", False)]
+    assert loaded[0].path == checkpoint_path
+    assert loaded[0].source == str(checkpoint_path)
+    assert loaded[0].use_policy is False
+    assert engine.checkpoint is loaded[0]
 
 
-def test_make_engine_mortal_can_use_configured_reviewer_policy(monkeypatch) -> None:
+def test_make_engine_mortal_can_use_configured_reviewer_policy(
+    tmp_path: Path, monkeypatch
+) -> None:
     from jongbench import evaluate
 
+    checkpoint = tmp_path / "reviewer.pth"
+    checkpoint.write_bytes(b"reviewer")
     monkeypatch.setenv("JONGBENCH_WEIGHTS_USE_POLICY", "true")
     loaded: list[bool] = []
 
-    def load_engine(weights, *, use_policy):
-        loaded.append(use_policy)
+    def load_engine(checkpoint):
+        loaded.append(checkpoint.use_policy)
         return SimpleNamespace(use_policy=True)
 
     monkeypatch.setattr(evaluate, "load_engine", load_engine)
-    engines_module.make_engine("seat3", "mortal", weights="reviewer.pth")
+    engines_module.make_engine("seat3", "mortal", weights=checkpoint)
     assert loaded == [True]
 
 
-def test_make_engine_rejects_policy_mode_without_a_policy_head(monkeypatch) -> None:
+def test_make_engine_explicit_policy_ignores_invalid_ambient_value(
+    tmp_path: Path, monkeypatch
+) -> None:
     from jongbench import evaluate
 
+    checkpoint = tmp_path / "reviewer.pth"
+    checkpoint.write_bytes(b"reviewer")
+    monkeypatch.setenv("JONGBENCH_WEIGHTS_USE_POLICY", "invalid")
+    monkeypatch.setenv("JONGBENCH_WEIGHTS_URL", "https://incomplete.test/model.pth")
+    loaded = []
+    monkeypatch.setattr(
+        evaluate,
+        "load_engine",
+        lambda checkpoint: (
+            loaded.append(checkpoint.use_policy) or SimpleNamespace(use_policy=False)
+        ),
+    )
+
+    engines_module.make_engine("seat3", "mortal", weights=checkpoint, use_policy=False)
+
+    assert loaded == [False]
+
+
+def test_make_engine_rejects_policy_mode_without_a_policy_head(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from jongbench import evaluate
+
+    checkpoint = tmp_path / "reviewer.pth"
+    checkpoint.write_bytes(b"reviewer")
     monkeypatch.setenv("JONGBENCH_WEIGHTS_USE_POLICY", "1")
     monkeypatch.setattr(
         evaluate,
         "load_engine",
-        lambda weights, *, use_policy: SimpleNamespace(use_policy=False),
+        lambda checkpoint: SimpleNamespace(use_policy=False),
     )
     with pytest.raises(ValueError, match="no reviewer policy head"):
-        engines_module.make_engine("seat3", "mortal")
+        engines_module.make_engine("seat3", "mortal", weights=checkpoint)

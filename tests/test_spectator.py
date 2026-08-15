@@ -145,16 +145,32 @@ def test_spectator_reconstruction() -> None:
             assert table.tiles_left == 70
             seen_discard_total = 0
         elif event["type"] == "tsumo":
-            assert table.tiles_left == before_tiles_left - 1, (idx, event, before_tiles_left, table.tiles_left)
+            assert table.tiles_left == before_tiles_left - 1, (
+                idx,
+                event,
+                before_tiles_left,
+                table.tiles_left,
+            )
         elif event["type"] == "dahai":
             seen_dahai += 1
             seen_discard_total += 1
             total_discards = sum(len(row) for row in table.discards)
             assert total_discards == before_discards + 1, (idx, event)
-            assert total_discards == seen_discard_total, (idx, event, total_discards, seen_discard_total)
+            assert total_discards == seen_discard_total, (
+                idx,
+                event,
+                total_discards,
+                seen_discard_total,
+            )
             for seat in range(4):
                 tile_equiv = len(table.hands[seat]) + 3 * len(table.melds[seat])
-                assert tile_equiv in {13, 14}, (idx, seat, tile_equiv, event, table.snapshot())
+                assert tile_equiv in {13, 14}, (
+                    idx,
+                    seat,
+                    tile_equiv,
+                    event,
+                    table.snapshot(),
+                )
 
     assert seen_dahai > 0
     assert any(table.discards)
@@ -171,7 +187,9 @@ def test_spectator_reconstruction() -> None:
     expected = 0
     for kyoku_events in kyokus:
         n_events = len(kyoku_events)
-        prefixes = sorted({1, min(2, n_events), min(5, n_events), max(1, n_events // 2), n_events})
+        prefixes = sorted(
+            {1, min(2, n_events), min(5, n_events), max(1, n_events // 2), n_events}
+        )
         for idx, prefix in enumerate(prefixes):
             spectator.publish(0, idx % 4, kyoku_events[:prefix])
             spectator.publish(0, (idx + 1) % 4, kyoku_events[:prefix])
@@ -189,7 +207,9 @@ def test_spectator_reconstruction() -> None:
 
     feed = spectator.events_since(0)
     assert [item["seq"] for item in feed] == list(range(1, len(feed) + 1))
-    assert [item["event"] for item in feed] == [event for kyoku in kyokus for event in kyoku]
+    assert [item["event"] for item in feed] == [
+        event for kyoku in kyokus for event in kyoku
+    ]
 
     first_table = TableState()
     if events[0]["type"] == "start_game":

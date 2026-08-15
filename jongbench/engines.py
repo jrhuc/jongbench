@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import actions, prompts, providers
-from .weights import AUTO_MORTAL_WEIGHTS, auto_weights_use_policy
+from .weights import AUTO_MORTAL_WEIGHTS, resolve_mortal_checkpoint
 
 DecisionSink = list[dict[str, Any]] | Callable[[dict[str, Any]], None]
 
@@ -599,13 +599,19 @@ def make_engine(name: str, spec_str: str, **kwargs: Any) -> BaseEngine:
         # Imported lazily: positions imports this module, and evaluate pulls in torch.
         from . import evaluate, positions
 
-        use_policy = bool(kwargs.pop("use_policy", auto_weights_use_policy()))
-        engine = evaluate.load_engine(str(weights), use_policy=use_policy)
+        configured_policy = (
+            bool(kwargs.pop("use_policy")) if "use_policy" in kwargs else None
+        )
+        checkpoint = resolve_mortal_checkpoint(weights, use_policy=configured_policy)
+        engine = evaluate.load_engine(checkpoint)
+        use_policy = checkpoint.use_policy
         if use_policy and not engine.use_policy:
             raise ValueError("configured checkpoint has no reviewer policy head")
-        return positions.MortalArenaEngine(
+        control = positions.MortalArenaEngine(
             name, engine, spectator=kwargs.get("spectator")
         )
+        control.checkpoint = checkpoint
+        return control
     return LLMEngine(name, spec_str, **kwargs)
 
 

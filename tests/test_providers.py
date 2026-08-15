@@ -135,7 +135,9 @@ def test_metered_cost_rides_the_usage_chunk() -> None:
     usage = SimpleNamespace(prompt_tokens=10, completion_tokens=1, cost=0.00123)
     provider, _ = _provider([_chunk(content="ok"), _chunk(usage=usage)])
 
-    assert provider.complete([{"role": "user", "content": "go"}]).usage["cost"] == 0.00123
+    assert (
+        provider.complete([{"role": "user", "content": "go"}]).usage["cost"] == 0.00123
+    )
 
 
 def test_unmetered_provider_reports_no_cost_at_all() -> None:
@@ -158,7 +160,9 @@ def test_usage_absent_details_defaults_to_zero() -> None:
 
 
 def test_reasoning_effort_and_provider_pin_ride_extra_body() -> None:
-    provider, completions = _provider([_chunk(content="x")], reasoning="high", pin=("cerebras",))
+    provider, completions = _provider(
+        [_chunk(content="x")], reasoning="high", pin=("cerebras",)
+    )
     provider.complete([{"role": "user", "content": "go"}])
 
     extra = completions.calls[0]["extra_body"]
@@ -184,7 +188,10 @@ def test_no_extra_body_when_unconfigured() -> None:
 def test_spec_reasoning_reaches_the_provider() -> None:
     provider = make_provider(parse_spec("openai/gpt-5.2#high"))
     assert provider.reasoning == "high"
-    assert make_provider(parse_spec("openai/gpt-5.2#high"), reasoning="low").reasoning == "low"
+    assert (
+        make_provider(parse_spec("openai/gpt-5.2#high"), reasoning="low").reasoning
+        == "low"
+    )
 
 
 def test_cacheable_marks_an_ephemeral_breakpoint() -> None:

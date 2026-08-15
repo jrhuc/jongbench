@@ -13,12 +13,14 @@ the eval, backed by a shared harness:
   Mortal-graded decision per task. Byte-identical prompts across models, one call per
   graded decision, pure trace scoring (no runtime, no checkpoint at eval time).
 - **[environments/riichi_hanchan_v1](environments/riichi_hanchan_v1/)** — the
-  multi-agent env: four seats, one hanchan per episode, zero-sum placement reward.
-  Set `log_dir` and each rollout is also a jongbench run dir that `review` and
-  `reasoning` grade post-hoc.
+  multi-agent env: one evaluated model plays a full hanchan against three fixed
+  Mortal controls. One placement reward is reported per episode; four rotated
+  episodes balance table position. Set `log_dir` and each rollout is also a
+  jongbench run dir that `review` and `reasoning` grade post-hoc.
 
-Both measure agreement with Mortal. The decision env does it cheaply, one position at
-a time; the hanchan env does it in full self-steered play.
+The decision env measures agreement with Mortal cheaply, one position at a time. The
+hanchan env measures game outcome against fixed Mortal controls in self-steered play;
+its optional post-hoc review reports decision-level agreement separately.
 
 ## Publishing to the Environments Hub
 
@@ -41,23 +43,26 @@ $ prime env push --path environments/riichi_decision_v1 --visibility PRIVATE --p
 $ prime env push --path environments/riichi_hanchan_v1 --visibility PRIVATE --plain
 ```
 
-`riichi-hanchan-v1` pins versioned CPython 3.12 and 3.13 manylinux wheels,
-including SHA-256 fragments, because the Hub build image does not include Rust.
-If a release changes the core package, merge that change first, run the manual
-`Release verification` workflow, publish its `jongbench-manylinux-wheels`
-artifact under the matching `jongbench-v<version>` tag, then update both wheel
-URLs and digests in the hanchan package before pushing either environment. For
-each private package:
+`riichi-hanchan-v1` pins versioned CPython 3.12 and 3.13 x86-64 manylinux
+wheels, including SHA-256 fragments, because the Hub build image does not include
+Rust. Those requirements select the `mortal` extra so a published environment can
+run a `mortal` control seat, and platform markers keep the Linux wheels out of
+macOS and arm64 source-checkout resolution. If a release changes the core package,
+merge that change first, run the manual `Release verification` workflow, publish
+its `jongbench-manylinux-wheels` artifact under the matching
+`jongbench-v<version>` tag, then update both wheel URLs and digests in the hanchan
+package before pushing either environment. For each private package:
 
 1. Wait for its Hub Action to report `SUCCESS`.
 2. Install it in a fresh Python 3.12 environment using the command on its Hub page.
 3. Run `validate riichi_decision_v1 --runtime.type subprocess` or
    `validate riichi_hanchan_v1 --runtime.type subprocess -n 4`.
-4. Run a four-task decision smoke evaluation and one complete hanchan evaluation.
+4. Run a four-task decision smoke evaluation and one complete, four-episode
+   chair-balanced hanchan evaluation.
 
 Only after those gates pass, change each package version from `0.1.0rcN` to `0.1.0`
-and push it with `--visibility PUBLIC`. The hanchan smoke is intentionally last: one
-episode costs roughly 1,000 model calls.
+and push it with `--visibility PUBLIC`. The hanchan smoke is intentionally last: the
+standard four-episode rotated batch costs roughly 1,000 model calls.
 
 Phoenix reviewer v1 is a separate release asset. Use it only with a private
 hanchan environment. Set these Hub **Variables**:
@@ -65,12 +70,12 @@ hanchan environment. Set these Hub **Variables**:
 ```text
 JONGBENCH_WEIGHTS_URL=https://github.com/jrhuc/jongbench/releases/download/reviewer-phoenix-2026-v1/reviewer-phoenix-2026-v1.pth
 JONGBENCH_WEIGHTS_SHA256=1ba7f63a2ae0555ce1a99c76fed45d44c20162689015afe3568b2befabe693ab
-JONGBENCH_WEIGHTS_USE_POLICY=1
 ```
 
-The loader requires both the URL and digest. It verifies the digest before it
-loads the checkpoint. It rejects policy mode when the checkpoint has no policy
-head. If the variables are not set, `auto` uses Mortal 298k and its Q head.
+The loader requires both the URL and digest and verifies them before loading.
+Pass `--env.control-use-policy true` to opt a hanchan control into Phoenix's policy
+head; deterministic Mortal-Q control remains the default. The resolved source,
+digest, path, and policy mode are recorded in episode artifacts.
 
 In an independent 1,024-game duplicate match, Phoenix v1 scored
 `avg_pt=1.36` with `standard_error=1.069` against its parent policy. Against
@@ -83,7 +88,8 @@ Local v1 validation does not require a Prime account:
 ```console
 $ uv run --with verifiers==0.3.0 --with ./environments/riichi_decision_v1 \
     validate riichi_decision_v1 --runtime.type subprocess
-$ uv run --with verifiers==0.3.0 --with ./environments/riichi_hanchan_v1 \
+$ uv run --extra mortal --with verifiers==0.3.0 \
+    --with ./environments/riichi_hanchan_v1 \
     validate riichi_hanchan_v1 --runtime.type subprocess -n 4
 ```
 
@@ -92,9 +98,10 @@ $ uv run --with verifiers==0.3.0 --with ./environments/riichi_hanchan_v1 \
 - **Imperfect information, stochastic deals.** Every decision is a probability
   judgment against hidden hands and a hidden wall; board states effectively never
   repeat, so there are no memorized lines to retrieve.
-- **Zero-sum, four players.** Placement rewards are a permutation of 1–4 and always
-  sum to 2.0, and every board a seat faces was steered by the other three. It is a
-  multi-agent credit-assignment setting, not self-play against a copy.
+- **Constant-sum, four players.** Normalized placement rewards always sum to 2.0,
+  and every board a seat faces was steered by the other three. The standard eval
+  scores one policy against fixed controls rather than pooling the invariant
+  four-seat total or evaluating a model only against copies of itself.
 - **Long horizon.** A seat makes ~170 decisions per hanchan, and the cost of a bad
   push/fold call often lands many turns later.
 - **A strong non-LLM oracle.** Mortal prices every legal action per decision, so the
@@ -125,7 +132,8 @@ The AGPL-3.0 Mortal checkpoint is downloaded from
 [VoidShine/mortal-298k](https://huggingface.co/VoidShine/mortal-298k) on first use,
 verified by SHA-256, and cached under `${XDG_CACHE_HOME:-~/.cache}/jongbench`.
 Set `JONGBENCH_CACHE_DIR` to override the cache root, or pass `--weights PATH` for
-a local checkpoint.
+a local checkpoint. Run configs record the resolved path, digest, source, and selected
+head for every Mortal gameplay seat and for the reviewer, including `--no-eval` runs.
 
 Standalone model calls use [OpenRouter](https://openrouter.ai); set
 `OPENROUTER_API_KEY`. The Hub environments use the Verifiers client and default to
@@ -200,7 +208,8 @@ teacher temperature is 0.1. The encoder and Q head are frozen by default.
 Training fits the logged action, the next rank, and policy confidence. It also
 penalizes divergence from the initial Mortal policy. Files are assigned to the
 training or validation set by a stable hash of the file name. Metrics, data
-provenance, and the data digest are stored in the checkpoint.
+provenance, and the data digest are stored in the checkpoint. `--data-provenance` and
+a 64-character lowercase `--data-sha256` must be supplied together.
 
 `jongbench improve` keeps the encoder and Q head frozen and updates only the
 policy head. Each round collects stochastic self-play from one policy seat
@@ -226,10 +235,13 @@ State hints are on by default: rule-derived shanten, waits, furiten and
 discard-result structure, with no EV, safety ranking, or recommended move. Engines
 never see hidden tiles or Mortal.
 
-The web table is a TypeScript app in `webui/`; build it once with
-`cd webui && bun install && bun run build` (emits `jongbench/webui_page.html`,
-gitignored). It is both the live spectator and the replay viewer, and the built
-page is a single self-contained file: host it anywhere static (GitHub Pages)
+The web table is a TypeScript app in `webui/`. Its self-contained generated
+page, `jongbench/webui_page.html`, is versioned and included in source and wheel
+distributions so an ordinary PEP 517 build is complete without a hidden frontend
+step. After changing the UI, run
+`cd webui && bun install --frozen-lockfile && bun run build` and commit the result;
+`bun run build --check` verifies that it is current. It is both the live spectator
+and the replay viewer: host the page anywhere static (GitHub Pages)
 with a `replay.json` beside it and it opens on a landing page with that game
 ready to watch — or open it with `#replay` to skip straight to the replay,
 which doubles as a file picker for any `--out` bundle.

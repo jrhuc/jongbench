@@ -1,0 +1,5 @@
+# Isolated PEP 517 backends used by the root and environment packages.
+hatchling==1.27.0
+semantic-version==2.10.0
+setuptools==84.0.0
+setuptools-rust==1.13.0

@@ -125,9 +125,21 @@ def test_prompt_contract():
     assert st.last_cans.can_discard is True
 
     menu = [
-        {"label": "Discard 1m", "event": {"type": "dahai", "actor": 0, "pai": "1m", "tsumogiri": False}, "kind": "discard"},
-        {"label": "Discard 0p", "event": {"type": "dahai", "actor": 0, "pai": "5pr", "tsumogiri": True}, "kind": "discard"},
-        {"label": "Discard E", "event": {"type": "dahai", "actor": 0, "pai": "E", "tsumogiri": False}, "kind": "discard"},
+        {
+            "label": "Discard 1m",
+            "event": {"type": "dahai", "actor": 0, "pai": "1m", "tsumogiri": False},
+            "kind": "discard",
+        },
+        {
+            "label": "Discard 0p",
+            "event": {"type": "dahai", "actor": 0, "pai": "5pr", "tsumogiri": True},
+            "kind": "discard",
+        },
+        {
+            "label": "Discard E",
+            "event": {"type": "dahai", "actor": 0, "pai": "E", "tsumogiri": False},
+            "kind": "discard",
+        },
     ]
 
     raw_prompt = build_user_prompt(0, st, events, menu, state_hints=False)
@@ -141,7 +153,7 @@ def test_prompt_contract():
     assert "Engine-derived state hints" in p
     assert "[after:" in p
     assert "Dora" in p
-    assert "{\"choice\"" in p or "choice" in p
+    assert '{"choice"' in p or "choice" in p
     assert "5p(red)" in build_user_prompt(
         0,
         st,
@@ -202,8 +214,16 @@ def test_decision_snapshot():
     for ev in events:
         st.update(json.dumps(ev))
     menu = [
-        {"label": "Discard 1m", "event": {"type": "dahai", "actor": 0, "pai": "1m", "tsumogiri": False}, "kind": "discard"},
-        {"label": "Discard 0p", "event": {"type": "dahai", "actor": 0, "pai": "5pr", "tsumogiri": True}, "kind": "discard"},
+        {
+            "label": "Discard 1m",
+            "event": {"type": "dahai", "actor": 0, "pai": "1m", "tsumogiri": False},
+            "kind": "discard",
+        },
+        {
+            "label": "Discard 0p",
+            "event": {"type": "dahai", "actor": 0, "pai": "5pr", "tsumogiri": True},
+            "kind": "discard",
+        },
         {"label": "Riichi", "event": {"type": "reach", "actor": 0}, "kind": "riichi"},
     ]
 
@@ -211,7 +231,9 @@ def test_decision_snapshot():
     assert snap["board"].startswith("Round: East 1")
     assert "Engine-derived state hints" not in snap["board"]
     assert set(snap["discards"]) == {"P0", "P1", "P2", "P3"}
-    assert all(row.startswith("riichi no; discards") for row in snap["discards"].values())
+    assert all(
+        row.startswith("riichi no; discards") for row in snap["discards"].values()
+    )
     assert "shanten" in snap["waits"] or "tenpai" in snap["waits"]
     assert set(snap["simulate"]) == {"1m", "5p(red)"}
     for answer in snap["simulate"].values():
@@ -221,7 +243,12 @@ def test_decision_snapshot():
 def test_board_shows_the_hand_in_progress_not_the_whole_match():
     """A position replayed out of a finished game carries every event of that game, so
     the board must cut back to the current start_kyoku."""
-    later = {**START_KYOKU, "kyoku": 2, "oya": 1, "scores": [31700, 25000, 18300, 25000]}
+    later = {
+        **START_KYOKU,
+        "kyoku": 2,
+        "oya": 1,
+        "scores": [31700, 25000, 18300, 25000],
+    }
     finished = [
         START_KYOKU,
         {"type": "tsumo", "actor": 0, "pai": "5pr"},
@@ -234,7 +261,9 @@ def test_board_shows_the_hand_in_progress_not_the_whole_match():
     for ev in [later, {"type": "tsumo", "actor": 1, "pai": "1s"}]:
         st.update(json.dumps(ev))
 
-    board = render_state(0, st, [*finished, later, {"type": "tsumo", "actor": 1, "pai": "1s"}])
+    board = render_state(
+        0, st, [*finished, later, {"type": "tsumo", "actor": 1, "pai": "1s"}]
+    )
     assert board.startswith("Round: East 2 (honba 0), kyotaku 0, dealer P1")
     assert "P0 N (you) score 31700:" in board
     assert "Tiles remaining in wall: 69" in board

@@ -7,8 +7,8 @@ import libriichi
 @dataclass
 class GameSummary:
     seed: tuple[int, int]
-    names: list[str]      # seat order at game start (East first)
-    scores: list[int]     # same order
+    names: list[str]  # seat order at game start (East first)
+    scores: list[int]  # same order
     placements: dict[str, int]  # name -> 1..4, ties broken by seat
 
 
