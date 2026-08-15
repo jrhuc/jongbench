@@ -41,9 +41,11 @@ $ prime env push --path environments/riichi_decision_v1 --visibility PRIVATE --p
 $ prime env push --path environments/riichi_hanchan_v1 --visibility PRIVATE --plain
 ```
 
-Merging Git first is required: `riichi-hanchan-v1` pins `jongbench` to an
-immutable Git commit so the Hub's clean build container does not depend on an
-unpublished registry package. For each private package:
+`riichi-hanchan-v1` pins `jongbench` to an immutable Git commit so the Hub's
+clean build container does not depend on an unpublished registry package. If a
+release changes the core package, merge that change first, update the hanchan
+pin to the resulting `origin/main` commit in a follow-up pull request, and wait
+for its checks before pushing either environment. For each private package:
 
 1. Wait for its Hub Action to report `SUCCESS`.
 2. Install it in a fresh Python 3.12 environment using the command on its Hub page.
@@ -51,7 +53,7 @@ unpublished registry package. For each private package:
    `validate riichi_hanchan_v1 --runtime.type subprocess -n 4`.
 4. Run a four-task decision smoke evaluation and one complete hanchan evaluation.
 
-Only after those gates pass, change each package version from `0.1.0rc1` to `0.1.0`
+Only after those gates pass, change each package version from `0.1.0rcN` to `0.1.0`
 and push it with `--visibility PUBLIC`. The hanchan smoke is intentionally last: one
 episode costs roughly 1,000 model calls.
 
