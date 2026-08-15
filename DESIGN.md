@@ -193,23 +193,63 @@ Arena logs are God-view (all `tehais` filled). Engines only ever see their own P
   (engine i sits seat (i+g)%4 in game g). Returns names/scores/seed per game;
   computes placements.
 
-### evaluate.py — faithful port of mjai-reviewer/src/review/mortal.rs
-- `load_engine(weights_path)`: torch checkpoint → Brain+DQN (version from ckpt config) →
-  `MortalEngine(..., enable_quick_eval=False, enable_rule_based_agari_guard=True, device=cpu)`.
-- `review_player(events: list[dict], player_id, engine) -> Review` using `libriichi.mjai.Bot`:
-  feed each event; when Mortal reacts with meta and `popcount(mask_bits) > 1`, find the
-  player's actual next action (`next_action` port), map to label (`to_label`/`to_kan_label`
-  ports incl. kan_select sub-metadata), pop q_values against descending mask bits, softmax
-  (temperature 1) for display probs, and accumulate
-  `raw_rating += 1 if matched else (q_actual - q_min)/max(q_max - q_min, 1e-6)`.
-  Final `rating = (raw_rating / total_reviewed)**2` (0..1; display ×100).
-  Match uses aka-insensitive comparison for consumed sets (port `equal_ignore_aka_consumed`).
-- Review entries carry: kyoku/honba/junme/tiles_left, actual event, Mortal's expected event,
-  is_equal, ranked candidate list [{event, q_value, prob}], shanten, at_furiten, actual_index.
-- `review_game(events, engine) -> dict[player_id -> Review]`, plus aggregates:
-  match_rate, mean prob-loss, worst N decisions (by prob(best) - prob(actual)), breakdown by
-  decision kind (discard/call/riichi/agari/pass).
-- No GRP (rank-probability curves omitted from reports).
+### evaluate.py
+
+- `load_engine(weights_path)` loads the Mortal encoder and Q head. It also
+  loads the policy, rank, and confidence heads when they are present.
+- `review_player(events, player_id, engine)` feeds each event to
+  `libriichi.mjai.Bot`. For decisions with more than one legal action, it
+  records Mortal's Q value for each action and the action taken by the player.
+- The decision score is 1.0 when the player matches Mortal. Otherwise it is
+  `(q_actual - q_min) / max(q_max - q_min, 1e-6)`.
+- The game rating is the square of the mean decision score.
+- Red fives are ignored when comparing consumed tiles for calls.
+- A review entry includes the board coordinates, actual action, expected
+  action, candidate actions, Q values, display probabilities, shanten, and
+  furiten state.
+- When reviewer heads are present, batched inference adds `policy_prob`,
+  `policy_confidence`, and `next_rank_probs`.
+- The reports do not include Mortal's GRP rank-probability curves.
+
+### Reviewer architecture
+
+The released Phoenix checkpoint uses Mortal version 4.
+
+- The encoder has 40 residual blocks, 192 channels, channel attention, and a
+  1,024-value output.
+- The Q head is a linear 1,024-to-47 layer. It produces one state value and 46
+  action advantages. The existing dueling-Q calculation produces legal-action
+  Q values.
+- The policy head is a linear 1,024-to-46 layer. It masks illegal actions
+  before softmax or argmax.
+- The rank head is a bias-free linear 1,024-to-4 layer. It predicts the
+  player's rank after the current hand.
+- The confidence head is a 1,024-to-256-to-1 MLP with Mish activation and a
+  sigmoid output. It predicts whether policy top-1 matches the logged action.
+
+The encoder output is shared. Q mode selects the legal action with the highest
+Q value. Policy mode selects the legal action with the highest policy logit.
+The rank and confidence heads are used in review output and training. They do
+not select actions.
+
+`jongbench train` requires a Mortal version 4 checkpoint. It initializes a
+missing policy head from the Q action weights and the configured teacher
+temperature. It initializes missing rank and confidence heads separately. The
+default run freezes the encoder and Q head. The loss contains policy
+cross-entropy, KL divergence from the Q teacher, next-rank cross-entropy, and
+confidence binary cross-entropy. Encoder fine-tuning also enables Q
+distillation.
+
+Validation uses a file-level split based on a stable hash of each file name.
+Only decisions with more than one legal action are used. The checkpoint stores
+the model state, training configuration, validation metrics, source
+checkpoint, data provenance, and data digest.
+
+`jongbench improve` freezes the encoder and Q head. It updates the policy head
+with a clipped behavior-policy ratio. The advantage is the centered and scaled
+final-placement point value. The loss also includes KL regularization to the
+anchor policy and entropy regularization. Duplicate games provide the
+promotion result and paired standard error.
 
 ### spectator.py (watch mode)
 - `Spectator`: subscribed by engines; each `decide()` first publishes that seat's newly seen

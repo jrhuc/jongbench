@@ -57,9 +57,8 @@ Only after those gates pass, change each package version from `0.1.0rcN` to `0.1
 and push it with `--visibility PUBLIC`. The hanchan smoke is intentionally last: one
 episode costs roughly 1,000 model calls.
 
-Phoenix reviewer v1 is a prerelease model artifact, not environment package data.
-Configure a private hanchan environment's Hub **Variables** with its public URL,
-required digest, and policy mode:
+Phoenix reviewer v1 is a separate release asset. Use it only with a private
+hanchan environment. Set these Hub **Variables**:
 
 ```text
 JONGBENCH_WEIGHTS_URL=https://github.com/jrhuc/jongbench/releases/download/reviewer-phoenix-2026-v1/reviewer-phoenix-2026-v1.pth
@@ -67,14 +66,15 @@ JONGBENCH_WEIGHTS_SHA256=1ba7f63a2ae0555ce1a99c76fed45d44c20162689015afe3568b2be
 JONGBENCH_WEIGHTS_USE_POLICY=1
 ```
 
-Environment Actions and hosted evaluations receive those variables automatically.
-The checkpoint is downloaded into the normal verified cache; an incomplete pair,
-bad digest, or checkpoint without a reviewer policy head fails closed. Without the
-variables, `auto` remains the pinned Mortal 298k checkpoint and Q policy. Phoenix v1
-beat its parent policy in an independent 1,024-game duplicate match, but was not
-statistically distinguishable from Mortal Q; keep it private while evaluating model
-seats. The decision environment is unaffected because its Mortal rewards are frozen
-into the published bank.
+The loader requires both the URL and digest. It verifies the digest before it
+loads the checkpoint. It rejects policy mode when the checkpoint has no policy
+head. If the variables are not set, `auto` uses Mortal 298k and its Q head.
+
+In an independent 1,024-game duplicate match, Phoenix v1 scored
+`avg_pt=1.36` with `standard_error=1.069` against its parent policy. Against
+Mortal Q, it scored `avg_pt=0.57` with `standard_error=2.070`. The Mortal Q
+result is not statistically significant. Keep Phoenix v1 private while
+evaluating model seats. The decision environment does not load this checkpoint.
 
 Local v1 validation does not require a Prime account:
 
@@ -154,7 +154,7 @@ $ jongbench reasoning runs/<stamp>/ --worst 5
 # pool a directory of runs into one table, keyed by model spec
 $ jongbench leaderboard runs/<batch>/ --review
 
-# generate open training logs, fit a Phoenix-policy head, then run a duplicate duel
+# create training logs, train reviewer heads, and run a duplicate match
 $ jongbench selfplay --games 256 --out training/selfplay
 $ jongbench train --logs training/tenhou/2026 --out weights/reviewer.pth \
     --data-provenance https://github.com/NikkeTryHard/tenhou-to-mjai/releases/tag/v2.0.0
@@ -175,24 +175,43 @@ $ jongbench replay runs/<stamp>/
 $ jongbench replay runs/<stamp>/ --out replay.json   # static bundle for hosting
 ```
 
-Reviewer checkpoints keep Mortal's Q network as the outcome-value axis and add a
-masked policy distribution, next-rank head, and confidence head. Training starts the
-policy exactly at Mortal's temperature-scaled action distribution, then fits expert
-actions while regularizing back to that teacher. Validation is file-disjoint and its
-metrics and data-provenance string are stored in the checkpoint. Plain or gzip MJAI
-logs are accepted. The shipped training path uses no NAGA reports, outputs, or code.
-The legacy `prob` field is a softmax display weight over Mortal Q-values, not a
-calibrated probability; trained reports expose `policy_prob` separately.
+### Reviewer architecture
 
-`jongbench improve` keeps Mortal's encoder and Q head frozen. Each round samples
-one stochastic current-policy seat against three frozen greedy copies, trains only
-from that seat's decisions using centered final-placement returns and a clipped
-behavior-policy ratio, and regularizes toward the original expert-trained policy.
-A candidate is promoted only when its duplicate
-1-vs-3 point estimate clears `promotion_margin` after subtracting
-`promotion_z * paired_standard_error`; four seat rotations of each seed form one
-paired sample. The final manifest also records direct duplicate matches against the
-initial policy and Mortal Q control.
+A reviewer checkpoint uses the Mortal v4 encoder and Q head. It adds three
+modules:
+
+- A policy head maps the shared 1,024-value encoder output to the 46 Mortal
+  actions. Illegal actions are masked.
+- A rank head predicts the player's position after the current hand.
+- A confidence head predicts whether the policy's first choice matches the
+  logged action.
+
+The Q head remains available for standard Mortal review. Policy mode uses the
+policy head to select actions. The rank and confidence heads add fields to
+review output. They do not select actions. Reports keep the Q-based `prob`
+field and add `policy_prob`, `policy_confidence`, and `next_rank_probs`.
+
+### Reviewer training
+
+`jongbench train` initializes the policy from Mortal's Q head. The default
+teacher temperature is 0.1. The encoder and Q head are frozen by default.
+Training fits the logged action, the next rank, and policy confidence. It also
+penalizes divergence from the initial Mortal policy. Files are assigned to the
+training or validation set by a stable hash of the file name. Metrics, data
+provenance, and the data digest are stored in the checkpoint.
+
+`jongbench improve` keeps the encoder and Q head frozen and updates only the
+policy head. Each round collects stochastic self-play from one policy seat
+against three copies of the current policy. The update uses final-placement
+returns, a clipped policy ratio, anchor-policy regularization, and entropy
+regularization. Promotion uses duplicate 1-vs-3 games. Four seat rotations for
+one seed form one paired sample. A candidate passes when
+`avg_pt - promotion_z * standard_error` is greater than
+`promotion_margin`.
+
+Plain and gzip MJAI logs are supported. The training path does not use NAGA
+reports, outputs, or code. See `DESIGN.md` for module dimensions and runtime
+behavior.
 
 Model specs are OpenRouter ids: `<vendor>/<model>`, optionally suffixed with
 `@<provider>` to pin inference routing (reproducibility against one upstream) and
