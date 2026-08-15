@@ -14,7 +14,7 @@ jobs:
     name: Tests / Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     env:
-      JONGBENCH_CACHE_DIR: ${{ runner.temp }}/jongbench-cache
+      JONGBENCH_CACHE_DIR: ${{ github.workspace }}/.cache/jongbench
     strategy:
       fail-fast: false
       matrix:
