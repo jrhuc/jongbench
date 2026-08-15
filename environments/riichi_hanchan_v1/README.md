@@ -24,8 +24,9 @@ carries the seat's final placement.
 ## Run
 
 Install the package with the command shown on its Environments Hub page, then run
-one episode at a time. The package pins its `jongbench` engine dependency to an
-immutable Git revision.
+one episode at a time. The Hub package pins SHA-256-verified CPython 3.12 and 3.13
+x86-64 manylinux wheels. Direct Hub installation on macOS or arm64 is not supported;
+use the source checkout described below on those platforms.
 
 ```console
 $ .venv/bin/eval riichi_hanchan_v1 \
