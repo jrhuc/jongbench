@@ -3,7 +3,17 @@ name: Release verification
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "**/*.mdx"
+      - "**/*.rst"
+      - "**/*.txt"
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "**/*.mdx"
+      - "**/*.rst"
+      - "**/*.txt"
   workflow_dispatch:
 
 permissions:
