@@ -41,11 +41,13 @@ $ prime env push --path environments/riichi_decision_v1 --visibility PRIVATE --p
 $ prime env push --path environments/riichi_hanchan_v1 --visibility PRIVATE --plain
 ```
 
-`riichi-hanchan-v1` pins `jongbench` to an immutable Git commit so the Hub's
-clean build container does not depend on an unpublished registry package. If a
-release changes the core package, merge that change first, update the hanchan
-pin to the resulting `origin/main` commit in a follow-up pull request, and wait
-for its checks before pushing either environment. For each private package:
+`riichi-hanchan-v1` pins versioned CPython 3.12 and 3.13 manylinux wheels,
+including SHA-256 fragments, because the Hub build image does not include Rust.
+If a release changes the core package, merge that change first, run the manual
+`Release verification` workflow, publish its `jongbench-manylinux-wheels`
+artifact under the matching `jongbench-v<version>` tag, then update both wheel
+URLs and digests in the hanchan package before pushing either environment. For
+each private package:
 
 1. Wait for its Hub Action to report `SUCCESS`.
 2. Install it in a fresh Python 3.12 environment using the command on its Hub page.
