@@ -30,7 +30,10 @@ The checked-in environment versions are release candidates. Publish them private
 before consuming `0.1.0`:
 
 ```console
-$ git push origin main
+$ git push origin <release-branch>
+$ gh pr create --base main --head <release-branch>
+$ gh pr checks --watch
+$ gh pr merge --merge --delete-branch
 $ prime upgrade
 $ prime login
 $ prime whoami
@@ -38,9 +41,9 @@ $ prime env push --path environments/riichi_decision_v1 --visibility PRIVATE --p
 $ prime env push --path environments/riichi_hanchan_v1 --visibility PRIVATE --plain
 ```
 
-Pushing Git first is required: `riichi-hanchan-v1` pins `jongbench` to an immutable
-Git commit so the Hub's clean build container does not depend on an unpublished
-registry package. For each private package:
+Merging Git first is required: `riichi-hanchan-v1` pins `jongbench` to an
+immutable Git commit so the Hub's clean build container does not depend on an
+unpublished registry package. For each private package:
 
 1. Wait for its Hub Action to report `SUCCESS`.
 2. Install it in a fresh Python 3.12 environment using the command on its Hub page.
