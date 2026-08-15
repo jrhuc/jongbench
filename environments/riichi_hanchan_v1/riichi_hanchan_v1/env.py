@@ -134,7 +134,7 @@ class RiichiHanchanEnvConfig(vf.EnvConfig):
     """Persist each episode as a jongbench run dir - mjai log, per-seat decision logs,
     config.json - so `jongbench review` and `jongbench reasoning` grade the rollout
     afterwards with the Mortal checkpoint."""
-    weights: str = "weights/mortal.pth"
+    weights: str = "auto"
     """Checkpoint for any seat whose model is `mortal` - the Mortal NN playing as a
     control seat. Such a seat runs on CPU, produces no traces, and earns no reward;
     the LLM seats' placements are measured against it."""

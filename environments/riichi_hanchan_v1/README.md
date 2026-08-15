@@ -23,10 +23,12 @@ carries the seat's final placement.
 
 ## Run
 
-From the repo root (the package imports `jongbench`, which runs from the checkout):
+Install the package with the command shown on its Environments Hub page, then run
+one episode at a time. The package pins its `jongbench` engine dependency to an
+immutable Git revision.
 
 ```console
-$ PYTHONPATH="$PWD:$PWD/environments/riichi_hanchan_v1" .venv/bin/eval riichi_hanchan_v1 \
+$ .venv/bin/eval riichi_hanchan_v1 \
     --env.seat0.model anthropic/claude-sonnet-5 \
     --env.seat1.model openai/gpt-5.2 \
     --env.seat2.model google/gemini-3-pro \
@@ -37,10 +39,17 @@ $ PYTHONPATH="$PWD:$PWD/environments/riichi_hanchan_v1" .venv/bin/eval riichi_ha
     -n 1 --no-push
 ```
 
-`eval` is the verifiers v1 CLI — call it by path, the shell builtin shadows the
-name. `--no-push` keeps the run local instead of uploading it to the Prime
-platform. A seat with no pinned model plays the run's `-m` model — the policy
-under evaluation.
+For local development from this repository:
+
+```console
+$ uv run --with verifiers==0.3.0 --with ./environments/riichi_hanchan_v1 \
+    eval riichi_hanchan_v1 -n 1 --no-push
+```
+
+`eval` is the Verifiers v1 CLI; calling its virtual-environment path avoids the
+POSIX shell builtin of the same name. `--no-push` keeps the run local instead of
+uploading it to Prime. A seat with no pinned model plays the run's `-m` model—the
+policy under evaluation.
 
 ### Metered cost
 
@@ -61,7 +70,7 @@ responses that failed upstream. A provider that meters nothing leaves the column
 | `max_tool_calls`      | `32`    | tool calls one decision may spend before the seat must commit (`0` lifts the cap) |
 | `seat_rotation`       | `false` | episode *i* seats `seat0` at table position *i*, so a batch of 4 gives every agent each position (below) |
 | `log_dir`             | `None`  | persist each episode as a jongbench run dir (below)            |
-| `weights`             | `weights/mortal.pth` | Mortal checkpoint for a `mortal` control seat (below) |
+| `weights`             | `auto`  | verified, cached Mortal checkpoint for a `mortal` control seat (below) |
 
 ## Mortal as a control seat
 
