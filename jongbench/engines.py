@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import actions, prompts, providers
+from .weights import AUTO_MORTAL_WEIGHTS
 
 DecisionSink = list[dict[str, Any]] | Callable[[dict[str, Any]], None]
 
@@ -586,7 +587,7 @@ class LLMEngine(BaseEngine):
 
 def make_engine(name: str, spec_str: str, **kwargs: Any) -> BaseEngine:
     spec = providers.parse_spec(spec_str)
-    weights = kwargs.pop("weights", "weights/mortal.pth")
+    weights = kwargs.pop("weights", AUTO_MORTAL_WEIGHTS)
     if spec.provider == "human":
         human_io = kwargs.get("human_io")
         if human_io is None:

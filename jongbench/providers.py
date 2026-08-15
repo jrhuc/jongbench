@@ -103,7 +103,12 @@ class Provider:
             api_key = self._api_key or os.environ.get(self._env_key)
             if not api_key:
                 raise RuntimeError(f"Missing {self._env_key}")
-            import openai
+            try:
+                import openai
+            except ModuleNotFoundError as exc:
+                raise RuntimeError(
+                    "model providers require `pip install 'jongbench[providers]'`"
+                ) from exc
 
             self._client = openai.OpenAI(
                 api_key=api_key,

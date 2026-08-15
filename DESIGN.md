@@ -17,7 +17,7 @@ model specs ──> engines (LLM adapters, mjai-log protocol)
    mjai logs (.json.gz)   decision logs (.jsonl, per-LLM)
         │
         ▼
-   evaluate.py  ── Mortal weights (weights/mortal.pth, v4 b40c192)
+   evaluate.py  ── Mortal weights (verified on-demand cache, v4 b40c192)
         │            per-decision Q-values → rating (port of mjai-reviewer/src/review/mortal.rs)
         ▼
    report.py → report.html (summary table + per-game per-decision review)
@@ -44,7 +44,7 @@ assets/dela.woff2          Dela Gothic One subset (ascii + the UI's kanji), inli
                            regen after adding glyphs: pyftsubset DelaGothicOne-Regular.ttf
                            --unicodes='U+0020-007E,U+2026,U+2192,<new codepoints>' --flavor=woff2
 assets/dseg7.woff2         DSEG7 Classic digit subset, inlined for table score readouts
-weights/mortal.pth         gitignored, from https://huggingface.co/VoidShine/mortal-298k
+~/.cache/jongbench/mortal-298k-*.pth  verified cached checkpoint (path configurable)
 runs/<stamp>/              per-run artifacts: config.json, logs/*.json.gz, logs/partial.jsonl,
                            decisions/*.jsonl, review/*.json, report.html, optional error.json
 ```

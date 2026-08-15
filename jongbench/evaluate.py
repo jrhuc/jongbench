@@ -13,6 +13,7 @@ import torch
 import libriichi
 from jongbench.mortal_engine import MortalEngine
 from jongbench.mortal_model import DQN, AuxNet, Brain, ConfidenceHead, PolicyHead
+from jongbench.weights import resolve_mortal_weights
 
 TILES = [
     "1m",
@@ -67,9 +68,10 @@ def resolve_device(name: str | torch.device | None = "cpu") -> torch.device:
 
 
 def load_checkpoint(
-    weights_path: str, map_location: str | torch.device = "cpu"
+    weights_path: str | Path, map_location: str | torch.device = "cpu"
 ) -> dict[str, Any]:
-    return torch.load(weights_path, weights_only=True, map_location=map_location)
+    path = resolve_mortal_weights(weights_path)
+    return torch.load(path, weights_only=True, map_location=map_location)
 
 
 def networks_from_checkpoint(

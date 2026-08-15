@@ -10,13 +10,14 @@ import torch
 
 from jongbench.selfplay import DUPLICATE_PTS, DuelResult, duel
 from jongbench.train import PolicyRLConfig, train_policy_rl
+from jongbench.weights import AUTO_MORTAL_WEIGHTS
 
 
 @dataclass
 class ImproveConfig:
     init: str
     out_dir: str
-    control: str | None = "weights/mortal.pth"
+    control: str | None = AUTO_MORTAL_WEIGHTS
     rounds: int = 4
     rollout_games: int = 256
     updates: int = 128

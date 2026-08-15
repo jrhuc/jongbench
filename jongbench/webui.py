@@ -28,6 +28,7 @@ from . import arena, prompts, providers
 from .artifacts import decision_filename
 from .engines import GameAborted, HumanIO, make_engine, sanitize_events
 from .spectator import Spectator, TableState
+from .weights import AUTO_MORTAL_WEIGHTS
 
 _ACTIVE_STATUSES = {"starting", "running", "evaluating"}
 _TERMINAL_STATUSES = {"done", "error", "aborted"}
@@ -337,7 +338,7 @@ def run_watch_server(
     port: int = 8642,
     delay: float = 0.4,
     open_browser: bool = True,
-    weights: str = "weights/mortal.pth",
+    weights: str = AUTO_MORTAL_WEIGHTS,
     runs_root: str = "runs",
     no_eval: bool = False,
     state_hints: bool = True,

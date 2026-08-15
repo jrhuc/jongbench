@@ -43,15 +43,24 @@ a time; the hanchan env does it in full self-steered play.
 
 ## Setup
 
+Python 3.12–3.13 and a Rust toolchain are required when installing from source.
+The benchmark extra installs provider and Mortal dependencies; setuptools-rust
+builds `libriichi` as part of the package:
+
 ```console
-$ uv venv --python 3.12 .venv && uv pip install -p .venv/bin/python -e .
-$ (cd libriichi && PYO3_PYTHON=../.venv/bin/python cargo build --release --lib)
-$ cp libriichi/target/release/libriichi.dylib jongbench/libriichi.so
-$ curl -L -o weights/mortal.pth https://huggingface.co/VoidShine/mortal-298k/resolve/main/mortal_298k.pth
+$ uv venv --python 3.12 .venv
+$ uv pip install -p .venv/bin/python -e '.[benchmark]'
 ```
 
-All models are reached through [OpenRouter](https://openrouter.ai); set
-`OPENROUTER_API_KEY`.
+The AGPL-3.0 Mortal checkpoint is downloaded from
+[VoidShine/mortal-298k](https://huggingface.co/VoidShine/mortal-298k) on first use,
+verified by SHA-256, and cached under `${XDG_CACHE_HOME:-~/.cache}/jongbench`.
+Set `JONGBENCH_CACHE_DIR` to override the cache root, or pass `--weights PATH` for
+a local checkpoint.
+
+Standalone model calls use [OpenRouter](https://openrouter.ai); set
+`OPENROUTER_API_KEY`. The Hub environments use the Verifiers client and default to
+Prime Inference instead.
 
 ## Usage
 
