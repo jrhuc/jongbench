@@ -15,9 +15,7 @@ if str(ROOT) not in sys.path:
 from jongbench import actions, arena, engines, evaluate, positions
 
 WEIGHTS = ROOT / "weights" / "mortal.pth"
-pytestmark = pytest.mark.skipif(
-    not WEIGHTS.exists(), reason="needs weights/mortal.pth"
-)
+pytestmark = pytest.mark.skipif(not WEIGHTS.exists(), reason="needs weights/mortal.pth")
 
 
 def _first_kyoku() -> list[dict]:
@@ -61,7 +59,10 @@ def test_positions_keep_the_seat_point_of_view(extracted) -> None:
                 for seat, hand in enumerate(event["tehais"]):
                     if seat != position.player_id:
                         assert hand == ["?"] * 13
-            if event.get("type") == "tsumo" and event.get("actor") != position.player_id:
+            if (
+                event.get("type") == "tsumo"
+                and event.get("actor") != position.player_id
+            ):
                 assert event.get("pai") == "?"
 
 
@@ -75,3 +76,10 @@ def test_positions_render_and_round_trip(extracted) -> None:
     assert restored.menu == position.menu
     assert restored.rewards == position.rewards
     assert restored.prompt() == text
+
+    task = position.to_task_dict()
+    assert task["schema_version"] == 1
+    assert task["prompt"] == text
+    assert task["prompt_without_state_hints"] == position.prompt(state_hints=False)
+    assert task["menu"] == position.menu
+    assert task["rewards"] == position.rewards

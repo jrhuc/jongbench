@@ -3,16 +3,18 @@ name = "riichi-decision-v1"
 version = "0.1.0"
 description = "Score a model against Mortal on single riichi mahjong decisions"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 license = "AGPL-3.0-or-later"
-dependencies = ["verifiers", "jongbench"]
+tags = ["riichi", "mahjong", "single-turn", "rlvr", "precomputed-reward", "eval", "v1"]
+dependencies = ["verifiers>=0.3.0,<0.4"]
 
 [build-system]
-requires = ["setuptools>=77"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.setuptools]
+[tool.hatch.build.targets.wheel]
 packages = ["riichi_decision_v1"]
 
-[tool.setuptools.package-data]
-riichi_decision_v1 = ["sample_bank.jsonl.gz"]
+[tool.verifiers.eval]
+num_examples = 128
+rollouts_per_example = 1

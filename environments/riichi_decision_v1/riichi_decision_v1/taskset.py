@@ -17,15 +17,65 @@ scoring, so no runtime and no Mortal checkpoint are needed to evaluate against i
 
 import gzip
 import json
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
 import verifiers.v1 as vf
-from jongbench import positions, prompts
 
 SAMPLE_BANK = Path(__file__).with_name("sample_bank.jsonl.gz")
 """128 positions from Mortal self-play, shipped so the taskset runs out of the box.
 Uniform-random guessing scores 0.367 reward / 18.9% match on it; Mortal scores 1.0."""
+
+
+def _extract_choice(text: str, n_options: int) -> int:
+    if n_options <= 0:
+        raise ValueError("no options available")
+    choices: list[int] = []
+    for match in re.finditer(r"\{[^{}]*\}", text, flags=re.DOTALL):
+        try:
+            obj = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and "choice" in obj:
+            choice = obj["choice"]
+            if not isinstance(choice, int) or isinstance(choice, bool):
+                raise ValueError("choice must be an integer")
+            if not 0 <= choice < n_options:
+                raise ValueError("choice out of range")
+            choices.append(choice)
+
+    if choices:
+        if len(set(choices)) != 1:
+            raise ValueError("conflicting choice values")
+        return choices[-1]
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if lines and re.fullmatch(r"\d+", lines[-1]):
+        choice = int(lines[-1])
+        if not 0 <= choice < n_options:
+            raise ValueError("choice out of range")
+        return choice
+
+    raise ValueError("no choice found")
+
+
+def _validate_row(row: dict, idx: int) -> None:
+    if row.get("schema_version") != 1:
+        raise ValueError(f"bank row {idx} has unsupported schema_version")
+    menu = row.get("menu")
+    rewards = row.get("rewards")
+    if not isinstance(menu, list) or not isinstance(rewards, list):
+        raise TypeError(f"bank row {idx} must contain menu and rewards lists")
+    if len(menu) < 2 or len(menu) != len(rewards):
+        raise ValueError(f"bank row {idx} has mismatched menu and rewards")
+    best_index = row.get("best_index")
+    if (
+        not isinstance(best_index, int)
+        or isinstance(best_index, bool)
+        or not 0 <= best_index < len(menu)
+    ):
+        raise ValueError(f"bank row {idx} has invalid best_index")
 
 
 class RiichiDecisionData(vf.TaskData):
@@ -35,7 +85,7 @@ class RiichiDecisionData(vf.TaskData):
     """Mortal's normalised Q-advantage per menu index."""
     best_index: int
     """The option Mortal would have taken."""
-    info: dict = {}
+    info: dict
     """Board context: seat, kyoku, honba, junme, tiles_left, shanten, at_furiten."""
 
 
@@ -65,16 +115,15 @@ class RiichiDecisionTask(vf.Task[RiichiDecisionData]):
 
     def _choice(self, trace: vf.Trace) -> int | None:
         try:
-            return prompts.extract_choice(trace.last_reply or "", len(self.data.menu))
+            return _extract_choice(trace.last_reply or "", len(self.data.menu))
         except ValueError:
             return None
 
 
 class RiichiDecisionConfig(vf.TasksetConfig):
     bank: str = str(SAMPLE_BANK)
-    """Path to a position bank (`.jsonl` or `.jsonl.gz`), one
-    `jongbench.positions.Position` JSON per line. Defaults to the shipped
-    128-position sample; build a bigger one with `jongbench positions`."""
+    """Path to a rendered task bank (`.jsonl` or `.jsonl.gz`). Defaults to the
+    shipped 128-position sample; build a bigger one with `jongbench positions`."""
     state_hints: bool = True
     """Include rule-derived shanten, waits and furiten, as the CLI does by default."""
 
@@ -94,25 +143,23 @@ class RiichiDecisionTaskset(vf.Taskset[RiichiDecisionTask, RiichiDecisionConfig]
                 line = line.strip()
                 if not line:
                     continue
-                position = positions.Position.from_dict(json.loads(line))
+                row = json.loads(line)
+                _validate_row(row, idx)
+                prompt_key = (
+                    "prompt"
+                    if self.config.state_hints
+                    else "prompt_without_state_hints"
+                )
                 yield RiichiDecisionTask(
                     RiichiDecisionData(
                         idx=idx,
-                        name=f"kyoku{position.kyoku}-junme{position.junme}-seat{position.player_id}",
-                        prompt=position.prompt(state_hints=self.config.state_hints),
-                        system_prompt=prompts.SYSTEM,
-                        menu=position.menu,
-                        rewards=position.rewards,
-                        best_index=position.best_index,
-                        info={
-                            "seat": position.player_id,
-                            "kyoku": position.kyoku,
-                            "honba": position.honba,
-                            "junme": position.junme,
-                            "tiles_left": position.tiles_left,
-                            "shanten": position.shanten,
-                            "at_furiten": position.at_furiten,
-                        },
+                        name=row["name"],
+                        prompt=row[prompt_key],
+                        system_prompt=row["system_prompt"],
+                        menu=row["menu"],
+                        rewards=row["rewards"],
+                        best_index=row["best_index"],
+                        info=row["info"],
                     ),
                     self.config.task,
                 )

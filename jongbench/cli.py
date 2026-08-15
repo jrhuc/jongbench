@@ -437,7 +437,7 @@ def _cmd_positions(args: argparse.Namespace) -> int:
         for events in logs:
             for position in positions_module.extract_positions(events, engine):
                 handle.write(
-                    json.dumps(position.to_dict(), separators=(",", ":")) + "\n"
+                    json.dumps(position.to_task_dict(), separators=(",", ":")) + "\n"
                 )
                 extracted.append(position)
 
