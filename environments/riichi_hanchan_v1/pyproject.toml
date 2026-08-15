@@ -1,6 +1,6 @@
 [project]
 name = "riichi-hanchan-v1"
-version = "0.1.0rc1"
+version = "0.1.0rc2"
 description = "Four models play a full riichi mahjong hanchan against each other"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
@@ -9,7 +9,7 @@ license-files = ["LICENSE"]
 tags = ["riichi", "mahjong", "multi-agent", "long-horizon", "eval", "v1"]
 dependencies = [
     "verifiers>=0.3.0,<0.4",
-    "jongbench @ git+https://github.com/jrhuc/jongbench.git@d47661307d7f4ca3e1f28f206f14c01a56b5238d",
+    "jongbench @ git+https://github.com/jrhuc/jongbench.git@cf4c835dcc176c654c7c8e551c4c2e4b7ac86f69",
 ]
 
 [project.urls]
