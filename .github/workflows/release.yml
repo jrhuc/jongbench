@@ -1,0 +1,82 @@
+name: Release verification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    env:
+      JONGBENCH_CACHE_DIR: ${{ runner.temp }}/jongbench-cache
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+        working-directory: webui
+      - run: bun run build
+        working-directory: webui
+      - run: uv run --python ${{ matrix.python-version }} --extra dev pytest -q
+      - if: matrix.python-version == '3.12'
+        run: uv run --python ${{ matrix.python-version }} --extra dev jongbench selfcheck --runs-root "${{ runner.temp }}/selfcheck"
+
+  package:
+    name: Root wheel / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+        working-directory: webui
+      - run: bun run build
+        working-directory: webui
+      - run: uv build --python ${{ matrix.python-version }} --out-dir dist
+      - run: uvx twine check dist/*
+      - run: uv venv --python ${{ matrix.python-version }} wheel-venv
+      - run: uv pip install --python wheel-venv/bin/python dist/*.whl
+      - run: wheel-venv/bin/python -c 'import importlib.util; from pathlib import Path; import jongbench, libriichi; from jongbench import arena, bridge, engines, prompts, providers; assert importlib.util.find_spec("torch") is None; assert importlib.util.find_spec("openai") is None; assert Path(jongbench.__file__).with_name("webui_page.html").is_file()'
+      - run: wheel-venv/bin/jongbench --help
+
+  environments:
+    name: Environment packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - uses: dtolnay/rust-toolchain@stable
+      - run: uv build --out-dir decision-dist environments/riichi_decision_v1
+      - run: uv build --out-dir hanchan-dist environments/riichi_hanchan_v1
+      - run: uvx twine check decision-dist/* hanchan-dist/*
+      - run: uv venv --python 3.12 decision-venv
+      - run: uv pip install --python decision-venv/bin/python decision-dist/*.whl
+      - run: decision-venv/bin/validate riichi_decision_v1 --runtime.type subprocess
+      - run: uv venv --python 3.12 hanchan-venv
+      - run: uv pip install --python hanchan-venv/bin/python hanchan-dist/*.whl
+      - run: hanchan-venv/bin/validate riichi_hanchan_v1 --runtime.type subprocess -n 4

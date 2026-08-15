@@ -14,9 +14,6 @@ if str(ROOT) not in sys.path:
 
 from jongbench import actions, arena, engines, evaluate, positions
 
-WEIGHTS = ROOT / "weights" / "mortal.pth"
-pytestmark = pytest.mark.skipif(not WEIGHTS.exists(), reason="needs weights/mortal.pth")
-
 
 def _first_kyoku() -> list[dict]:
     seats = [engines.RandomEngine(f"r{i}", seed=i) for i in range(4)]
@@ -30,7 +27,7 @@ def _first_kyoku() -> list[dict]:
 
 @pytest.fixture(scope="module")
 def extracted() -> list[positions.Position]:
-    engine = evaluate.load_engine(str(WEIGHTS))
+    engine = evaluate.load_engine("auto")
     return positions.extract_positions(_first_kyoku(), engine, seats=(0,))
 
 
