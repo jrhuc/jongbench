@@ -1,284 +1,223 @@
-# Evaluation program: from reviewer agreement to causal competence
+# Evaluation program: causal Mahjong experiments, not one benchmark number
 
-## Decision
+## Research decision
 
-Do not merge the competence-profile PR as a finished benchmark.  It contains useful
-instrumentation, but several proposed metrics overclaim what they measure and the
-current taskset reducers cannot produce the paired or clustered estimates the README
-promises.
+Jongbench should not compete as another frozen multiple-choice benchmark. Its useful
+asset is a deterministic Mahjong runtime with legal-action enumeration, exact rule
+state, fixed controls, full prompts, decision journals, and replayable walls. The
+research program should use those properties to run interventions that ordinary eval
+harnesses cannot run.
 
-The project should treat the harness as the product and the initial evals as probes of
-that harness.  The distinctive capability is not another frozen multiple-choice bank:
-it is a deterministic Mahjong runtime that can reproduce a state, enumerate every
-legal action, preserve the wall and chair assignment, continue a branch under fixed
-policies, and retain the model's prompt, response, tools, and downstream trajectory.
-The evaluation program should be built around those capabilities.
+The execution layer emits immutable facts. A separate reducer owns every paired or
+clustered estimate. No environment-level `avg_reward` is allowed to masquerade as the
+competence profile.
 
-## Immediate corrections
+## Measurement hierarchy
 
-### Keep
+### 1. Matched control replacement — primary live outcome
 
-- Immutable board, prompt, grading, checkpoint, source-log, and measurement-profile
-  identities.
-- Raw Q values and normalized rewards, but report them as reviewer diagnostics until
-  calibration establishes what the Q scale predicts.
-- Competence tags as sampling and slicing labels, not as ground-truth diagnoses.
-- Exact rule checks where the runtime can compute the counterfactual directly.
-- Rotated common-wall blocks, clustered uncertainty, and explicit smoke-run labeling.
-- Behavioral fingerprints as descriptive context.
+For each wall seed and physical chair:
 
-### Change
+1. collect the policy episode against fixed controls;
+2. run the same wall once with four copies of the fixed control and cache the
+   physical-chair outcome;
+3. reuse that baseline for every rotated policy episode on the wall;
+4. subtract the matched control chair's score from the policy seat's score;
+5. average the four chair deltas into one independent wall observation;
+6. bootstrap whole walls, never kyoku or decision rows.
 
-- Rename `score_differential` to **table score margin**.  At a constant-sum table,
-  own score minus the opponents' mean is an affine transform of own score; it neither
-  cancels luck nor creates an independent signal.  The outcome comparison should be a
-  policy seat minus an all-control seat on the same wall and chair.
-- Compare same-shanten discards when computing ukeire loss.  A larger acceptance count
-  at a worse shanten is not a better alternative.
-- Define the existing “fold rate” narrowly as exact genbutsu against every declared
-  riichi opponent.  Do not label all other discards as pushes.
-- Treat closed, non-riichiable, ron-yakuless tenpai as a diagnostic condition, not as
-  “cannot win”: menzen tsumo remains a possible yaku.
-- Compute reviewer style against its probability distribution, not only its argmax.
-- Record failures in every competency slice.  A malformed answer must score zero in the
-  relevant tag metrics rather than disappearing from them.
-- Reduce hint, menu-order, notation, and comprehension arms as paired experiments.
-  Appending them to the ordinary task stream and averaging one scalar destroys the
-  effect the experiment was meant to estimate.
+This estimator is valid only when the policy episode has exactly one live policy
+seat and three controls matching the baseline identity. The two games are expected to
+diverge; that divergence is the intervention. Placement remains a readable secondary
+outcome. `table_score_margin` remains descriptive only.
 
-### Remove or quarantine
+Controls must be deterministic. A stochastic control is admissible only after its RNG
+stream is explicitly coupled across policy and baseline runs.
 
-- **Reviewer-confidence weighting.**  The available Phoenix confidence head is trained
-  to predict whether Phoenix's policy matches logged play.  It is not uncertainty in
-  Mortal's Q estimate, and weighting Mortal scores by it is circular.  Preserve it only
-  as explicitly named policy-imitation metadata.
-- Any claim that the environment already emits a seed-block standard error.  A
-  per-episode `Env` cannot manufacture a batch statistic; the reducer must group the
-  finished episode artifacts.
-- The current board-comprehension “tiles left” item as evidence of Mahjong perception.
-  It is mostly direct text retrieval.  Comprehension probes should require reconstructing
-  hidden rule facts from the rendered board.
-- Calibration claims from in-sample ordinary least squares.  Fit on held-out games and
-  bootstrap whole game or wall clusters.
+### 2. Exact-wall action branching — consequential audit
 
-## Measurement architecture
+A finished episode already contains a stronger state handle than a private Rust object:
 
-### 1. Immutable rollout artifacts
+- arena seed and key;
+- physical table order;
+- measurement profile and control identity;
+- the globally ordered decision journal.
 
-The environment should emit facts, not final benchmark claims.  One episode artifact
-must include:
+The arena is deterministic given the seed and action history. A content-addressed
+**replay capsule** therefore reconstructs a target decision by replaying the factual
+prefix. At the target, an experiment forces a legal alternative, preserves every other
+model reaction made to the same event prefix, and then hands every seat to fresh fixed
+controls. Preserving those co-temporal reactions avoids changing two interventions at
+once. This requires no additional model call.
 
-- wall seed, rotation, table position, control checkpoint, and complete measurement
-  profile;
-- every prompt variant and legal menu;
-- the parsed action and raw response;
-- a serializable decision-state handle sufficient to reproduce or branch the state;
-- rule diagnostics and reviewer outputs as separate namespaces;
-- final outcomes and the exact cluster/pair identifiers used by reducers.
+The first implementation reports the target kyoku's realized point delta for every
+forced action. Its estimand is named `factual_wall`: it answers what each action caused
+on the hidden wall that was actually dealt.
 
-A reducer then owns all aggregation: paired deltas, tag profiles, bootstrap intervals,
-invariance gaps, and missing/failure accounting.  This prevents UI averaging rules from
-silently changing the estimand.
+That is useful for:
 
-### 2. Counterfactual branch regret — primary novel eval
+- auditing catastrophic consequential disagreements;
+- comparing the model's action with a frozen reviewer's action on the same realization;
+- finding policy-induced states where reviewer scores and realized
+  consequences conflict;
+- selecting examples for human analysis.
 
-At selected decisions, replay the exact state and force each legal action once.  From
-that point, let fixed controls finish the kyoku, using common random numbers across
-branches.  No additional call to the evaluated model is required after its original
-choice.
+It is **not** conditional expected value. Taking the best result on the already-known
+future wall creates hindsight selection and must not become a headline skill score.
+`hindsight_regret` is an audit statistic only. The more defensible aggregate is
+the model-versus-reference branch delta across held-out wall clusters.
 
-For decision \(d\), action \(a\), and continuation replicate \(k\):
+### 3. Information-set branching — next research milestone
 
-\[
-R_{d,a,k}=\text{realized seat point delta under forced action }a.
-\]
+Expected action value requires resampling hidden tile allocations conditional on the
+information available to the evaluated seat. Replaying the original wall repeatedly
+does not create independent continuations.
 
-Report:
+The next native-runtime project is therefore an information-set resampler that:
 
-\[
-\text{branch regret}_d = \max_a \bar R_{d,a} - \bar R_{d,a_{model}},
-\]
+- fixes all public events and the evaluated seat's private hand;
+- preserves the legal state and visible tile counts;
+- resamples opponents' concealed tiles and the remaining wall from compatible unseen
+  tiles;
+- couples each sampled hidden world across all forced actions;
+- finishes the kyoku under fixed controls.
 
-with uncertainty across continuation replicates and game clusters.  Also retain the
-full action-value vector, because close choices and catastrophic mistakes should not be
-compressed into the same 0–1 stretch.
+Only this estimator may be called expected branch value or expected branch regret.
+Its validation must include reconstruction invariants, tile conservation, legal-action
+stability at the branch point, and reviewer-Q calibration on held-out games.
 
-This is the strongest use of the harness:
+### 4. Perception-to-judgment decomposition
 
-- it is consequential rather than imitation-based;
-- it can validate or falsify Mortal Q on the exact positions being scored;
-- it works on states the evaluated model caused, including off-distribution states;
-- it separates model-call cost from simulator compute;
-- and it exposes whether reviewer disagreement matters in realized play.
-
-Implementation order:
-
-1. Add a stable `DecisionSnapshot` serialization containing PlayerState, wall cursor,
-   scores, honba/kyotaku, turn owner, and legal events.
-2. Add `arena.branch(snapshot, forced_event, continuation_policy, continuation_seed)`.
-3. Pilot only on discard decisions with 2–6 materially distinct options and high Q
-   span; continue to end of kyoku.
-4. Use 4–16 common-random-number continuations per option, selected adaptively until
-   the best-action ordering is stable or the budget is exhausted.
-5. Compare branch regret with reviewer Q-loss on held-out games.  A weak relationship is
-   a benchmark result, not an implementation failure.
-
-### 3. Matched control intervention — primary live outcome
-
-For every wall seed, run an all-control baseline once and cache it.  Compare the policy
-seat's final score with the baseline control occupying the same chair on the same wall.
-Average the four chair deltas in a rotated block:
-
-\[
-\Delta_s = score(policy\ replacement, s) - score(all\ control, s).
-\]
-
-This is a real counterfactual intervention.  It does not pretend that the policy and
-baseline follow identical trajectories; trajectory divergence is the effect being
-measured.  Controls must be deterministic, or their randomness must be explicitly
-coupled.
-
-Placement remains a human-readable secondary result.  Table score margin remains a
-single-episode descriptive metric only.
-
-### 4. Perception → judgment decomposition
-
-Use one structured response on the same prompt:
+A model response should be able to include derived rule facts and its action in one
+structured answer:
 
 ```json
 {
   "facts": {
     "shanten": 1,
     "furiten": false,
-    "genbutsu_against": {"P1": ["3p", "E"]},
-    "live_wait_count": 0
+    "live_wait_count": 0,
+    "genbutsu_against": {"P1": ["3p", "E"]}
   },
   "choice": 4
 }
 ```
 
-Grade rule facts exactly, then grade the action separately.  Report four cells:
+Facts are graded exactly by the runtime; action quality is graded separately. Reports
+must preserve the four cells: correct/incorrect facts crossed with strong/weak action.
+Visible-text retrieval such as copying `tiles_left` is a format check, not a Mahjong
+perception result.
 
-- facts correct / action strong;
-- facts correct / action weak;
-- facts wrong / action strong;
-- facts wrong / action weak.
+### 5. Paired invariance experiments
 
-This directly tests whether inline hints and tools repair perception, judgment, or
-both.  Probes must require derived board facts; copying a visible counter is only a
-format sanity check.
+Menu permutation, notation changes, hints, tools, and irrelevant wording are paired
+interventions on the same board. They are never appended to the primary task stream and
+pooled into one mean.
 
-### 5. Paired invariance suite
+Every observation carries a stable `pair_id`, `cluster_id`, profile, arm, metric, value,
+and validity flag. Reducers report within-pair differences, dropped/malformed pairs,
+and whole-cluster bootstrap intervals. High-consequence choice flips are retained as
+auditable examples.
 
-Each original board receives controlled transformations with stable pair IDs:
+### 6. Reviewer diagnostics and disagreement
 
-- menu permutation;
-- equivalent tile notation or rendering;
-- hints on/off;
-- tools versus inline facts;
-- irrelevant wording perturbations.
+Mortal Q remains a frozen diagnostic, not ground truth. Reports retain raw Q loss,
+normalized loss, Q span, and action probabilities. Phoenix policy confidence remains
+policy-imitation metadata and cannot weight Mortal grading.
 
-Primary metrics are choice-flip rate, branch-regret delta, and answer-validity delta.
-Never average transformed tasks into the ordinary decision score.  Report an invariance
-matrix and inspect the largest-regret flips.
+Two independently frozen reviewers should define consensus, close-value, and contested
+sets. Exact-wall and information-set branches then test which reviewer disagreements
+matter in play.
 
-### 6. Compounding-error profile
+## Architecture
 
-Maintain two banks with identical schema and reducers:
+### Immutable experiment records
 
-- **reference distribution:** positions reached by strong self-play or high-level human
-  logs;
-- **policy-induced distribution:** positions reached by the evaluated model in live
-  games.
+The experiment package defines content-addressed records in focused schema modules:
 
-Match or reweight by observable state features before comparing scores.  Report both
-performance and the state-distribution shift: shanten, score pressure, calls, furiten,
-remaining tiles, opponent riichi, and action-menu composition.  The gap reveals where a
-model's earlier mistakes create later situations the reference bank systematically
-misses.
+- `experiments.identity.ControlPolicyIdentity` — checkpoint and policy settings;
+- `experiments.capsule.ReplayCapsule` — one episode's causal replay contract;
+- `experiments.capsule.ScriptedDecision` — one globally ordered action;
+- `experiments.records_control.AllControlBaseline` — a reusable chair-indexed
+  wall outcome;
+- `experiments.records_branch.BranchResult` — one forced legal action;
+- `experiments.records_control.MatchedControlResult` — one policy/baseline
+  chair join;
+- `experiments.records_paired.PairedArmObservation` — one intervention arm.
 
-### 7. Reviewer disagreement, not fictitious confidence
+Source filesystem paths are metadata and are excluded from capsule identity.
 
-Build banks with two independently frozen reviewers.  Align rows by `board_id` and
-report:
+### Execution
 
-- consensus argmax positions;
-- close-value positions;
-- contested positions;
-- reviewer-versus-branch-regret agreement.
+`jongbench.experiments.runtime`, `branch`, and `matched_control` own one
+explicit state transition:
 
-Consensus is a useful high-precision slice.  Contested positions are an audit set for
-human analysis, not examples to force into one supposedly correct label.
+```text
+factual replay prefix -> forced target action -> fixed continuation controls
+```
+
+A `ReplayThenEngine` reproduces recorded decisions and otherwise delegates to an
+ordinary control seat. For live seats, optional reactions absent from the journal are
+auto-passed through the global intervention cut—even when that seat has no later row
+of its own. Fixed controls are recomputed throughout. Once the cut is crossed, the
+continuation policy owns every action.
+
+Mortal controls are built through one canonical `MortalControlPool`: resolve one
+checkpoint, load one template, and share frozen modules across fresh arena-seat
+wrappers. Runtime, branching, matched baselines, and self-play should converge on this
+construction path.
+
+### Reduction
+
+`jongbench.experiments.reduce` owns:
+
+- complete four-chair wall checks;
+- matched-control wall means;
+- whole-wall bootstrap intervals;
+- complete legal-action checks for branch audits;
+- model-versus-reference factual deltas;
+- paired-arm joins and dropped-pair accounting.
+
+The reducer equal-weights independent clusters. It never treats the hundreds of
+correlated decisions from one hanchan as hundreds of independent samples.
 
 ## Statistical contract
 
-- The independent unit is a game, wall, or paired board—not a decision row.
-- Confidence intervals bootstrap those clusters and preserve paired arms.
-- A result always names the measurement profile and missing/failure rate.
-- `n=4` is a smoke run only.
-- Public comparisons state a target precision before collecting data and may stop only
-  at a cluster boundary.
-- Raw and normalized reviewer losses are both shown, together with Q span.
+- Independent units are walls, games, or stable paired boards.
+- Pairing is preserved before aggregation.
+- Four rotated episodes are one smoke block, not a confidence interval.
+- Missing arms, incomplete chairs, invalid responses, and replay divergence are visible
+  outcomes, not silently dropped rows.
+- Every result names its measurement profile and estimand.
+- Public collection declares a target precision and stops only at a cluster boundary.
 - Calibration uses held-out games and reports predictive error, not only in-sample
-  \(R^2\).
+  fit.
 
-## Framework changes
+## Implementation status
 
-The current Verifiers task abstraction is suitable for issuing calls, but not for every
-estimator.  Keep it as the execution layer and add a jongbench reducer layer that reads
-immutable artifacts.  The reducer should be the only component allowed to publish a
-benchmark summary.
+Implemented in the current research branch:
 
-Recommended interfaces:
+- honest behavioral and exact-rule diagnostics;
+- raw and normalized reviewer loss with Q span;
+- rejection of invalid reviewer-confidence weighting;
+- branch-core CI validation against the branch wheel;
+- content-addressed replay capsules;
+- deterministic replay-then-control execution;
+- exact-wall action branches with explicit `factual_wall` semantics;
+- cached one-per-wall all-control baselines reused across chair rotations;
+- complete-block matched-control reduction;
+- pair-aware invariance reduction;
+- whole-cluster bootstrap intervals.
 
-```text
-jongbench collect <profile> ...        # prompts, actions, rollouts, snapshots
-jongbench branch <run> ...             # counterfactual continuation artifacts
-jongbench reduce <run-or-bank> ...     # paired/clustered estimates and report
-jongbench audit <report> ...            # worst-regret and disagreement examples
-```
+Still required before a benchmark claim:
 
-The Hub environment may still expose lightweight per-task metrics, but it should link
-to the reducer report rather than treating `avg_reward` as the competence profile.
+1. collect a multi-wall matched-control study on at least two model families;
+2. run the new command surface against real saved episodes and publish the
+   immutable artifacts;
+3. run a held-out model-versus-Mortal branch study and test Q/consequence correlation;
+4. implement and validate information-set hidden-tile resampling;
+5. replace retrieval-style comprehension probes with derived-fact responses;
+6. remove diagnostic slices that neither separate models nor explain failures;
+7. merge the release-audit base and publish matching core/environment artifacts.
 
-## Merge sequence
-
-### Gate A — feature branch validity
-
-- Run environment integration against the branch's core wheel, not an older released
-  wheel that cannot contain the branch's modules.
-- Keep the published-install check separate.
-- Reject confidence filtering and weighting.
-- Fix exact scorecard semantics and failure accounting.
-- Ensure all unit, native, wheel, and environment-source tests pass.
-
-### Gate B — publication validity
-
-- Merge the release-audit base first.
-- Publish and verify 0.1.1 manylinux wheels for Python 3.12 and 3.13.
-- Replace every 0.1.0 direct URL and digest in the hanchan package.
-- Install the environment from its own wheel in a clean process and run four smoke
-  episodes.
-- Regenerate any artifact whose schema or metric semantics changed.
-
-### Gate C — benchmark claim
-
-- Ship the reducer and clustered/pair-aware report.
-- Publish no score-differential or confidence-weighted headline.
-- Run the branch-regret pilot and the Q-loss calibration on held-out games.
-- Demonstrate that at least one proposed slice separates models or explains a live
-  failure mode.  Remove slices that do neither.
-
-## Work started in this PR
-
-- Correct same-shanten ukeire comparison and stream the scorecard state in one pass.
-- Make fingerprint rates hand-aware and multi-ron-safe.
-- Compare style with the reviewer's action distribution.
-- Expose raw and normalized Q-loss plus Q span.
-- Count malformed responses in tag slices.
-- Reject the invalid reviewer-confidence weighting path.
-- Validate the hanchan environment against the branch's 0.1.1 core wheel in CI.
-
-These changes make the current diagnostics honest.  They do not, by themselves, turn
-the PR into the final benchmark; the causal branch evaluator and reducer are the next
-high-value implementation work.
+The branch remains a research draft until those gates are met.
