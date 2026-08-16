@@ -327,13 +327,20 @@ def _draw_tenpai(
     event: dict[str, Any], player_id: int, *, fallback_delta: float
 ) -> bool | None:
     """Prefer explicit draw-tenpai metadata; return unknown for zero-delta legacy draws."""
-    for key in ("tenpais", "tenpai"):
+    for key in ("tenpais", "tenpai", "tehais"):
         values = event.get(key)
         if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
             if player_id < len(values):
                 value = values[player_id]
                 if isinstance(value, bool):
                     return value
+                # ``tehais`` is MJAI's exhaustive-draw reveal: tenpai seats expose
+                # their hand and noten seats use an empty list. Some converters use
+                # equivalent ``tenpai``/``tenpais`` fields. All are explicit metadata.
+                if isinstance(value, Sequence) and not isinstance(
+                    value, (str, bytes)
+                ):
+                    return bool(value)
     # Non-zero noten payments identify the seat in the common one-to-three and
     # two-to-two cases. Zero means either all-tenpai or all-noten, so it is unknown.
     if fallback_delta > 0.0:
