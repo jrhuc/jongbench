@@ -95,9 +95,7 @@ class RiichiDecisionData(vf.TaskData):
     tags: list[str]
     """Competence tags computed at bank-build time."""
     reviewer_confidence: float | None
-    """Confidence-head output when the grading checkpoint had one."""
-    weight_by_confidence: bool
-    """Multiply q_advantage by reviewer_confidence when both are present."""
+    """Optional policy-imitation confidence metadata; never a grading weight."""
     info: DecisionInfo
     """Board context: seat, kyoku, honba, junme, tiles_left, shanten, at_furiten."""
     state_hints: bool
@@ -111,18 +109,16 @@ class RiichiDecisionTask(vf.Task[RiichiDecisionData]):
 
     @vf.reward(weight=1.0)
     async def q_advantage(self, trace: vf.Trace) -> float:
-        """Mortal's opinion of the chosen action. An unparseable or out-of-range reply
-        scores 0.0 rather than erroring: failing to answer in the required form is a
-        real failure at this task, not a broken sample."""
+        """Mortal's opinion of the chosen action.
+
+        An unparseable or out-of-range reply scores zero. Tag metrics include those
+        failures; otherwise malformed replies disappear from every competence slice
+        and bias the profile upward.
+        """
         choice = self._choice(trace)
-        if choice is None:
-            return 0.0
-        reward = float(self.data.rewards[choice])
+        reward = 0.0 if choice is None else float(self.data.rewards[choice])
         for tag in self.data.tags:
             trace.record_metric(f"tag_{tag}", reward)
-        confidence = self.data.reviewer_confidence
-        if self.data.weight_by_confidence and confidence is not None:
-            return reward * float(confidence)
         return reward
 
     @vf.metric
@@ -136,16 +132,33 @@ class RiichiDecisionTask(vf.Task[RiichiDecisionData]):
 
     @vf.metric
     async def q_loss(self, trace: vf.Trace) -> float:
-        choice = self._choice(trace)
+        return self._q_loss_value(trace)
+
+    @vf.metric
+    async def normalised_q_loss(self, trace: vf.Trace) -> float:
         q_values = [float(value) for value in self.data.q_values]
-        if choice is None:
-            return max(q_values) - min(q_values)
-        return max(q_values) - q_values[choice]
+        span = max(q_values) - min(q_values)
+        if span <= 0.0:
+            return 0.0
+        return self._q_loss_value(trace) / span
+
+    @vf.metric
+    async def q_span(self, trace: vf.Trace) -> float:
+        del trace
+        q_values = [float(value) for value in self.data.q_values]
+        return max(q_values) - min(q_values)
 
     @vf.metric
     async def choice_index(self, trace: vf.Trace) -> float:
         choice = self._choice(trace)
         return float(choice) if choice is not None else -1.0
+
+    def _q_loss_value(self, trace: vf.Trace) -> float:
+        choice = self._choice(trace)
+        q_values = [float(value) for value in self.data.q_values]
+        if choice is None:
+            return max(q_values) - min(q_values)
+        return max(q_values) - q_values[choice]
 
     def _choice(self, trace: vf.Trace) -> int | None:
         try:
@@ -163,20 +176,25 @@ class RiichiDecisionConfig(vf.TasksetConfig):
     tags: str = ""
     """Comma-separated competence tags. A position is kept if it has any of them."""
     min_confidence: float | None = None
-    """Drop positions whose reviewer confidence is below this threshold."""
+    """Retained only to reject the old, invalid confidence-filtering experiment."""
     confidence_weight: bool = False
-    """Multiply q_advantage by reviewer_confidence instead of treating every
-    graded position as equally authoritative."""
+    """Retained only to reject the old, invalid confidence-weighting experiment."""
     permute_seed: int | None = None
-    """Shuffle option numbering with this seed (menu-order robustness)."""
+    """Shuffle option numbering with this seed (experimental robustness arm)."""
     both_prompt_variants: bool = False
-    """Emit each position twice, with and without state hints, to measure the gap."""
+    """Emit both hint arms (experimental; reduce as paired variants, not one mean)."""
     probes: bool = False
-    """Append rule-checkable board-comprehension questions about the same boards."""
+    """Append experimental board-comprehension questions."""
 
 
 class RiichiDecisionTaskset(vf.Taskset[RiichiDecisionTask, RiichiDecisionConfig]):
     def load(self) -> Iterator[RiichiDecisionTask]:
+        if self.config.min_confidence is not None or self.config.confidence_weight:
+            raise ValueError(
+                "reviewer confidence filtering/weighting is unsupported: the available "
+                "checkpoint head predicts policy imitation correctness, not uncertainty "
+                "in Mortal's Q grading"
+            )
         path = Path(self.config.bank)
         if not path.exists():
             raise FileNotFoundError(
@@ -190,26 +208,26 @@ class RiichiDecisionTaskset(vf.Taskset[RiichiDecisionTask, RiichiDecisionConfig]
             for tag in str(self.config.tags).split(",")
             if tag.strip()
         }
-        invalid = [tag for tag in wanted if re.fullmatch(r"^[a-z][a-z0-9_]*$", tag) is None]
+        invalid = [
+            tag
+            for tag in wanted
+            if re.fullmatch(r"^[a-z][a-z0-9_]*$", tag) is None
+        ]
         if invalid:
-            raise ValueError(f"invalid competence tag(s): {', '.join(sorted(invalid))}")
-        min_confidence = self.config.min_confidence
-        filtered: list[BankRow] = []
-        for row in rows:
-            if wanted and wanted.isdisjoint(row["tags"]):
-                continue
-            confidence = row.get("reviewer_confidence")
-            if min_confidence is not None and (
-                confidence is None or float(confidence) < float(min_confidence)
-            ):
-                continue
-            filtered.append(row)
+            raise ValueError(
+                f"invalid competence tag(s): {', '.join(sorted(invalid))}"
+            )
+        filtered = [
+            row for row in rows if not wanted or not wanted.isdisjoint(row["tags"])
+        ]
         if not filtered:
-            raise ValueError("tag/confidence filter removed every position")
+            raise ValueError("tag filter removed every position")
 
         idx = 0
         variants = (
-            (True, False) if self.config.both_prompt_variants else (self.config.state_hints,)
+            (True, False)
+            if self.config.both_prompt_variants
+            else (self.config.state_hints,)
         )
         permute_rng = (
             random.Random(self.config.permute_seed)
@@ -250,16 +268,13 @@ class RiichiDecisionTaskset(vf.Taskset[RiichiDecisionTask, RiichiDecisionConfig]
                 best_index=row["best_index"],
                 tags=list(row["tags"]),
                 reviewer_confidence=row.get("reviewer_confidence"),
-                weight_by_confidence=bool(self.config.confidence_weight),
                 info=row["info"],
                 state_hints=state_hints,
             ),
             self.config.task,
         )
 
-    def _probe_tasks(
-        self, idx: int, row: BankRow
-    ) -> list[RiichiDecisionTask]:
+    def _probe_tasks(self, idx: int, row: BankRow) -> list[RiichiDecisionTask]:
         """Rule-checkable questions about the board just shown."""
         info = row["info"]
         board = row["prompt_without_state_hints"]
@@ -267,7 +282,12 @@ class RiichiDecisionTaskset(vf.Taskset[RiichiDecisionTask, RiichiDecisionConfig]
         furiten_menu = ["no", "yes"]
         tiles_left = int(info["tiles_left"])
         tile_options = sorted(
-            {max(0, tiles_left - 2), max(0, tiles_left - 1), tiles_left, min(70, tiles_left + 1)}
+            {
+                max(0, tiles_left - 2),
+                max(0, tiles_left - 1),
+                tiles_left,
+                min(70, tiles_left + 1),
+            }
         )
         probes = [
             (
@@ -313,8 +333,7 @@ class RiichiDecisionTaskset(vf.Taskset[RiichiDecisionTask, RiichiDecisionConfig]
                         q_values=q_values,
                         best_index=best,
                         tags=["comprehension", kind],
-                        reviewer_confidence=1.0,
-                        weight_by_confidence=False,
+                        reviewer_confidence=None,
                         info=info,
                         state_hints=False,
                     ),

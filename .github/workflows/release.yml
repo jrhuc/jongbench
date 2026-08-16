@@ -194,6 +194,15 @@ jobs:
           version: "0.12.3"
           python-version: ${{ matrix.python-version }}
           enable-cache: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88.0"
+      - name: Build the branch core used by the hanchan environment
+        run: |
+          uv build --python ${{ matrix.python-version }} --sdist --out-dir core-dist --clear \
+            --build-constraints build-constraints.txt --require-hashes
+          uv build --python ${{ matrix.python-version }} --wheel core-dist/jongbench-*.tar.gz \
+            --out-dir core-dist --build-constraints build-constraints.txt --require-hashes
       - run: >-
           uv build --python ${{ matrix.python-version }} --sdist
           --out-dir decision-dist environments/riichi_decision_v1
@@ -214,10 +223,16 @@ jobs:
       - run: ${{ github.workspace }}/decision-venv/bin/validate riichi_decision_v1 --runtime.type subprocess
         working-directory: ${{ runner.temp }}
       - run: uv venv --python ${{ matrix.python-version }} hanchan-venv
-      - run: uv pip install --python hanchan-venv/bin/python hanchan-dist/*.whl
+      - name: Install the hanchan wheel against this branch's core
+        run: |
+          uv pip install --python hanchan-venv/bin/python \
+            core-dist/*.whl "torch>=2.4" "verifiers>=0.3.0,<0.4"
+          uv pip install --python hanchan-venv/bin/python --no-deps hanchan-dist/*.whl
       - run: >-
           ${{ github.workspace }}/hanchan-venv/bin/python -c
-          'import sys; from pathlib import Path; import jongbench, torch;
+          'import sys; from importlib.metadata import version; from pathlib import Path;
+          import jongbench, torch;
+          assert version("jongbench") == "0.1.1";
           assert Path(jongbench.__file__).is_relative_to(Path(sys.prefix))'
         working-directory: ${{ runner.temp }}
       - run: ${{ github.workspace }}/hanchan-venv/bin/validate riichi_hanchan_v1 --runtime.type subprocess -n 4

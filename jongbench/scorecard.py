@@ -1,8 +1,9 @@
 """Rule-derived competence tags and exact play checks.
 
-None of these consult a reviewer. They isolate arithmetic and legality from
-judgment: ukeire loss, needless shanten regression, self-inflicted furiten,
-dead-wait tenpai, avoidable deal-in, and yakuless tenpai.
+These diagnostics do not consult a reviewer.  They isolate arithmetic and legality
+from strategic judgment: same-shanten ukeire loss, needless shanten regression,
+self-inflicted furiten, dead-wait tenpai, avoidable deal-in, and an unriichiable
+closed tenpai with no inherent ron yaku.
 """
 
 from __future__ import annotations
@@ -27,8 +28,13 @@ def competence_tags(
     """Tag a decision by the kind of judgment it asks for."""
     kinds = {str(item.get("kind")) for item in menu}
     tags: list[str] = []
-    opponent_riichi = any(bool(flag) for flag in list(state.riichi_accepted)[1:])
-    dangerous_table = opponent_riichi or _opponent_has_two_melds(events, int(state.player_id))
+    player_id = int(state.player_id)
+    opponent_riichi = any(
+        bool(flag)
+        for seat, flag in enumerate(list(state.riichi_accepted))
+        if seat != player_id
+    )
+    dangerous_table = opponent_riichi or _opponent_has_two_melds(events, player_id)
     can_discard = bool(getattr(state.last_cans, "can_discard", False))
     shanten = int(state.real_time_shanten())
     if "riichi" in kinds:
@@ -57,55 +63,77 @@ def competence_tags(
 def analyze_choice(
     state: Any, menu: Sequence[dict[str, Any]], chosen: dict[str, Any]
 ) -> dict[str, Any]:
-    """Compare one chosen action to the legal alternatives on the same board."""
+    """Compare one chosen action to legal alternatives on the same board.
+
+    Ukeire is meaningful only between alternatives that leave the same best shanten.
+    Comparing a one-shanten shape's acceptance count to a two-shanten shape's count is
+    a category error, so shanten regression and ukeire loss are deliberately separate.
+    """
     analyses = [_analyze_item(state, item) for item in menu]
     chosen_index = _index_of(menu, chosen)
     chosen_analysis = analyses[chosen_index] if chosen_index is not None else None
     discard_rows = [
-        row for row in analyses if row is not None and row["kind"] == "discard"
+        row
+        for row in analyses
+        if row is not None
+        and row["kind"] == "discard"
+        and row["shanten"] is not None
     ]
-    best_shanten = min((row["shanten"] for row in discard_rows), default=None)
-    best_ukeire = max((row["ukeire"] for row in discard_rows), default=None)
-    live_wait_exists = any(row["ukeire"] > 0 and row["shanten"] == 0 for row in discard_rows)
-    yaku_wait_exists = any(row["wait_has_yaku"] for row in discard_rows)
-    unfuriten_exists = any(
-        row["shanten"] == 0 and not row["furiten"] for row in discard_rows
+    best_shanten = min((int(row["shanten"]) for row in discard_rows), default=None)
+    best_rows = (
+        [row for row in discard_rows if int(row["shanten"]) == best_shanten]
+        if best_shanten is not None
+        else []
     )
-    flags = {
+    best_ukeire = max((int(row["ukeire"]) for row in best_rows), default=None)
+    live_wait_exists = any(
+        int(row["shanten"]) == 0 and int(row["ukeire"]) > 0
+        for row in discard_rows
+    )
+    unfuriten_tenpai_exists = any(
+        int(row["shanten"]) == 0 and not bool(row["furiten"])
+        for row in discard_rows
+    )
+    can_riichi = any(item.get("kind") == "riichi" for item in menu)
+    flags: dict[str, int | bool] = {
         "ukeire_loss": 0,
         "needless_shanten_regression": False,
         "self_inflicted_furiten": False,
         "dead_wait_tenpai": False,
         "yakuless_tenpai": False,
     }
-    if chosen_analysis is not None and chosen_analysis["kind"] == "discard":
-        if best_ukeire is not None:
-            flags["ukeire_loss"] = max(0, int(best_ukeire) - int(chosen_analysis["ukeire"]))
-        if (
-            best_shanten is not None
-            and chosen_analysis["shanten"] > best_shanten
-        ):
+    if (
+        chosen_analysis is not None
+        and chosen_analysis["kind"] == "discard"
+        and chosen_analysis["shanten"] is not None
+    ):
+        chosen_shanten = int(chosen_analysis["shanten"])
+        if best_shanten is not None and chosen_shanten > best_shanten:
             flags["needless_shanten_regression"] = True
-        if chosen_analysis["furiten"] and unfuriten_exists:
+        elif best_ukeire is not None and chosen_shanten == best_shanten:
+            flags["ukeire_loss"] = max(
+                0, int(best_ukeire) - int(chosen_analysis["ukeire"])
+            )
+        if (
+            chosen_shanten == 0
+            and bool(chosen_analysis["furiten"])
+            and unfuriten_tenpai_exists
+        ):
             flags["self_inflicted_furiten"] = True
         if (
-            chosen_analysis["shanten"] == 0
-            and chosen_analysis["ukeire"] == 0
+            chosen_shanten == 0
+            and int(chosen_analysis["ukeire"]) == 0
             and live_wait_exists
         ):
             flags["dead_wait_tenpai"] = True
+        # ``wait_has_yaku`` is intentionally a ron-yaku check. Menzen tsumo may
+        # still win; this flag means the closed tenpai cannot ron as-is and the
+        # menu offered no riichi action to repair that.
         if (
-            chosen_analysis["shanten"] == 0
-            and chosen_analysis["menzen"]
-            and not chosen_analysis["wait_has_yaku"]
-            and not any(item.get("kind") == "riichi" for item in menu)
-        ):
-            flags["yakuless_tenpai"] = True
-        elif (
-            chosen_analysis["shanten"] == 0
-            and chosen_analysis["menzen"]
-            and not chosen_analysis["wait_has_yaku"]
-            and yaku_wait_exists
+            chosen_shanten == 0
+            and bool(chosen_analysis["menzen"])
+            and not bool(chosen_analysis["wait_has_yaku"])
+            and not can_riichi
         ):
             flags["yakuless_tenpai"] = True
     return {
@@ -116,8 +144,12 @@ def analyze_choice(
 
 
 def scorecard(events: Sequence[dict[str, Any]], player_id: int) -> dict[str, Any]:
-    """Exact rule checks for one seat across a finished log."""
-    from .positions import rebuild_state
+    """Exact rule checks for one seat across a finished log.
+
+    The state is advanced once through the log.  The previous implementation rebuilt
+    it from the prefix at every discard, making this pass quadratic in episode length.
+    """
+    import librichi
 
     totals = {
         "decisions": 0,
@@ -130,14 +162,13 @@ def scorecard(events: Sequence[dict[str, Any]], player_id: int) -> dict[str, Any
         "avoidable_deal_in": 0,
         "deal_in": 0,
     }
+    state = libriichi.state.PlayerState(player_id)
     pending_discard: dict[str, Any] | None = None
     for index, event in enumerate(events):
         event_type = event.get("type")
         if event_type == "start_kyoku":
             pending_discard = None
-            continue
-        if event_type == "dahai" and int(event.get("actor", -1)) == player_id:
-            state = rebuild_state(list(events[:index]), player_id)
+        elif event_type == "dahai" and int(event.get("actor", -1)) == player_id:
             menu = actions.build_menu(state)
             if len(menu) >= 2:
                 analysis = analyze_choice(state, menu, event)
@@ -151,29 +182,24 @@ def scorecard(events: Sequence[dict[str, Any]], player_id: int) -> dict[str, Any
                     "yakuless_tenpai",
                 ):
                     totals[key] += int(bool(analysis[key]))
-            pending_discard = {
-                "event": event,
-                "state": state,
-                "menu": menu,
-            }
-            continue
-        if event_type == "hora" and int(event.get("target", -1)) == player_id:
+            pending_discard = {"event": event, "menu": menu}
+        elif event_type == "hora" and int(event.get("target", -1)) == player_id:
             if int(event.get("actor", -1)) == player_id:
                 pending_discard = None
-                continue
-            totals["deal_in"] += 1
-            if pending_discard is not None and _avoidable_deal_in(
-                pending_discard["state"],
-                pending_discard["menu"],
-                pending_discard["event"],
-                int(event["actor"]),
-                events[: index + 1],
-            ):
-                totals["avoidable_deal_in"] += 1
+            else:
+                totals["deal_in"] += 1
+                if pending_discard is not None and _avoidable_deal_in(
+                    pending_discard["menu"],
+                    pending_discard["event"],
+                    int(event["actor"]),
+                    events[: index + 1],
+                ):
+                    totals["avoidable_deal_in"] += 1
+                pending_discard = None
+        elif event_type in {"hora", "ryukyoku", "end_kyoku"}:
             pending_discard = None
-            continue
-        if event_type in {"hora", "ryukyoku", "end_kyoku"}:
-            pending_discard = None
+        state.update(json.dumps(event, separators=(",", ":")))
+
     discards = max(int(totals["discards"]), 1)
     rates = {
         "ukeire_loss_per_discard": totals["ukeire_loss"] / discards,
@@ -196,8 +222,7 @@ def _analyze_item(state: Any, item: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(event, dict):
         return None
     kind = str(item.get("kind") or event.get("type") or "none")
-    analyze = getattr(state, "reaction_analysis", None)
-    if not callable(analyze) or event.get("type") != "dahai":
+    if event.get("type") != "dahai":
         return {
             "kind": kind,
             "shanten": None,
@@ -206,20 +231,15 @@ def _analyze_item(state: Any, item: dict[str, Any]) -> dict[str, Any] | None:
             "wait_has_yaku": False,
             "menzen": bool(getattr(state, "is_menzen", False)),
         }
-    try:
-        shanten, _waits, furiten, ukeire, wait_has_yaku, menzen = analyze(
-            json.dumps(event, separators=(",", ":"))
+    analyze = getattr(state, "reaction_analysis", None)
+    if not callable(analyze):
+        raise RuntimeError(
+            "exact scorecard analysis requires PlayerState.reaction_analysis "
+            "from jongbench core >=0.1.1"
         )
-    except (RuntimeError, TypeError, ValueError):
-        summary = prompts._after_summary(state, event)
-        return {
-            "kind": kind,
-            "shanten": None if summary is None else int(state.real_time_shanten()),
-            "ukeire": 0,
-            "furiten": bool(getattr(state, "at_furiten", False)),
-            "wait_has_yaku": False,
-            "menzen": bool(getattr(state, "is_menzen", False)),
-        }
+    shanten, _waits, furiten, ukeire, wait_has_yaku, menzen = analyze(
+        json.dumps(event, separators=(",", ":"))
+    )
     return {
         "kind": kind,
         "shanten": int(shanten),
@@ -241,7 +261,6 @@ def _index_of(menu: Sequence[dict[str, Any]], chosen: dict[str, Any]) -> int | N
 
 
 def _avoidable_deal_in(
-    state: Any,
     menu: Sequence[dict[str, Any]],
     discarded: dict[str, Any],
     winner: int,
@@ -267,7 +286,6 @@ def _avoidable_deal_in(
             except ValueError:
                 continue
             return True
-    del state
     return False
 
 
