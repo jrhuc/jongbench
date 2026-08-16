@@ -20,7 +20,7 @@ separable, byte-identical comparison use riichi-decision-v1.
 import asyncio
 import hashlib
 import json
-import os
+import tempfile
 import threading
 from collections import Counter
 from collections.abc import Iterator
@@ -35,9 +35,12 @@ import verifiers.v1 as vf
 from jongbench import (
     arena,
     bridge,
+    competence,
     engines,
     prompts,
     providers,
+    scorecard,
+    stats,
 )
 from jongbench import (
     weights as weights_module,
@@ -157,6 +160,13 @@ class RiichiHanchanEnvConfig(vf.EnvConfig):
     control_use_policy: bool = False
     """Use the Mortal checkpoint's stochastic policy head for control seats. The
     default is deterministic argmax-Q play; Phoenix policy play must be explicit."""
+    control_boltzmann_epsilon: float = 0.0
+    """Probability that a Q-mode control samples a Boltzmann action instead of argmax."""
+    control_boltzmann_temp: float = 1.0
+    """Temperature for Boltzmann exploration when control_boltzmann_epsilon > 0."""
+    grade: bool = True
+    """Review the evaluated seat in-env with Mortal 298k and emit Q-loss, the
+    rules scorecard, and the behavioural fingerprint as metrics."""
     evaluated_agent: Literal["seat0", "seat1", "seat2", "seat3"] | None = "seat0"
     """The one role whose placement is the standard Verifiers/Hub eval score.
 
@@ -209,37 +219,14 @@ class _Journal:
 def _resolve_control_checkpoint(
     config: RiichiHanchanEnvConfig, models: list[str]
 ) -> tuple[object, dict[str, object] | None]:
-    """Resolve a Mortal control once, retaining compatibility with core v0.1.0."""
+    """Resolve the control opponent once. Grading uses Mortal 298k separately."""
     if "mortal" not in models:
         return str(config.weights), None
 
-    resolver = getattr(weights_module, "resolve_mortal_checkpoint", None)
-    if resolver is not None:
-        checkpoint = resolver(
-            config.weights, use_policy=bool(config.control_use_policy)
-        )
-        return checkpoint, checkpoint.as_dict()
-
-    # The first published environment core predates ResolvedCheckpoint. Keep its
-    # immutable auto digest during the transition; new cores always take the branch
-    # above and record path, source, digest, and policy from the canonical resolver.
-    path = weights_module.resolve_mortal_weights(config.weights)
-    if config.weights == "auto":
-        digest = weights_module.auto_weights_sha256()
-        source = os.environ.get("JONGBENCH_WEIGHTS_URL") or getattr(
-            weights_module, "MORTAL_WEIGHTS_URL", "auto"
-        )
-    else:
-        with path.open("rb") as handle:
-            digest = hashlib.file_digest(handle, "sha256").hexdigest()
-        source = str(config.weights)
-    identity: dict[str, object] = {
-        "path": str(path),
-        "sha256": digest,
-        "source": source,
-        "use_policy": bool(config.control_use_policy),
-    }
-    return str(path), identity
+    checkpoint = weights_module.resolve_mortal_checkpoint(
+        config.weights, use_policy=bool(config.control_use_policy)
+    )
+    return checkpoint, checkpoint.as_dict()
 
 
 def _make_control_engine(
@@ -247,25 +234,44 @@ def _make_control_engine(
     checkpoint: object,
     *,
     use_policy: bool,
+    boltzmann_epsilon: float = 0.0,
+    boltzmann_temp: float = 1.0,
 ):
-    """Build through the canonical core API, with a v0.1.0 compatibility path."""
-    if hasattr(weights_module, "ResolvedCheckpoint"):
-        return engines.make_engine(
-            name,
-            "mortal",
-            weights=checkpoint,
-            use_policy=use_policy,
-        )
+    return engines.make_engine(
+        name,
+        "mortal",
+        weights=checkpoint,
+        use_policy=use_policy,
+        boltzmann_epsilon=boltzmann_epsilon,
+        boltzmann_temp=boltzmann_temp,
+    )
 
-    # Core v0.1.0 eagerly evaluated its ambient policy default even when an explicit
-    # value was supplied to make_engine. Bypass that retired factory implementation
-    # so the packaged environment's explicit config remains authoritative.
-    from jongbench import evaluate, positions
 
-    reviewer = evaluate.load_engine(str(checkpoint), use_policy=use_policy)
-    if use_policy and not reviewer.use_policy:
-        raise ValueError("configured checkpoint has no reviewer policy head")
-    return positions.MortalArenaEngine(name, reviewer)
+def _measurement_profile(
+    config: RiichiHanchanEnvConfig, checkpoint: dict[str, object] | None
+) -> dict[str, object]:
+    return {
+        "state_hints": bool(config.state_hints),
+        "auto_pass_reactions": bool(config.auto_pass_reactions),
+        "tools": bool(config.tools),
+        "max_tool_calls": int(config.max_tool_calls),
+        "control_use_policy": bool(config.control_use_policy),
+        "control_boltzmann_epsilon": float(config.control_boltzmann_epsilon),
+        "control_boltzmann_temp": float(config.control_boltzmann_temp),
+        "evaluated_agent": config.evaluated_agent,
+        "seat_rotation": bool(config.seat_rotation),
+        "grade": bool(config.grade),
+        "control_checkpoint_sha256": None
+        if checkpoint is None
+        else checkpoint.get("sha256"),
+    }
+
+
+def _profile_digest(profile_row: dict[str, object]) -> str:
+    payload = json.dumps(
+        profile_row, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    )
+    return "sha256:" + hashlib.sha256(payload.encode()).hexdigest()
 
 
 def _journal_header(
@@ -286,7 +292,10 @@ def _journal_header(
         "tools": bool(config.tools),
         "max_tool_calls": int(config.max_tool_calls),
         "control_use_policy": bool(config.control_use_policy),
-        "reviewer_checkpoint": checkpoint,
+        "control_boltzmann_epsilon": float(config.control_boltzmann_epsilon),
+        "control_boltzmann_temp": float(config.control_boltzmann_temp),
+        "control_checkpoint": checkpoint,
+        "profile": _profile_digest(_measurement_profile(config, checkpoint)),
     }
 
 
@@ -506,39 +515,40 @@ class SeatRuntime:
         self,
         summary: arena.GameSummary,
         score: int,
+        scores: dict[str, int],
         seed: int,
         rotation: int,
         hands_replayed: int,
         evaluated_agent: str | None,
         policy_role: bool,
+        profile_digest: str,
+        diagnostics: dict[str, float] | None = None,
     ) -> None:
         placement = summary.placements[self.name]
         placement_return = (4 - placement) / 3
+        others = [
+            float(scores[name]) for name in SEATS if name != self.name and name in scores
+        ]
+        differential = (
+            stats.score_differential(float(score), others) if others else 0.0
+        )
         client = getattr(self.agent.config, "client", None)
         training_return = policy_role and getattr(client, "type", "eval") == "train"
-        # Evaluation and training need different aggregation units. Training gets
-        # every bounded kyoku trace with the hanchan return. Evaluation gets one
-        # placement-bearing carrier, or the Hub would average a variable number of
-        # kyoku rows (and symmetric four-seat play would always headline 0.5).
-        # Keep the raw return on eval traces at weight zero so per-kyoku inspection
-        # and tournament role breakdowns still see it without changing Trace.reward.
-        carrier = (
-            self.traces[-1]
-            if self.traces and policy_role and not training_return
-            else None
-        )
+        # Evaluation and training use the same reward name. Training gets every
+        # bounded kyoku trace. Evaluation puts the weight on the first kyoku —
+        # typically the longest — so the UI carrier is not the last short hand.
+        carrier = self.traces[0] if self.traces and policy_role and not training_return else None
         kyoku_count = hands_replayed + len(set(self.trace_kyokus))
         for kyoku, trace in zip(self.trace_kyokus, self.traces, strict=True):
+            weighted = training_return or trace is carrier
             trace.record_reward(
-                "placement_return",
+                "placement",
                 placement_return,
-                weight=1.0 if training_return else 0.0,
+                weight=1.0 if weighted else 0.0,
             )
-            trace.agent.trainable = training_return
-            if trace is carrier:
-                trace.record_reward("placement", placement_return)
-                trace.agent.trainable = True
+            trace.agent.trainable = weighted
             trace.record_metric("final_score", float(score))
+            trace.record_metric("score_differential", differential)
             trace.record_metric("decisions", float(len(self.decisions)))
             trace.record_metric("fallbacks", float(self.engine.totals["fallbacks"]))
             trace.record_metric(
@@ -562,9 +572,14 @@ class SeatRuntime:
                 "evaluated_agent": evaluated_agent,
                 "policy_role": policy_role,
                 "eval_carrier": trace is carrier,
+                "profile": profile_digest,
+                "score_differential": differential,
             }
             if self.tools_enabled:
                 trace.info["hanchan"]["tools"] = dict(self.tool_counts)
+            if diagnostics:
+                for key, value in diagnostics.items():
+                    trace.record_metric(key, float(value))
 
 
 class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
@@ -595,7 +610,12 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
 
     async def run(self, task, agents) -> None:
         loop = asyncio.get_running_loop()
-        seed = int(task.data.info["seed"])
+        if self.config.seat_rotation:
+            seed = int(task.data.info["seed"])
+            rotation = int(task.data.info.get("rotation", task.data.idx % len(SEATS)))
+        else:
+            seed = stats.SEED_BASE + int(task.data.idx)
+            rotation = 0
         episode_dir: Path | None = None
         if self.config.log_dir:
             episode_dir = Path(self.config.log_dir) / f"hanchan-{task.data.idx:05d}"
@@ -638,7 +658,8 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
         control_weights, checkpoint_identity = _resolve_control_checkpoint(
             self.config, models
         )
-        rotation = task.data.idx % len(SEATS) if self.config.seat_rotation else 0
+        profile_row = _measurement_profile(self.config, checkpoint_identity)
+        profile_digest = _profile_digest(profile_row)
 
         journal: _Journal | None = None
         hands_replayed = 0
@@ -656,15 +677,16 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
             seat.start_after_replay(hands_replayed, journal)
 
         # A `mortal` seat is the Mortal NN itself playing as a control: no bridge, no
-        # interactions, no traces. Its engine deterministically takes the argmax from
-        # Q by default, or from the explicitly selected policy head, so resume can
-        # recompute its choices live without journaling them.
+        # interactions, no traces. Q-mode is argmax unless a Boltzmann knob is set;
+        # Phoenix policy play is explicit. Resume recomputes control choices live.
         for seat in seats:
             if seat.model == "mortal":
                 seat.engine = _make_control_engine(
                     seat.name,
                     control_weights,
                     use_policy=seat.control_use_policy,
+                    boltzmann_epsilon=float(self.config.control_boltzmann_epsilon),
+                    boltzmann_temp=float(self.config.control_boltzmann_temp),
                 )
             else:
                 seat.engine = bridge.make_bridged_engine(
@@ -683,6 +705,12 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
             seats[(position - rotation) % len(SEATS)].engine
             for position in range(len(SEATS))
         ]
+        log_root = episode_dir
+        temp_logs: tempfile.TemporaryDirectory[str] | None = None
+        if log_root is None and self.config.grade:
+            temp_logs = tempfile.TemporaryDirectory()
+            log_root = Path(temp_logs.name)
+            (log_root / "logs").mkdir(parents=True, exist_ok=True)
         try:
             # One hanchan per episode: a single engine driving several games at once
             # would interleave their turns into one conversation.
@@ -691,7 +719,7 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
                 table,
                 1,
                 (seed, 1),
-                str(episode_dir / "logs") if episode_dir else None,
+                str(log_root / "logs") if log_root else None,
             )
         except BaseException:
             if journal is not None:
@@ -714,6 +742,7 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
                 self.config,
                 rotation,
                 checkpoint_identity,
+                profile_digest,
             )
 
         scores = dict(zip(summary.names, summary.scores, strict=True))
@@ -723,15 +752,27 @@ class RiichiHanchanEnv(vf.Env[RiichiHanchanEnvConfig]):
             if evaluated is not None
             else {name for name in SEATS if getattr(self.config, name).model is None}
         )
+        diagnostics_by_seat: dict[str, dict[str, float]] = {}
+        if self.config.grade and log_root is not None:
+            diagnostics_by_seat = _grade_episode(
+                log_root, seats, policy_roles, self, rotation
+            )
+        elif log_root is not None:
+            diagnostics_by_seat = _fingerprint_episode(log_root, seats, rotation)
+        if temp_logs is not None:
+            temp_logs.cleanup()
         for seat in seats:
             seat.record_outcome(
                 summary=summary,
                 score=scores[seat.name],
+                scores=scores,
                 seed=seed,
                 rotation=rotation,
                 hands_replayed=hands_replayed,
                 evaluated_agent=evaluated,
                 policy_role=seat.name in policy_roles,
+                profile_digest=profile_digest,
+                diagnostics=diagnostics_by_seat.get(seat.name),
             )
 
 
@@ -743,6 +784,7 @@ def _write_episode_artifacts(
     config: RiichiHanchanEnvConfig,
     rotation: int,
     checkpoint: dict[str, object] | None = None,
+    profile_digest: str | None = None,
 ) -> None:
     for seat in seats:
         path = episode_dir / "decisions" / decision_filename(seat.name)
@@ -774,7 +816,11 @@ def _write_episode_artifacts(
                 "tools": bool(config.tools),
                 "max_tool_calls": int(config.max_tool_calls),
                 "control_use_policy": bool(config.control_use_policy),
-                "reviewer_checkpoint": checkpoint,
+                "control_boltzmann_epsilon": float(config.control_boltzmann_epsilon),
+                "control_boltzmann_temp": float(config.control_boltzmann_temp),
+                "control_checkpoint": checkpoint,
+                "profile": profile_digest
+                or _profile_digest(_measurement_profile(config, checkpoint)),
                 "final": {
                     "names": list(summary.names),
                     "scores": list(summary.scores),
@@ -794,12 +840,85 @@ class RiichiHanchanTaskset(vf.Taskset[RiichiHanchanTask, RiichiHanchanConfig]):
 
     def load(self) -> Iterator[RiichiHanchanTask]:
         for i in count():
+            deal = stats.episode_deal(idx=i, seat_rotation=True)
             yield RiichiHanchanTask(
                 RiichiHanchanData(
                     idx=i,
                     name=f"hanchan#{i}",
                     prompt=None,
-                    info={"seed": 20260000 + i},
+                    info=deal,
                 ),
                 self.config.task,
             )
+
+
+def _load_episode_events(log_root: Path) -> list[dict]:
+    from jongbench.artifacts import load_mjai_log
+
+    logs = sorted(
+        [*log_root.joinpath("logs").glob("*.json.gz"), *log_root.joinpath("logs").glob("*.json")]
+    )
+    if not logs:
+        return []
+    return load_mjai_log(logs[0])
+
+
+def _table_position(seat: SeatRuntime, rotation: int) -> int:
+    return (seat.index + rotation) % len(SEATS)
+
+
+def _fingerprint_episode(
+    log_root: Path, seats: list[SeatRuntime], rotation: int = 0
+) -> dict[str, dict[str, float]]:
+    events = _load_episode_events(log_root)
+    if not events:
+        return {}
+    return {
+        seat.name: competence.behavioral_fingerprint(events, _table_position(seat, rotation))
+        for seat in seats
+    }
+
+
+def _grade_episode(
+    log_root: Path,
+    seats: list[SeatRuntime],
+    policy_roles: set[str],
+    env: RiichiHanchanEnv,
+    rotation: int,
+) -> dict[str, dict[str, float]]:
+    """Grade with Mortal 298k, never with a jongbench-trained control checkpoint."""
+    from jongbench import evaluate
+    from jongbench.weights import resolve_grading_checkpoint
+
+    events = _load_episode_events(log_root)
+    if not events:
+        return {}
+    engine = getattr(env, "_grading_engine", None)
+    if engine is None:
+        engine = evaluate.load_engine(resolve_grading_checkpoint(), use_policy=False)
+        env._grading_engine = engine
+    reviews = evaluate.review_game(events, engine)
+    by_seat: dict[str, dict[str, float]] = {}
+    for seat in seats:
+        table_position = _table_position(seat, rotation)
+        review = reviews.get(table_position)
+        if review is None:
+            continue
+        fingerprint = competence.behavioral_fingerprint(events, table_position)
+        q_loss = competence.cumulative_q_loss(review)
+        style = competence.style_delta(review)
+        rules = scorecard.scorecard(events, table_position)
+        by_seat[seat.name] = {
+            **fingerprint,
+            **q_loss,
+            "style_delta_call": float(style.get("chi", 0.0) + style.get("pon", 0.0)),
+            "style_delta_riichi": float(style.get("riichi", 0.0)),
+            "style_delta_discard": float(style.get("discard", 0.0)),
+            "ukeire_loss": float(rules["ukeire_loss"]),
+            "needless_shanten_regression": float(rules["needless_shanten_regression"]),
+            "self_inflicted_furiten": float(rules["self_inflicted_furiten"]),
+            "dead_wait_tenpai": float(rules["dead_wait_tenpai"]),
+            "yakuless_tenpai": float(rules["yakuless_tenpai"]),
+            "avoidable_deal_in": float(rules["avoidable_deal_in"]),
+        }
+    return by_seat

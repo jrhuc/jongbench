@@ -168,6 +168,104 @@ impl PlayerState {
         after.update_json(mjai_json)?;
         Ok((after.real_time_shanten(), after.waits, after.at_furiten))
     }
+
+    #[pyo3(name = "reaction_analysis")]
+    fn reaction_analysis_py(
+        &self,
+        mjai_json: &str,
+    ) -> Result<(i8, [bool; 34], bool, u32, bool, bool)> {
+        self.validate_reaction_json(mjai_json)?;
+        let mut after = self.clone();
+        after.update_json(mjai_json)?;
+        Ok((
+            after.real_time_shanten(),
+            after.waits,
+            after.at_furiten,
+            after.ukeire(),
+            after.wait_has_yaku(),
+            after.is_menzen,
+        ))
+    }
+
+    #[getter]
+    #[inline]
+    #[must_use]
+    pub const fn tiles_seen(&self) -> [u8; 34] {
+        self.tiles_seen
+    }
+
+    #[getter]
+    #[inline]
+    #[must_use]
+    pub const fn discarded_tiles(&self) -> [bool; 34] {
+        self.discarded_tiles
+    }
+
+    #[getter]
+    #[inline]
+    #[must_use]
+    pub const fn tiles_left(&self) -> u8 {
+        self.tiles_left
+    }
+
+    #[getter]
+    #[inline]
+    #[must_use]
+    pub const fn is_all_last(&self) -> bool {
+        self.is_all_last
+    }
+
+    #[getter]
+    #[inline]
+    #[must_use]
+    pub const fn is_menzen(&self) -> bool {
+        self.is_menzen
+    }
+
+    #[getter]
+    #[inline]
+    #[must_use]
+    pub const fn scores(&self) -> [i32; 4] {
+        self.scores
+    }
+
+    #[inline]
+    #[pyo3(name = "bakaze")]
+    fn bakaze_py(&self) -> String {
+        self.bakaze.to_string()
+    }
+
+    #[inline]
+    #[pyo3(name = "jikaze")]
+    fn jikaze_py(&self) -> String {
+        self.jikaze.to_string()
+    }
+
+    #[getter]
+    #[inline]
+    #[must_use]
+    pub const fn riichi_declared(&self) -> [bool; 4] {
+        self.riichi_declared
+    }
+
+    #[getter]
+    #[inline]
+    #[must_use]
+    pub const fn riichi_accepted(&self) -> [bool; 4] {
+        self.riichi_accepted
+    }
+
+    #[pyo3(name = "ukeire")]
+    #[must_use]
+    fn ukeire_py(&self) -> u32 {
+        self.ukeire()
+    }
+
+    #[pyo3(name = "wait_has_yaku")]
+    #[must_use]
+    fn wait_has_yaku_py(&self) -> bool {
+        self.wait_has_yaku()
+    }
 }
 
 impl PlayerState {

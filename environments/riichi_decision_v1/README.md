@@ -8,34 +8,31 @@ Reward is Mortal's normalised Q-advantage for the option chosen: 1.0 for Mortal'
 choice, 0.0 for its worst, linear between. This is the per-decision term of the rating
 jongbench reports for a full game, so this taskset and a played hanchan measure the
 same quantity. The difference is that here every model sees byte-identical prompts on
-identical boards, with a dense score per call instead of roughly 1,000 calls for the
-standard four-hanchan outcome batch.
+identical boards, with a dense score per call instead of roughly 1,000 calls for a
+four-hanchan smoke batch.
 
 ## Tasks
 
 A 128-position sample bank from Mortal self-play ships with the package and is the
-default, so the taskset runs out of the box. Reference points on it:
+default, so the taskset runs out of the box. Schema v3: 8 games, seed 20260101,
+16 positions per game, raw Q values and competence tags stored. Non-model
+reference points on it:
 
-| policy                                | reward | match  | answered | cost    |
-|---------------------------------------|--------|--------|----------|---------|
-| always first option                   | 0.341  | —      | —        | —       |
-| uniform random                        | 0.367  | 18.9%  | —        | —       |
-| openai/gpt-5.6-luna                   | 0.776  | 51.6%  | 100%     | $0.075  |
-| deepseek/deepseek-v4-flash-0731       | 0.834  | 63.8%  | 93.7%    | $0.428  |
-| google/gemini-3.5-flash-lite          | 0.844  | 57.0%  | 100%     | $0.279  |
-| Mortal's own choice                   | 1.000  | 100%   | 100%     | —       |
+| policy                                | reward | match  |
+|---------------------------------------|--------|--------|
+| always first option                   | 0.373  | —      |
+| uniform random                        | 0.364  | 16.5%  |
+| Mortal's own choice                   | 1.000  | 100%   |
 
-All three at `--sampling.reasoning-effort low`, one pass over the 128 positions,
-cost as metered by OpenRouter. deepseek agrees with Mortal most often and still
-scores below gemini: 6% of its replies never arrive, and an unanswered task scores
-0. mean 8.8 legal options per position; `jongbench positions` prints the
+mean 9.4 legal options per position; `jongbench positions` prints the
 non-model baselines for any bank it builds.
 
-Two earlier numbers (gpt-5-mini 0.727, deepseek 0.649) are withdrawn, not
-restated. They were measured against a board renderer that pasted the whole match
-into every prompt, and against a 16k completion cap that truncated a third of
-deepseek's replies mid-reasoning. Both are fixed. The caps in `engines.py` are now
-sized to catch runaway loops rather than to bound normal output.
+Flash-tier scores from the previous 13-hand sample (luna 0.776, deepseek 0.834,
+gemini-lite 0.844) are withdrawn, not restated: they were measured against a
+different bank. Two still-earlier numbers (gpt-5-mini 0.727, deepseek 0.649)
+were already withdrawn for a board-renderer bug and a 16k completion cap.
+The caps in `engines.py` are now sized to catch runaway loops rather than to
+bound normal output.
 
 State hints are on by default and account for 23% of a full-game prompt budget.
 They were worth about +0.09 reward to gpt-5-mini on the pre-fix render, so they
@@ -50,10 +47,12 @@ $ jongbench positions --out bank.jsonl --games 4          # ~600 positions per g
 $ jongbench positions --out bank.jsonl --from-log runs/<stamp>/logs/g0.json.gz
 ```
 
-Rendering and grading happen when the bank is built. Schema v2 starts with a
+Rendering and grading happen when the bank is built. Schema v3 starts with a
 manifest naming the generator, reward normalization, reviewer checkpoint digest and
-source-log provenance. Every following position has a content-addressed ID, and the
-standalone loader rejects malformed fields, duplicate IDs, non-finite/out-of-range
+source-log provenance. Every following position stores raw `q_values`, split
+`board_id` / `prompt_id` / `id` hashes, `game_id`, and competence `tags`. Extra
+fields are kept (additive-optional) so later measurements do not force a v4 bump.
+The standalone loader rejects malformed fields, duplicate IDs, non-finite/out-of-range
 rewards, or a `best_index` that is not an argmax. Evaluation needs neither
 `jongbench`, a native runtime, Torch, nor the Mortal checkpoint.
 

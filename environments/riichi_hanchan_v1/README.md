@@ -3,7 +3,11 @@
 One evaluated model plays a full Tenhou-rules hanchan against three fixed Mortal
 controls. One episode is one hanchan refereed by the vendored `libriichi` arena;
 the package defaults to four episodes with the evaluated seat rotated through every
-table position.
+table position. That four-episode batch is a **smoke** run: placement saturates at
+fourth vs Mortal, and four non-duplicate outcomes have a standard error of about
+±0.37 on the 0–1 placement scale. A real comparison needs a multiple of four
+episodes so each wall is played from every chair, plus the seed-block standard
+error beside the mean.
 
 Normalized placement rewards across all four seats are constant-sum (2.0), so pooling
 all seats—or playing only against copies of the evaluated model—cannot rank models.
@@ -23,11 +27,10 @@ run's `-m` model and `seat1`..`seat3` are fixed `mortal` controls. A live model 
 one interaction per kyoku: an opening board followed by decision deltas on the same
 prompt path as `jongbench run`. Finished kyoku are not carried into later requests.
 
-In evaluation, all per-kyoku traces retain a weight-zero `placement_return` for
-inspection, while only the final trace of the evaluated role is a trainable reward
-carrier. Verifiers therefore averages one placement per episode rather than one per
-kyoku. Training clients instead receive the placement return on every bounded kyoku
-trace.
+In evaluation, every kyoku records `placement` (1st → 1.0, 4th → 0.0). Only the
+**first** kyoku of the evaluated role is a trainable reward carrier, so Verifiers
+averages one placement per episode rather than one per kyoku. Training clients
+instead receive that same `placement` reward on every bounded kyoku trace.
 
 ## Run
 
@@ -36,7 +39,7 @@ installs include the `mortal` extra and therefore PyTorch. The Hub artifact pins
 x86-64 manylinux core wheels; other platforms retain a mandatory core requirement but
 need the source checkout below because no compatible core binary is published.
 
-The standard benchmark uses the run model as `seat0` and the three default Mortal
+A smoke run uses the run model as `seat0` and the three default Mortal
 controls. Four episodes rotate it through every table position:
 
 ```console
@@ -90,8 +93,11 @@ responses that failed upstream. A provider that meters nothing leaves the column
 | `max_tool_calls`      | `32`    | tool calls one decision may spend before the seat must commit (`0` lifts the cap) |
 | `seat_rotation`       | `true`  | rotate the evaluated role through all chairs over the default four episodes |
 | `log_dir`             | `None`  | persist each episode as a jongbench run dir (below) |
-| `weights`             | `auto`  | verified, cached Mortal checkpoint for controls |
+| `weights`             | `auto`  | verified, cached Mortal checkpoint for **controls** (Phoenix may be selected via `JONGBENCH_WEIGHTS_*`) |
 | `control_use_policy`  | `false` | opt controls into a checkpoint's policy head instead of deterministic Q |
+| `control_boltzmann_epsilon` | `0` | mix control discards toward a Boltzmann policy |
+| `control_boltzmann_temp` | `1` | temperature for that mix |
+| `grade`               | `true`  | in-env Mortal 298k review (fingerprint, scorecard, Q-loss). Unit tests should set `false` |
 
 ## Mortal as a control seat
 
@@ -101,11 +107,13 @@ role contributes the standard reward. Its placement still affects the evaluated
 role's outcome. The crash journal records bridged seats, while deterministic controls
 recompute their choices during recovery.
 
-### Phoenix reviewer control
+### Phoenix as a control opponent
 
-Phoenix reviewer v1 retains Mortal's Q head and adds policy, next-rank, and confidence
-heads. To use its policy as the control opponent, set the checkpoint URL and digest as
-Hub variables and opt in explicitly:
+Phoenix reviewer v1 is a **control/opponent**, not the grader. Grading is always
+Mortal 298k (`VoidShine/mortal-298k/mortal_298k.pth`); ambient
+`JONGBENCH_WEIGHTS_*` cannot change that. Phoenix retains Mortal's Q head and adds
+policy, next-rank, and confidence heads. To use its policy as the control opponent,
+set the checkpoint URL and digest as Hub variables and opt in explicitly:
 
 ```text
 JONGBENCH_WEIGHTS_URL=https://github.com/jrhuc/jongbench/releases/download/reviewer-phoenix-2026-v1/reviewer-phoenix-2026-v1.pth
@@ -126,10 +134,10 @@ head.
 ## Seat rotation
 
 Table position is not neutral. The package defaults to four examples and
-`seat_rotation=true`; episode *i* maps each role to table position
-`(role + episode) % 4`. The evaluated role therefore occupies every chair exactly
-once before its placement rewards are averaged. Override `-n` or set
-`--env.seat-rotation false` only for an intentionally unbalanced smoke run.
+`seat_rotation=true`; episodes are issued in **duplicate blocks of four**: the same
+wall seed is played from every chair before the next seed. `-n` must be a multiple
+of four when rotation is on. Override `-n` or set `--env.seat-rotation false` only
+for an intentionally unbalanced smoke run.
 
 Rewards, decision logs and `trace.info["hanchan"]` follow the agent, not the chair:
 `seat0`'s reward is `seat0`'s placement wherever it sat, and `table_position` records
@@ -175,12 +183,13 @@ mode needs the `PYTHONPATH` entries to be absolute (`$PWD` as above, not `.`).
 A live seat normally produces one trace per kyoku; a forced tool-budget fallback may
 split it. Evaluation and training intentionally use different aggregation units:
 
-- **Evaluation:** all kyoku traces record `placement_return` at weight zero. Exactly
-  one trace for `evaluated_agent` is marked trainable and receives weighted
-  `placement` (1st → 1.0, 4th → 0.0). The run-level mean is therefore one equally
-  weighted outcome per hanchan, independent of kyoku count.
+- **Evaluation:** all kyoku traces record `placement` (1st → 1.0, 4th → 0.0). Exactly
+  one trace for `evaluated_agent` — the **first** kyoku — is marked trainable and
+  receives weight 1. The run-level mean is therefore one equally weighted outcome
+  per hanchan, independent of kyoku count. Prefer `avg_score_differential` and its
+  seed-block standard error over raw placement: rank saturates at 4th vs Mortal.
 - **Training:** every evaluated-role kyoku trace is trainable and receives weighted
-  `placement_return`, preserving bounded training samples.
+  `placement`, preserving bounded training samples.
 - `final_score`, `decisions`, `fallbacks`, and `calls_declined` are seat-total metrics.
 - `trace.info["hanchan"]` records seat/model identity, placement, table position,
   kyoku count, policy role, and whether the trace is the evaluation carrier.

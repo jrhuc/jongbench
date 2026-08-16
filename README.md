@@ -62,10 +62,13 @@ package before pushing either environment. For each private package:
 
 Only after those gates pass, change each package version from `0.1.0rcN` to `0.1.0`
 and push it with `--visibility PUBLIC`. The hanchan smoke is intentionally last: the
-standard four-episode rotated batch costs roughly 1,000 model calls.
+four-episode rotated batch costs roughly 1,000 model calls and is a smoke test, not
+the headline comparison. A real hanchan eval needs a multiple of four episodes and
+must report seed-block standard error beside the mean.
 
-Phoenix reviewer v1 is a separate release asset. Use it only with a private
-hanchan environment. Set these Hub **Variables**:
+Phoenix reviewer v1 is a separate release asset and a **control/opponent**, not the
+grader. In-env and CLI grading always use Mortal 298k. Use Phoenix only with a
+private hanchan environment. Set these Hub **Variables**:
 
 ```text
 JONGBENCH_WEIGHTS_URL=https://github.com/jrhuc/jongbench/releases/download/reviewer-phoenix-2026-v1/reviewer-phoenix-2026-v1.pth
@@ -110,10 +113,10 @@ $ uv run --extra mortal --with verifiers==0.3.0 \
 - **Hard to reward-hack.** The grader is a frozen external model, every action is
   validated against the legal menu by the Rust engine, and there is no tool surface
   or environment state to game.
-- **Headroom.** On the shipped decision bank, uniform-random guessing scores 0.367
-  reward (18.9% match), always picking the first option scores 0.341, and Mortal
-  scores 1.0 by construction. Measured models land inside that gap: gpt-5.6-luna
-  0.776, deepseek-v4-flash-0731 0.834, gemini-3.5-flash-lite 0.844.
+- **Headroom.** On the shipped decision bank, uniform-random guessing scores 0.364
+  reward (16.5% match), always picking the first option scores 0.373, and Mortal
+  scores 1.0 by construction. Model numbers from the previous 13-hand sample are
+  withdrawn; they do not apply to this bank.
 
 ## Setup
 

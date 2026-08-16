@@ -94,6 +94,21 @@ def _position(**overrides) -> dict:
             0.05,
             0.0,
         ],
+        "q_values": [
+            0.1,
+            0.25,
+            0.2,
+            0.15,
+            1.0,
+            0.3,
+            0.35,
+            0.4,
+            0.45,
+            0.5,
+            0.55,
+            0.05,
+            0.0,
+        ],
         "best_index": 4,
         "kyoku": 0,
         "honba": 0,
@@ -110,6 +125,8 @@ def _position(**overrides) -> dict:
 def _task_row(**overrides) -> dict:
     row = positions.Position(**_position()).to_task_dict()
     row.update(overrides)
+    if "prompt_id" not in overrides:
+        row["prompt_id"] = positions.prompt_id(row)
     if "id" not in overrides:
         row["id"] = positions.position_id(row)
     return row
@@ -147,7 +164,7 @@ def taskset(tmp_path) -> RiichiDecisionTaskset:
 
 
 def _trace(reply: str) -> SimpleNamespace:
-    return SimpleNamespace(last_reply=reply, num_turns=1)
+    return SimpleNamespace(last_reply=reply, num_turns=1, record_metric=lambda *args, **kwargs: None)
 
 
 def test_taskset_renders_a_prompt_and_carries_the_grading(taskset) -> None:
@@ -197,29 +214,37 @@ def test_shipped_sample_bank_runs_out_of_the_box_and_locks_baselines() -> None:
 
     manifest, rows = load_bank(SAMPLE_BANK)
     assert manifest["generator"] == {"name": "jongbench", "version": "0.1.1"}
+    assert manifest["schema_version"] == 3
     assert manifest["reviewer"]["checkpoint_sha256"] == (
         "bfb3a6c072aa0bfd4171a9cdc77cb6c02ae42cde920843f9e5784394f23447d8"
     )
-    assert manifest["source"]["kind"] == "mortal_self_play"
+    source = manifest["source"]
+    assert source["kind"] == "mortal_self_play"
+    assert source["seed"] == 20260101
+    assert source["games"] == 8
+    assert len(source["artifacts"]) == 8
     assert len(rows) == 128
     assert len({row["id"] for row in rows}) == 128
     assert len({row["name"] for row in rows}) == 128
+    assert len({row["game_id"] for row in rows}) == 8
+    assert len({row["board_id"] for row in rows}) == 128
+    assert all("q_values" in row and "tags" in row for row in rows)
     identity_digest = hashlib.sha256(
         "\n".join(row["id"] for row in rows).encode()
     ).hexdigest()
     assert (
         identity_digest
-        == "386658a2b0f288a9d7d1cf9fba57679a6285e05e2f0d573ee1c9ece435f51263"
+        == "c12cc882d302b75eec2167ad1193434f6694babf7926bc96248ae6a305809ce9"
     )
-    assert statistics.mean(len(row["menu"]) for row in rows) == pytest.approx(8.7734375)
+    assert statistics.mean(len(row["menu"]) for row in rows) == pytest.approx(9.4296875)
     assert statistics.mean(row["rewards"][0] for row in rows) == pytest.approx(
-        0.3412620549357386
+        0.37340920071313827
     )
     assert statistics.mean(
         sum(row["rewards"]) / len(row["rewards"]) for row in rows
-    ) == pytest.approx(0.3673449002786986)
+    ) == pytest.approx(0.3639129256353114)
     assert statistics.mean(1 / len(row["menu"]) for row in rows) == pytest.approx(
-        0.18948991546647798
+        0.16498494994588744
     )
 
     taskset = RiichiDecisionTaskset(RiichiDecisionConfig())
@@ -240,7 +265,7 @@ def test_package_bundles_the_chat_harness_as_its_default() -> None:
 
 
 def test_a_real_bank_round_trips_through_the_taskset(tmp_path) -> None:
-    """Evaluation consumes only the frozen v2 records, not raw Position objects."""
+    """Evaluation consumes only the frozen v3 records, not raw Position objects."""
     row = positions.Position(**_position()).to_task_dict()
     bank = tmp_path / "bank.jsonl"
     _write_bank(bank, [row])
@@ -349,12 +374,6 @@ def test_bank_rows_distinguish_invalid_structure_types_and_grading(tmp_path) -> 
         "missing required field.*prompt",
     )
     add(
-        "unknown",
-        lambda row: row.update(extra=True),
-        ValueError,
-        "unknown field.*extra",
-    )
-    add(
         "old schema",
         lambda row: row.update(schema_version=1),
         ValueError,
@@ -396,7 +415,7 @@ def test_bank_rows_distinguish_invalid_structure_types_and_grading(tmp_path) -> 
         "reward nan",
         lambda row: row["rewards"].__setitem__(0, float("nan")),
         ValueError,
-        "finite",
+        "finite|JSON compliant",
     )
     add(
         "reward low",
@@ -464,3 +483,55 @@ def test_duplicate_stable_position_ids_are_rejected(tmp_path) -> None:
     _write_raw_bank(bank, [row, copy.deepcopy(row)])
     with pytest.raises(ValueError, match="duplicates an earlier row"):
         load_bank(bank)
+
+
+def test_bank_rows_keep_unknown_optional_fields(tmp_path) -> None:
+    row = _task_row()
+    row["extra"] = {"note": "forward-compatible"}
+    bank = tmp_path / "bank.jsonl"
+    _write_raw_bank(bank, [row])
+    _, rows = load_bank(bank)
+    assert rows[0]["extra"] == {"note": "forward-compatible"}
+
+
+def test_tag_filter_keeps_any_matching_position(tmp_path) -> None:
+    keep = _task_row(tags=["pushfold"])
+    drop = _task_row()
+    drop["prompt"] = drop["prompt"] + "\n# other"
+    drop["prompt_id"] = positions.prompt_id(drop)
+    drop["id"] = positions.position_id(drop)
+    bank = tmp_path / "bank.jsonl"
+    _write_bank(bank, [keep, drop])
+    taskset = RiichiDecisionTaskset(
+        RiichiDecisionConfig(bank=str(bank), tags="pushfold,defense_only")
+    )
+    tasks = list(taskset.load())
+    assert [task.data.position_id for task in tasks] == [keep["id"]]
+
+
+def test_menu_permutation_preserves_the_best_action(tmp_path) -> None:
+    row = _task_row()
+    bank = tmp_path / "bank.jsonl"
+    _write_bank(bank, [row])
+    taskset = RiichiDecisionTaskset(
+        RiichiDecisionConfig(bank=str(bank), permute_seed=7)
+    )
+    task = next(iter(taskset.load()))
+    assert task.data.menu != row["menu"]
+    assert set(task.data.menu) == set(row["menu"])
+    assert task.data.rewards[task.data.best_index] == pytest.approx(1.0)
+    assert asyncio.run(task.matched_mortal(_trace(f'{{"choice": {task.data.best_index}}}'))) == 1.0
+
+
+def test_probes_append_rule_checkable_board_questions(tmp_path) -> None:
+    row = _task_row()
+    bank = tmp_path / "bank.jsonl"
+    _write_bank(bank, [row])
+    taskset = RiichiDecisionTaskset(RiichiDecisionConfig(bank=str(bank), probes=True))
+    tasks = list(taskset.load())
+    assert len(tasks) == 3
+    assert tasks[0].data.position_id == row["id"]
+    assert tasks[1].data.name.endswith("-probe-furiten")
+    assert tasks[2].data.name.endswith("-probe-tiles_left")
+    furiten = tasks[1]
+    assert asyncio.run(furiten.q_advantage(_trace('{"choice": 0}'))) == 1.0

@@ -156,3 +156,23 @@ def resolve_mortal_weights(
     if isinstance(weights, ResolvedCheckpoint):
         return weights.path
     return resolve_mortal_checkpoint(weights, use_policy=False).path
+
+
+GRADING_CHECKPOINT_SOURCE = "VoidShine/mortal-298k/mortal_298k.pth"
+
+
+def resolve_grading_checkpoint() -> ResolvedCheckpoint:
+    """Mortal 298k only. Ambient JONGBENCH_WEIGHTS_* cannot grade.
+
+    Phoenix is a control/opponent. Using a jongbench-trained checkpoint as the
+    grader is circular and kills cross-release comparability.
+    """
+    path = _resolve_auto_weights(
+        MORTAL_WEIGHTS_URL, MORTAL_WEIGHTS_SHA256, MORTAL_WEIGHTS_FILENAME
+    )
+    return ResolvedCheckpoint(
+        path=path,
+        sha256=MORTAL_WEIGHTS_SHA256,
+        source=GRADING_CHECKPOINT_SOURCE,
+        use_policy=False,
+    )

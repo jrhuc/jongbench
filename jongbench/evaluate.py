@@ -538,10 +538,13 @@ def aggregates(review: dict[str, Any]) -> dict[str, Any]:
         for entry in policy_entries
         if "policy_confidence" in entry
     ]
+    q_losses = [_q_loss(entry) for entry in entries]
     return {
         "match_rate": total_matches / total_reviewed if total_reviewed else 0.0,
         "mean_prob_loss": sum(losses) / len(losses) if losses else 0.0,
         "mean_q_weight_loss": sum(losses) / len(losses) if losses else 0.0,
+        "q_loss": sum(q_losses),
+        "q_loss_per_decision": sum(q_losses) / len(q_losses) if q_losses else 0.0,
         "policy_count": policy_count,
         "policy_match_rate": (policy_matches / policy_count if policy_count else None),
         "mean_policy_loss": (
@@ -949,6 +952,15 @@ def _actual_index(
 def _prob_loss(entry: dict[str, Any]) -> float:
     details = entry["details"]
     return float(details[0]["prob"]) - float(details[entry["actual_index"]]["prob"])
+
+
+def _q_loss(entry: dict[str, Any]) -> float:
+    details = entry.get("details") or []
+    index = entry.get("actual_index")
+    if not details or not isinstance(index, int) or not 0 <= index < len(details):
+        return 0.0
+    best = max(float(detail["q_value"]) for detail in details)
+    return best - float(details[index]["q_value"])
 
 
 def _kind(event: dict[str, Any]) -> str:

@@ -138,6 +138,24 @@ def test_auto_checkpoint_environment_source_requires_url_and_digest(
         weights.resolve_mortal_weights()
 
 
+def test_grading_checkpoint_stays_on_mortal_298k(tmp_path, monkeypatch) -> None:
+    payload = b"mortal 298k"
+    digest = hashlib.sha256(payload).hexdigest()
+    monkeypatch.setenv("JONGBENCH_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("JONGBENCH_WEIGHTS_URL", "https://example.test/phoenix.pth")
+    monkeypatch.setenv("JONGBENCH_WEIGHTS_SHA256", "a" * 64)
+    monkeypatch.setenv("JONGBENCH_WEIGHTS_USE_POLICY", "true")
+    monkeypatch.setattr(weights, "MORTAL_WEIGHTS_SHA256", digest)
+    monkeypatch.setattr(weights, "MORTAL_WEIGHTS_FILENAME", "mortal-test.pth")
+    monkeypatch.setattr(weights, "urlopen", lambda request, timeout: io.BytesIO(payload))
+
+    resolved = weights.resolve_grading_checkpoint()
+    assert resolved.source == weights.GRADING_CHECKPOINT_SOURCE
+    assert resolved.use_policy is False
+    assert resolved.sha256 == digest
+    assert resolved.path.read_bytes() == payload
+
+
 def test_bad_checkpoint_is_not_cached(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("JONGBENCH_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(weights, "MORTAL_WEIGHTS_SHA256", "0" * 64)
