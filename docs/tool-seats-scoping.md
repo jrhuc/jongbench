@@ -117,5 +117,5 @@ Mortal review pass (`jongbench summarize`).
 - Does a minimal turn plus tools hurt weak models enough that the comparison sits
   at the floor? The only measurement is from the withdrawn pre-fix render
   (gpt-5-mini, 0.638 hints-off against 0.727 hints-on): a real drop, but well
-  above the 0.367 random floor. It has not been remeasured since the render and
-  cap fixes.
+  above the then-current 0.367 random floor (now 0.364 on the schema-v3 sample).
+  It has not been remeasured since the render and cap fixes.

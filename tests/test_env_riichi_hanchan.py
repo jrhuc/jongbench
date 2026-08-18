@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -140,6 +141,7 @@ def _four_live_config(**overrides) -> RiichiHanchanEnvConfig:
         name: vf.AgentConfig(harness={"id": "null"}, model="fake/model")
         for name in SEATS[1:]
     }
+    values["grade"] = False
     values.update(overrides)
     return RiichiHanchanEnvConfig(**values)
 
@@ -203,15 +205,19 @@ def test_standard_eval_scores_only_the_evaluated_agent_once(played) -> None:
     # client gives it zero weight. Exactly one genuine trace carries the Hub reward.
     for index, traces in enumerate(traces_by_seat):
         expected = (4 - placements[index]) / 3
-        assert {t.rewards["placement_return"].score for t in traces} == {expected}
-        assert {t.rewards["placement_return"].weight for t in traces} == {0.0}
+        assert {t.rewards["placement"].score for t in traces} == {expected}
+        weights = {t.rewards["placement"].weight for t in traces}
+        if index == 0:
+            assert 1.0 in weights
+        else:
+            assert weights == {0.0}
     carriers = [
         trace
         for traces in traces_by_seat
         for trace in traces
         if trace.info["hanchan"]["eval_carrier"]
     ]
-    assert carriers == [traces_by_seat[0][-1]]
+    assert carriers == [traces_by_seat[0][0]]
     assert [
         trace for traces in traces_by_seat for trace in traces if trace.agent.trainable
     ] == carriers
@@ -283,7 +289,7 @@ def test_evaluated_agent_contract_marks_opponents_fixed() -> None:
 @pytest.fixture(scope="module")
 def played_default_controls():
     env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
-    env.config = RiichiHanchanEnvConfig()
+    env.config = RiichiHanchanEnvConfig(grade=False)
     agents = FakeAgents(config=env.config)
     task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
     asyncio.run(_run_env(env, task, agents))
@@ -302,10 +308,10 @@ def test_default_controls_leave_one_discriminative_eval_trace(
         interaction.trace for interaction in played_default_controls.seat0.interactions
     ]
     assert len(traces) > 1
-    assert [trace for trace in traces if trace.agent.trainable] == [traces[-1]]
-    info = traces[-1].info["hanchan"]
+    assert [trace for trace in traces if trace.agent.trainable] == [traces[0]]
+    info = traces[0].info["hanchan"]
     expected = (4 - info["placement"]) / 3
-    assert traces[-1].rewards["placement"].score == pytest.approx(expected)
+    assert traces[0].rewards["placement"].score == pytest.approx(expected)
     metrics = _run_metrics([SimpleNamespace(ok=True)], traces)
     assert metrics["avg_reward"] == pytest.approx(expected)
     assert metrics["avg_reward"] != pytest.approx(0.5)
@@ -341,7 +347,7 @@ def test_training_keeps_the_return_on_every_kyoku(played_training_returns) -> No
     evaluated = played_training_returns.seat0
     assert len(evaluated.interactions) > 1
     returns = [
-        interaction.trace.rewards["placement_return"]
+        interaction.trace.rewards["placement"]
         for interaction in evaluated.interactions
     ]
     assert len({reward.score for reward in returns}) == 1
@@ -349,14 +355,10 @@ def test_training_keeps_the_return_on_every_kyoku(played_training_returns) -> No
     assert all(
         interaction.trace.agent.trainable for interaction in evaluated.interactions
     )
-    assert all(
-        "placement" not in interaction.trace.rewards
-        for interaction in evaluated.interactions
-    )
 
     for opponent in played_training_returns.seats[1:]:
         assert all(
-            interaction.trace.rewards["placement_return"].weight == 0.0
+            interaction.trace.rewards["placement"].weight == 0.0
             and not interaction.trace.agent.trainable
             for interaction in opponent.interactions
         )
@@ -385,15 +387,17 @@ def test_episode_persists_as_a_jongbench_run_dir(played, episode_dir) -> None:
     assert sorted(config["final"]["placements"].values()) == [1, 2, 3, 4]
     assert config["max_tool_calls"] == RiichiHanchanEnvConfig().max_tool_calls
     assert config["control_use_policy"] is False
-    assert config["reviewer_checkpoint"] is None
+    assert config["control_checkpoint"] is None
     assert config["evaluated_agent"] == "seat0"
+    assert config["profile"].startswith("sha256:")
     header = json.loads(
         (run_dir / "journal.jsonl").read_text(encoding="utf-8").splitlines()[0]
     )
     assert header["max_tool_calls"] == config["max_tool_calls"]
     assert header["control_use_policy"] == config["control_use_policy"]
-    assert header["reviewer_checkpoint"] == config["reviewer_checkpoint"]
+    assert header["control_checkpoint"] == config["control_checkpoint"]
     assert header["evaluated_agent"] == config["evaluated_agent"]
+    assert header["profile"] == config["profile"]
 
     for name, seat in zip(SEATS, played.seats, strict=True):
         lines = [
@@ -714,7 +718,7 @@ def test_journal_records_resolved_reviewer_identity(monkeypatch) -> None:
         0,
         actual,
     )
-    assert header["reviewer_checkpoint"] == identity
+    assert header["control_checkpoint"] == identity
 
 
 def test_control_policy_is_explicit_and_forwarded(monkeypatch) -> None:
@@ -767,42 +771,7 @@ def test_control_policy_is_explicit_and_forwarded(monkeypatch) -> None:
     assert all(kwargs["use_policy"] is True for _, _, kwargs in engines_made)
     header = env_module._journal_header(7, config, list(SEATS), 0, identity)
     assert header["control_use_policy"] is True
-    assert header["reviewer_checkpoint"] == identity
-
-
-def test_v010_control_factory_bypasses_ambient_policy_default(monkeypatch) -> None:
-    from riichi_hanchan_v1 import env as env_module
-
-    from jongbench import evaluate, positions
-
-    reviewer = SimpleNamespace(use_policy=True)
-    monkeypatch.delattr(env_module.weights_module, "ResolvedCheckpoint")
-    monkeypatch.setenv("JONGBENCH_WEIGHTS_USE_POLICY", "invalid")
-    monkeypatch.setattr(
-        evaluate,
-        "load_engine",
-        lambda checkpoint, *, use_policy: (
-            reviewer
-            if (checkpoint, use_policy) == ("/cache/phoenix.pth", True)
-            else pytest.fail("unexpected legacy load")
-        ),
-    )
-    monkeypatch.setattr(
-        positions,
-        "MortalArenaEngine",
-        lambda name, engine: SimpleNamespace(name=name, reviewer=engine),
-    )
-    monkeypatch.setattr(
-        env_module.engines,
-        "make_engine",
-        lambda *args, **kwargs: pytest.fail("legacy core factory must be bypassed"),
-    )
-
-    control = env_module._make_control_engine(
-        "seat1", "/cache/phoenix.pth", use_policy=True
-    )
-    assert control.name == "seat1"
-    assert control.reviewer is reviewer
+    assert header["control_checkpoint"] == identity
 
 
 def test_journal_read_trims_and_guards(tmp_path) -> None:
@@ -973,7 +942,7 @@ def test_mortal_control_seat_opens_no_interactions(played_mortal) -> None:
     for seat in agents.seats[:3]:
         assert len(seat.prompts) > 50
         per_kyoku = {
-            inter.trace.rewards["placement_return"].score for inter in seat.interactions
+            inter.trace.rewards["placement"].score for inter in seat.interactions
         }
         assert len(per_kyoku) == 1
         returns.append(per_kyoku.pop())
@@ -984,7 +953,7 @@ def test_mortal_control_seat_opens_no_interactions(played_mortal) -> None:
         for seat in agents.seats[:3]
         for inter in seat.interactions
         if inter.trace.agent.trainable
-    ] == [agents.seat0.interactions[-1].trace]
+    ] == [agents.seat0.interactions[0].trace]
 
 
 def test_mortal_seat_leaves_no_decisions_or_journal_rows(played_mortal) -> None:
@@ -1061,8 +1030,34 @@ def test_seat_rotation_moves_the_table_without_moving_attribution(
 def test_taskset_is_an_infinite_seeded_generator() -> None:
     taskset = RiichiHanchanTaskset(RiichiHanchanConfig())
     assert taskset.INFINITE
-    tasks = [t for t, _ in zip(taskset.load(), range(3), strict=False)]
+    tasks = [t for t, _ in zip(taskset.load(), range(8), strict=False)]
     seeds = [t.data.info["seed"] for t in tasks]
-    assert len(set(seeds)) == 3
+    rotations = [t.data.info["rotation"] for t in tasks]
+    assert seeds == [20260000] * 4 + [20260001] * 4
+    assert rotations == [0, 1, 2, 3, 0, 1, 2, 3]
     assert all(t.data.prompt is None for t in tasks)
     assert all(isinstance(t, vf.Task) for t in tasks)
+
+
+def test_run_review_round_trip_keeps_control_and_reviewer(tmp_path) -> None:
+    from jongbench.run_artifacts import record_reviewer_checkpoint
+
+    env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
+    env.config = _four_live_config(log_dir=str(tmp_path), seat_rotation=False)
+    agents = FakeAgents(config=env.config)
+    task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
+    asyncio.run(_run_env(env, task, agents))
+    run_dir = tmp_path / "hanchan-00000"
+    config = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+    assert "control_checkpoint" in config
+    assert "reviewer_checkpoint" not in config
+    identity = {
+        "path": "/cache/mortal-298k.pth",
+        "sha256": "c" * 64,
+        "source": "VoidShine/mortal-298k/mortal_298k.pth",
+        "use_policy": False,
+    }
+    record_reviewer_checkpoint(run_dir, identity)
+    updated = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+    assert updated["control_checkpoint"] == config["control_checkpoint"]
+    assert updated["reviewer_checkpoint"] == identity

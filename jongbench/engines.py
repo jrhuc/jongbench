@@ -602,8 +602,15 @@ def make_engine(name: str, spec_str: str, **kwargs: Any) -> BaseEngine:
         configured_policy = (
             bool(kwargs.pop("use_policy")) if "use_policy" in kwargs else None
         )
+        boltzmann_epsilon = kwargs.pop("boltzmann_epsilon", None)
+        boltzmann_temp = kwargs.pop("boltzmann_temp", None)
         checkpoint = resolve_mortal_checkpoint(weights, use_policy=configured_policy)
-        engine = evaluate.load_engine(checkpoint)
+        load_kwargs: dict[str, Any] = {}
+        if boltzmann_epsilon is not None:
+            load_kwargs["boltzmann_epsilon"] = float(boltzmann_epsilon)
+        if boltzmann_temp is not None:
+            load_kwargs["boltzmann_temp"] = float(boltzmann_temp)
+        engine = evaluate.load_engine(checkpoint, **load_kwargs)
         use_policy = checkpoint.use_policy
         if use_policy and not engine.use_policy:
             raise ValueError("configured checkpoint has no reviewer policy head")

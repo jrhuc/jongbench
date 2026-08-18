@@ -150,6 +150,13 @@ def leaderboard(batch_dir: str) -> dict[str, Any]:
                 if placement is not None and 1 <= placement <= 4:
                     acc["placement_counts"][placement - 1] += 1
 
+        episode_scores = dict(
+            zip(
+                (config.get("final") or {}).get("names") or [],
+                (config.get("final") or {}).get("scores") or [],
+                strict=False,
+            )
+        )
         episodes.append(
             {
                 "run_dir": str(run),
@@ -160,15 +167,27 @@ def leaderboard(batch_dir: str) -> dict[str, Any]:
                 "specs": specs,
                 "reviewed": bool(summary["games"]),
                 "placements": (config.get("final") or {}).get("placements") or {},
-                "scores": dict(
-                    zip(
-                        (config.get("final") or {}).get("names") or [],
-                        (config.get("final") or {}).get("scores") or [],
-                        strict=False,
-                    )
-                ),
+                "scores": episode_scores,
             }
         )
+        for spec, name in (
+            (specs.get(name), name) for name in episode_scores
+        ):
+            if spec is None:
+                continue
+            acc = accum.setdefault(spec, _new_batch_accumulator(spec))
+            others = [
+                float(score)
+                for other, score in episode_scores.items()
+                if other != name
+            ]
+            if others:
+                acc.setdefault("score_differentials", []).append(
+                    float(episode_scores[name]) - sum(others) / len(others)
+                )
+                acc.setdefault("seed_values", {}).setdefault(
+                    str((config.get("seed_start") or [None])[0]), []
+                ).append(acc["score_differentials"][-1])
 
     engines = [_finalize_batch_engine(acc) for acc in accum.values()]
     engines.sort(
@@ -263,10 +282,32 @@ def _finalize_batch_engine(acc: dict[str, Any]) -> dict[str, Any]:
                 if acc["latency_records"]
                 else None
             ),
+            **_duplicate_metrics(acc),
         }
     )
     engine.pop("name", None)
     return engine
+
+
+def _duplicate_metrics(acc: dict[str, Any]) -> dict[str, Any]:
+    from math import sqrt
+    from statistics import stdev
+
+    diffs = [float(value) for value in acc.get("score_differentials") or []]
+    block_means = [
+        sum(values) / len(values)
+        for values in (acc.get("seed_values") or {}).values()
+        if values
+    ]
+    return {
+        "avg_score_differential": _mean(diffs),
+        "seed_block_mean": _mean(block_means),
+        "standard_error": (
+            stdev(block_means) / sqrt(len(block_means))
+            if len(block_means) > 1
+            else None
+        ),
+    }
 
 
 def _new_accumulator(name: str, spec: str) -> dict[str, Any]:

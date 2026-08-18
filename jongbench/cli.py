@@ -414,16 +414,26 @@ def _cmd_positions(args: argparse.Namespace) -> int:
         }
         source_label = args.source
 
-    extracted = [
-        position
-        for events in logs
-        for position in positions_module.extract_positions(
-            events,
-            engine,
-            temperature=float(args.temperature),
+    extracted = []
+    for events, artifact in zip(logs, artifacts, strict=True):
+        game_id = "sha256:" + artifact["sha256"]
+        extracted.extend(
+            positions_module.extract_positions(
+                events,
+                engine,
+                temperature=float(args.temperature),
+                game_id=game_id,
+                source_log=artifact["name"],
+            )
         )
-    ]
     rows = [position.to_task_dict() for position in extracted]
+    if args.limit is not None:
+        rows = positions_module.sample_rows(
+            rows,
+            int(args.limit),
+            seed=int(args.sample_seed),
+            max_per_game=args.max_per_game,
+        )
     manifest = positions_module.bank_manifest(
         reviewer_checkpoint=checkpoint.source,
         reviewer_checkpoint_sha256=checkpoint.sha256,
@@ -454,6 +464,69 @@ def _cmd_positions(args: argparse.Namespace) -> int:
     print(f"wrote {count} positions from {len(logs)} game(s) ({source_label}) to {out}")
     for line in _bank_baselines(extracted):
         print(line)
+    return 0
+
+
+def _cmd_calibrate(args: argparse.Namespace) -> int:
+    from jongbench import competence as profile_module
+
+    root = Path(args.corpus)
+    reviews = sorted(root.glob("**/review/*.json")) or sorted(root.glob("*.json"))
+    rows: list[dict[str, float]] = []
+    for path in reviews:
+        payload = _read_json(path)
+        players = payload.get("players") or {}
+        scores = payload.get("scores") or []
+        for seat, player in players.items():
+            review = player.get("review") or player
+            q_loss = profile_module.cumulative_q_loss(review)
+            try:
+                index = int(seat)
+            except (TypeError, ValueError):
+                continue
+            points = float(scores[index]) - 25000 if index < len(scores) else 0.0
+            rows.append({"q_loss": q_loss["q_loss"], "points": points})
+    fit = profile_module.calibrate_q_loss(rows)
+    print(json.dumps(fit, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_contest(args: argparse.Namespace) -> int:
+    from jongbench.bank_schema import load_bank
+
+    _, rows_a = load_bank(args.bank_a)
+    _, rows_b = load_bank(args.bank_b)
+    by_board = {row["board_id"]: row for row in rows_a}
+    consensus = 0
+    contested: list[dict[str, str]] = []
+    unmatched = 0
+    for row in rows_b:
+        other = by_board.get(row["board_id"])
+        if other is None:
+            unmatched += 1
+            continue
+        label_a = other["menu"][int(other["best_index"])]
+        label_b = row["menu"][int(row["best_index"])]
+        if label_a == label_b:
+            consensus += 1
+        else:
+            contested.append(
+                {
+                    "board_id": row["board_id"],
+                    "a": label_a,
+                    "b": label_b,
+                }
+            )
+    report = {
+        "consensus": consensus,
+        "contested": len(contested),
+        "unmatched": unmatched,
+        "positions": contested,
+    }
+    text = json.dumps(report, indent=2, sort_keys=True)
+    if args.out:
+        Path(args.out).write_text(text + "\n", encoding="utf-8")
+    print(text)
     return 0
 
 
@@ -738,6 +811,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="engine used to generate boards; mortal gives positions a strong player "
         "would actually face",
     )
+    positions_cmd.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="sample this many positions, spread across games",
+    )
+    positions_cmd.add_argument(
+        "--max-per-game",
+        type=int,
+        default=None,
+        help="cap sampled positions from one game_id (default: spread evenly)",
+    )
+    positions_cmd.add_argument(
+        "--sample-seed",
+        type=int,
+        default=20260000,
+        help="RNG seed for --limit sampling",
+    )
     positions_cmd.set_defaults(func=_cmd_positions)
 
     selfplay_cmd = subparsers.add_parser(
@@ -852,6 +943,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     duel_cmd.add_argument("--log-dir")
     duel_cmd.set_defaults(func=_cmd_duel)
+
+    calibrate_cmd = subparsers.add_parser(
+        "calibrate",
+        help="regress realized point deltas on cumulative Q-loss from review files",
+    )
+    calibrate_cmd.add_argument("corpus", help="run dir or directory of review JSON")
+    calibrate_cmd.set_defaults(func=_cmd_calibrate)
+
+    contest_cmd = subparsers.add_parser(
+        "contest",
+        help="split two banks into consensus and contested sets by board_id",
+    )
+    contest_cmd.add_argument("bank_a")
+    contest_cmd.add_argument("bank_b")
+    contest_cmd.add_argument("--out")
+    contest_cmd.set_defaults(func=_cmd_contest)
 
     return parser
 

@@ -28,5 +28,7 @@ allow-direct-references = true
 packages = ["riichi_hanchan_v1"]
 
 [tool.verifiers.eval]
+# Smoke size: four chair-rotated episodes. Real comparisons need a multiple of 4
+# plus seed-block standard error; n=4 SE is about ±0.37 on the 0–1 placement scale.
 num_examples = 4
 rollouts_per_example = 1

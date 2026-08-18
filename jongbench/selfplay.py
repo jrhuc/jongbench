@@ -11,31 +11,15 @@ import torch
 import jongbench  # noqa: F401
 import libriichi
 from jongbench.arena import GameSummary, run_games
+from jongbench.controls import (
+    MortalControlConfig,
+    MortalControlPool,
+    clone_mortal_engine,
+)
 from jongbench.evaluate import load_engine, resolve_device
 from jongbench.mortal_engine import MortalEngine
 
 DUPLICATE_PTS = (90.0, 45.0, 0.0, -135.0)
-
-
-def _share_engine(template: MortalEngine, name: str, **overrides: Any) -> MortalEngine:
-    kwargs = {
-        "is_oracle": template.is_oracle,
-        "version": template.version,
-        "device": template.device,
-        "enable_amp": template.enable_amp,
-        "enable_quick_eval": template.enable_quick_eval,
-        "enable_rule_based_agari_guard": template.enable_rule_based_agari_guard,
-        "name": name,
-        "boltzmann_epsilon": template.boltzmann_epsilon,
-        "boltzmann_temp": template.boltzmann_temp,
-        "top_p": template.top_p,
-        "policy": template.policy,
-        "use_policy": template.use_policy,
-        "aux_net": template.aux_net,
-        "confidence": template.confidence,
-    }
-    kwargs.update(overrides)
-    return MortalEngine(template.brain, template.dqn, **kwargs)
 
 
 def make_play_engines(
@@ -49,21 +33,17 @@ def make_play_engines(
     name_prefix: str = "mortal",
     enable_quick_eval: bool = True,
 ) -> list[MortalEngine]:
-    device_t = resolve_device(device)
-    first = load_engine(
-        weights,
-        device=device_t,
-        use_policy=use_policy,
-        enable_quick_eval=enable_quick_eval,
-        enable_amp=device_t.type == "cuda",
-        boltzmann_epsilon=boltzmann_epsilon,
-        boltzmann_temp=boltzmann_temp,
-        name=f"{name_prefix}-0",
+    pool = MortalControlPool(
+        MortalControlConfig(
+            weights=weights,
+            use_policy=use_policy,
+            boltzmann_epsilon=boltzmann_epsilon,
+            boltzmann_temp=boltzmann_temp,
+            device=device,
+            enable_quick_eval=enable_quick_eval,
+        )
     )
-    engines = [first]
-    for i in range(1, n):
-        engines.append(_share_engine(first, f"{name_prefix}-{i}"))
-    return engines
+    return [pool.make_low_level(f"{name_prefix}-{index}") for index in range(n)]
 
 
 def selfplay(
@@ -180,7 +160,7 @@ def duel(
         and challenger_boltzmann_temp == champion_boltzmann_temp
         and challenger_agari_guard == champion_agari_guard
     ):
-        champion = _share_engine(challenger, "champion", use_policy=False)
+        champion = clone_mortal_engine(challenger, "champion", use_policy=False)
     else:
         champion = load_engine(
             champion_weights,
@@ -215,7 +195,9 @@ def duel(
         for start in range(0, games, 4)
     ]
     standard_error = (
-        stdev(seed_avg_pts) / sqrt(len(seed_avg_pts)) if len(seed_avg_pts) > 1 else None
+        stdev(seed_avg_pts) / sqrt(len(seed_avg_pts))
+        if len(seed_avg_pts) > 1
+        else None
     )
     return DuelResult(
         rankings=rankings,

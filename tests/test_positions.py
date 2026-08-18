@@ -89,7 +89,11 @@ def test_positions_render_as_typed_versioned_bank_rows(extracted) -> None:
 
     task = position.to_task_dict()
     assert task["record_type"] == "position"
-    assert task["schema_version"] == positions.BANK_SCHEMA_VERSION == 2
+    assert task["schema_version"] == positions.BANK_SCHEMA_VERSION == 3
+    assert len(task["q_values"]) == len(task["menu"])
+    assert task["board_id"].startswith("sha256:")
+    assert task["prompt_id"].startswith("sha256:")
+    assert isinstance(task["tags"], list)
     assert task["id"] == positions.position_id(task)
     assert task["id"].startswith("sha256:")
     assert task["name"].endswith(task["id"].removeprefix("sha256:")[:12])
@@ -103,6 +107,7 @@ def test_positions_render_as_typed_versioned_bank_rows(extracted) -> None:
 def test_position_identity_includes_best_index_when_argmax_is_tied(extracted) -> None:
     first = extracted[0].to_task_dict()
     first["rewards"] = [1.0, 1.0, *([0.0] * (len(first["menu"]) - 2))]
+    first["q_values"] = [10.0, 10.0, *([0.0] * (len(first["menu"]) - 2))]
     first["best_index"] = 0
     first["id"] = positions.position_id(first)
     positions.validate_bank_row(first)

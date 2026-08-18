@@ -575,6 +575,73 @@ impl PlayerState {
         shanten::calc_all(&self.tehai, self.tehai_len_div3)
     }
 
+    /// Remaining improving (or winning) tiles for a 3n+1 hand. Zero at 3n+2.
+    #[must_use]
+    pub fn ukeire(&self) -> u32 {
+        if self.last_cans.can_discard {
+            return 0;
+        }
+        let current = shanten::calc_all(&self.tehai, self.tehai_len_div3);
+        if current < 0 {
+            return 0;
+        }
+        if current == 0 {
+            return self
+                .waits
+                .iter()
+                .enumerate()
+                .filter(|(_, waiting)| **waiting)
+                .map(|(tid, _)| 4u32.saturating_sub(u32::from(self.tiles_seen[tid])))
+                .sum();
+        }
+        let mut tehai = self.tehai;
+        let mut total = 0u32;
+        for (tid, &seen) in self.tiles_seen.iter().enumerate() {
+            if seen >= 4 {
+                continue;
+            }
+            tehai[tid] += 1;
+            let after = shanten::calc_all(&tehai, self.tehai_len_div3);
+            tehai[tid] -= 1;
+            if after < current {
+                total += 4u32.saturating_sub(u32::from(seen));
+            }
+        }
+        total
+    }
+
+    /// Whether any live wait of a 3n+1 tenpai has a yaku on ron, ignoring
+    /// incidental yaku such as riichi and haitei.
+    #[must_use]
+    pub fn wait_has_yaku(&self) -> bool {
+        if self.last_cans.can_discard || self.real_time_shanten() != 0 {
+            return false;
+        }
+        for (tid, waiting) in self.waits.iter().copied().enumerate() {
+            if !waiting || self.tehai[tid] >= 4 {
+                continue;
+            }
+            let mut tehai = self.tehai;
+            tehai[tid] += 1;
+            let agari_calc = AgariCalculator {
+                tehai: &tehai,
+                is_menzen: self.is_menzen,
+                chis: &self.chis,
+                pons: &self.pons,
+                minkans: &self.minkans,
+                ankans: &self.ankans,
+                bakaze: self.bakaze.as_u8(),
+                jikaze: self.jikaze.as_u8(),
+                winning_tile: tid as u8,
+                is_ron: true,
+            };
+            if agari_calc.has_yaku() {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Can be called at both 3n+1 and 3n+2, but `self.real_time_shanten` must
     /// be >= 0 and `self.tiles_left` must be >= 4.
     ///

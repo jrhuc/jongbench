@@ -22,6 +22,7 @@ dev = ["openai>=1.50", "pytest>=8.3", "torch>=2.4", "verifiers>=0.3.0,<0.4"]
 
 [project.scripts]
 jongbench = "jongbench.cli:main"
+jongbench-experiment = "jongbench.experiments.cli:main"
 
 [project.urls]
 Repository = "https://github.com/jrhuc/jongbench"
@@ -37,7 +38,7 @@ build-backend = "build_backend"
 backend-path = ["."]
 
 [tool.setuptools]
-packages = ["jongbench"]
+packages = ["jongbench", "jongbench.experiments"]
 include-package-data = false
 
 [tool.setuptools.package-data]
