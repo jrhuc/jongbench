@@ -37,13 +37,19 @@ def _fake_call(index: int) -> SimpleNamespace:
 
 class FakeTrace:
     def __init__(self) -> None:
-        self.rewards: dict[str, float] = {}
+        self.rewards: dict[str, SimpleNamespace] = {}
         self.metrics: dict[str, float] = {}
         self.info: dict = {}
         self.calls: list = []
+        self.agent = SimpleNamespace(name="", trainable=True)
+        self.ok = True
+
+    @property
+    def reward(self) -> float:
+        return sum(reward.score * reward.weight for reward in self.rewards.values())
 
     def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
-        self.rewards[name] = value
+        self.rewards[name] = SimpleNamespace(score=value, weight=weight)
 
     def record_metric(self, name: str, value: float) -> None:
         self.metrics[name] = value
@@ -80,10 +86,14 @@ class FakeInteraction:
 class FakeAgent:
     """Hands out a fresh interaction per `interaction(task)` call, one per kyoku."""
 
-    def __init__(self, interaction_cls=FakeInteraction, model="fake/model") -> None:
+    def __init__(
+        self, interaction_cls=FakeInteraction, model="fake/model", client=None
+    ) -> None:
         self.interaction_cls = interaction_cls
-        # A real vf.Agent always carries a resolved model; the env reads it back.
-        self.config = SimpleNamespace(model=model)
+        # A real vf.Agent always carries a resolved model/client and env-owned standing.
+        self.config = SimpleNamespace(model=model, client=client)
+        self.name = ""
+        self.trainable = True
         self.interactions: list[FakeInteraction] = []
 
     def interaction(self, task):
@@ -92,6 +102,8 @@ class FakeAgent:
         class _Ctx:
             async def __aenter__(self):
                 inter = agent.interaction_cls(task)
+                inter.trace.agent.name = agent.name
+                inter.trace.agent.trainable = agent.trainable
                 agent.interactions.append(inter)
                 return inter
 
@@ -113,10 +125,29 @@ class FakeAgent:
 class FakeAgents:
     def __init__(self, interaction_cls=FakeInteraction, config=None) -> None:
         config = config or RiichiHanchanEnvConfig()
-        models = [getattr(config, name).model or "fake/model" for name in SEATS]
-        self.seats = [FakeAgent(interaction_cls, model) for model in models]
+        specs = [getattr(config, name) for name in SEATS]
+        self.seats = [
+            FakeAgent(interaction_cls, spec.model or "fake/model", spec.client)
+            for spec in specs
+        ]
         for name, agent in zip(SEATS, self.seats, strict=True):
+            agent.name = name
             setattr(self, name, agent)
+
+
+def _four_live_config(**overrides) -> RiichiHanchanEnvConfig:
+    values = {
+        name: vf.AgentConfig(harness={"id": "null"}, model="fake/model")
+        for name in SEATS[1:]
+    }
+    values.update(overrides)
+    return RiichiHanchanEnvConfig(**values)
+
+
+async def _run_env(env, task, agents) -> None:
+    # Env.run_episode owns this ordering; direct unit tests exercise just these hooks.
+    await env.setup(agents)
+    await env.run(task, agents)
 
 
 @pytest.fixture(scope="module")
@@ -127,10 +158,10 @@ def episode_dir(tmp_path_factory) -> Path:
 @pytest.fixture(scope="module")
 def played(episode_dir):
     env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
-    env.config = RiichiHanchanEnvConfig(log_dir=str(episode_dir))
-    agents = FakeAgents()
+    env.config = _four_live_config(log_dir=str(episode_dir), seat_rotation=False)
+    agents = FakeAgents(config=env.config)
     task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
-    asyncio.run(env.run(task, agents))
+    asyncio.run(_run_env(env, task, agents))
     return agents
 
 
@@ -155,23 +186,46 @@ def test_each_kyoku_gets_a_fresh_interaction(played) -> None:
             assert inter.closed
 
 
-def test_placement_rewards_are_zero_sum_and_ranked(played) -> None:
-    def seat_traces(seat):
-        return [inter.trace for inter in seat.interactions]
+def test_standard_eval_scores_only_the_evaluated_agent_once(played) -> None:
+    from verifiers.v1.utils.platform import _run_metrics
 
-    # Every kyoku trace of a seat carries the seat's final placement reward.
-    for seat in played.seats:
-        assert len({t.rewards["placement"] for t in seat_traces(seat)}) == 1
-
-    rewards = [seat_traces(seat)[-1].rewards["placement"] for seat in played.seats]
-    assert sorted(rewards) == pytest.approx([0.0, 1 / 3, 2 / 3, 1.0])
-    assert sum(rewards) == pytest.approx(2.0)
-
-    infos = [seat_traces(seat)[-1].info["hanchan"] for seat in played.seats]
+    traces_by_seat = [
+        [interaction.trace for interaction in seat.interactions]
+        for seat in played.seats
+    ]
+    infos = [traces[-1].info["hanchan"] for traces in traces_by_seat]
     placements = [info["placement"] for info in infos]
     assert sorted(placements) == [1, 2, 3, 4]
     scores = [info["score"] for info in infos]
     assert sum(scores) == 100000
+
+    # The bounded training return remains visible on every kyoku trace, but an eval
+    # client gives it zero weight. Exactly one genuine trace carries the Hub reward.
+    for index, traces in enumerate(traces_by_seat):
+        expected = (4 - placements[index]) / 3
+        assert {t.rewards["placement_return"].score for t in traces} == {expected}
+        assert {t.rewards["placement_return"].weight for t in traces} == {0.0}
+    carriers = [
+        trace
+        for traces in traces_by_seat
+        for trace in traces
+        if trace.info["hanchan"]["eval_carrier"]
+    ]
+    assert carriers == [traces_by_seat[0][-1]]
+    assert [
+        trace for traces in traces_by_seat for trace in traces if trace.agent.trainable
+    ] == carriers
+    carrier = carriers[0]
+    expected = (4 - placements[0]) / 3
+    assert carrier.rewards["placement"].score == pytest.approx(expected)
+    assert carrier.reward == pytest.approx(expected)
+
+    # This is Verifiers 0.3's actual standard upload aggregation. It is the selected
+    # seat's outcome (always one of the four rank steps), never the zero-sum 0.5.
+    flat = [trace for traces in traces_by_seat for trace in traces]
+    metrics = _run_metrics([SimpleNamespace(ok=True)], flat)
+    assert metrics["avg_reward"] == pytest.approx(expected)
+    assert metrics["avg_reward"] != pytest.approx(0.5)
 
     # Equal scores are broken by seat, so only the strict ordering is guaranteed.
     for i in range(4):
@@ -179,8 +233,133 @@ def test_placement_rewards_are_zero_sum_and_ranked(played) -> None:
             if scores[i] > scores[j]:
                 assert placements[i] < placements[j], (scores, placements)
 
-    best = max(range(4), key=lambda s: scores[s])
-    assert rewards[best] == pytest.approx(1.0)
+
+def test_hub_average_does_not_weight_longer_hanchan() -> None:
+    from verifiers.v1.utils.platform import _run_metrics
+
+    episodes = []
+    all_traces = []
+    for placement_reward, kyoku_count in [(1.0, 2), (0.0, 9)]:
+        traces = [FakeTrace() for _ in range(kyoku_count)]
+        for trace in traces:
+            trace.agent.trainable = False
+            trace.record_reward("placement_return", placement_reward, weight=0.0)
+        traces[-1].agent.trainable = True
+        traces[-1].record_reward("placement", placement_reward)
+        episodes.append(SimpleNamespace(ok=True, traces=traces))
+        all_traces.extend(traces)
+
+    # One vote per episode: (win + loss) / 2. The old per-kyoku layout produced
+    # 2 / 11 here because the shorter winning episode contributed fewer rows.
+    metrics = _run_metrics(episodes, all_traces)
+    assert metrics["avg_reward"] == pytest.approx(0.5)
+
+
+def test_evaluated_agent_contract_marks_opponents_fixed() -> None:
+    config = RiichiHanchanEnvConfig()
+    assert config.seat0.model is None
+    assert [getattr(config, name).model for name in SEATS[1:]] == ["mortal"] * 3
+    assert config.evaluated_agent == "seat0"
+    assert config.seat_rotation is True
+    assert config.control_use_policy is False
+    env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
+    env.config = config
+    agents = FakeAgents(config=config)
+    asyncio.run(env.setup(agents))
+    assert [agent.trainable for agent in agents.seats] == [True, False, False, False]
+
+    tournament = RiichiHanchanEnvConfig(
+        evaluated_agent=None,
+        seat1=vf.AgentConfig(harness={"id": "null"}),
+        seat2=vf.AgentConfig(harness={"id": "null"}, model="fixed/opponent"),
+        seat3=vf.AgentConfig(harness={"id": "null"}),
+    )
+    env.config = tournament
+    agents = FakeAgents(config=tournament)
+    asyncio.run(env.setup(agents))
+    assert [agent.trainable for agent in agents.seats] == [True, True, False, True]
+
+
+@pytest.fixture(scope="module")
+def played_default_controls():
+    env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
+    env.config = RiichiHanchanEnvConfig()
+    agents = FakeAgents(config=env.config)
+    task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
+    asyncio.run(_run_env(env, task, agents))
+    return agents
+
+
+def test_default_controls_leave_one_discriminative_eval_trace(
+    played_default_controls,
+) -> None:
+    from verifiers.v1.utils.platform import _run_metrics
+
+    assert all(
+        opponent.interactions == [] for opponent in played_default_controls.seats[1:]
+    )
+    traces = [
+        interaction.trace for interaction in played_default_controls.seat0.interactions
+    ]
+    assert len(traces) > 1
+    assert [trace for trace in traces if trace.agent.trainable] == [traces[-1]]
+    info = traces[-1].info["hanchan"]
+    expected = (4 - info["placement"]) / 3
+    assert traces[-1].rewards["placement"].score == pytest.approx(expected)
+    metrics = _run_metrics([SimpleNamespace(ok=True)], traces)
+    assert metrics["avg_reward"] == pytest.approx(expected)
+    assert metrics["avg_reward"] != pytest.approx(0.5)
+
+
+def test_mortal_cannot_be_the_evaluated_agent() -> None:
+    config = RiichiHanchanEnvConfig(
+        evaluated_agent="seat3",
+        seat3=vf.AgentConfig(harness={"id": "null"}, model="mortal"),
+    )
+    env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
+    env.config = config
+    with pytest.raises(ValueError, match="produces no trace"):
+        asyncio.run(env.setup(FakeAgents(config=config)))
+
+
+@pytest.fixture(scope="module")
+def played_training_returns():
+    train = vf.TrainClientConfig()
+    config = _four_live_config(
+        seat0=vf.AgentConfig(harness={"id": "null"}, client=train),
+        seat_rotation=False,
+    )
+    env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
+    env.config = config
+    agents = FakeAgents(config=config)
+    task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
+    asyncio.run(_run_env(env, task, agents))
+    return agents
+
+
+def test_training_keeps_the_return_on_every_kyoku(played_training_returns) -> None:
+    evaluated = played_training_returns.seat0
+    assert len(evaluated.interactions) > 1
+    returns = [
+        interaction.trace.rewards["placement_return"]
+        for interaction in evaluated.interactions
+    ]
+    assert len({reward.score for reward in returns}) == 1
+    assert {reward.weight for reward in returns} == {1.0}
+    assert all(
+        interaction.trace.agent.trainable for interaction in evaluated.interactions
+    )
+    assert all(
+        "placement" not in interaction.trace.rewards
+        for interaction in evaluated.interactions
+    )
+
+    for opponent in played_training_returns.seats[1:]:
+        assert all(
+            interaction.trace.rewards["placement_return"].weight == 0.0
+            and not interaction.trace.agent.trainable
+            for interaction in opponent.interactions
+        )
 
 
 def test_each_seat_records_its_own_play(played) -> None:
@@ -205,14 +384,16 @@ def test_episode_persists_as_a_jongbench_run_dir(played, episode_dir) -> None:
     assert config["names"] == list(SEATS)
     assert sorted(config["final"]["placements"].values()) == [1, 2, 3, 4]
     assert config["max_tool_calls"] == RiichiHanchanEnvConfig().max_tool_calls
-    assert config["weights"] == RiichiHanchanEnvConfig().weights
+    assert config["control_use_policy"] is False
+    assert config["reviewer_checkpoint"] is None
+    assert config["evaluated_agent"] == "seat0"
     header = json.loads(
         (run_dir / "journal.jsonl").read_text(encoding="utf-8").splitlines()[0]
     )
     assert header["max_tool_calls"] == config["max_tool_calls"]
-    assert header["weights"] == config["weights"]
-    assert config["weights_sha256"] is None
-    assert config["weights_use_policy"] is False
+    assert header["control_use_policy"] == config["control_use_policy"]
+    assert header["reviewer_checkpoint"] == config["reviewer_checkpoint"]
+    assert header["evaluated_agent"] == config["evaluated_agent"]
 
     for name, seat in zip(SEATS, played.seats, strict=True):
         lines = [
@@ -330,10 +511,10 @@ class ForcedFallbackInteraction(FakeInteraction):
 @pytest.fixture(scope="module")
 def played_tools():
     env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
-    env.config = RiichiHanchanEnvConfig(tools=True)
-    agents = FakeAgents(ToolUsingInteraction)
+    env.config = _four_live_config(tools=True, seat_rotation=False)
+    agents = FakeAgents(ToolUsingInteraction, env.config)
     task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
-    asyncio.run(env.run(task, agents))
+    asyncio.run(_run_env(env, task, agents))
     return agents
 
 
@@ -402,10 +583,10 @@ def test_each_decision_gets_its_budget_back(played_tools) -> None:
 
 def test_engine_retry_keeps_the_same_decision_budget() -> None:
     env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
-    env.config = RiichiHanchanEnvConfig(tools=True, max_tool_calls=4)
+    env.config = _four_live_config(tools=True, max_tool_calls=4, seat_rotation=False)
     agents = FakeAgents(RetryingToolInteraction, env.config)
     task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
-    asyncio.run(env.run(task, agents))
+    asyncio.run(_run_env(env, task, agents))
 
     for seat in agents.seats:
         retries = [
@@ -423,10 +604,10 @@ def test_engine_retry_keeps_the_same_decision_budget() -> None:
 
 def test_repeated_over_budget_tools_force_fallback_without_aborting() -> None:
     env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
-    env.config = RiichiHanchanEnvConfig(tools=True, max_tool_calls=1)
+    env.config = _four_live_config(tools=True, max_tool_calls=1, seat_rotation=False)
     agents = FakeAgents(ForcedFallbackInteraction, env.config)
     task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
-    asyncio.run(env.run(task, agents))
+    asyncio.run(_run_env(env, task, agents))
 
     for seat in agents.seats:
         kyokus = [
@@ -501,22 +682,127 @@ def test_a_budgeted_decision_stops_answering_when_it_runs_out() -> None:
     assert asyncio.run(SeatToolsTask.tool_budget_exhausted(None, trace))
 
 
-def test_journal_records_remote_reviewer_identity(monkeypatch) -> None:
-    from riichi_hanchan_v1.env import _journal_header
+def test_journal_records_resolved_reviewer_identity(monkeypatch) -> None:
+    from riichi_hanchan_v1 import env as env_module
 
-    digest = "a" * 64
-    monkeypatch.setenv("JONGBENCH_WEIGHTS_URL", "https://example.test/reviewer.pth")
-    monkeypatch.setenv("JONGBENCH_WEIGHTS_SHA256", digest)
-    monkeypatch.setenv("JONGBENCH_WEIGHTS_USE_POLICY", "1")
-    header = _journal_header(
+    identity = {
+        "path": "/cache/reviewer.pth",
+        "sha256": "a" * 64,
+        "source": "https://example.test/reviewer.pth",
+        "use_policy": False,
+    }
+    resolved = SimpleNamespace(path=Path(identity["path"]), as_dict=lambda: identity)
+    use_policy_calls = []
+
+    def resolve(weights, *, use_policy):
+        use_policy_calls.append(use_policy)
+        return resolved
+
+    monkeypatch.setattr(env_module.weights_module, "resolve_mortal_checkpoint", resolve)
+    control, actual = env_module._resolve_control_checkpoint(
+        RiichiHanchanEnvConfig(),
+        ["fake/model", "mortal", "mortal", "mortal"],
+    )
+    assert control is resolved
+    assert actual == identity
+    assert use_policy_calls == [False]
+
+    header = env_module._journal_header(
         7,
         RiichiHanchanEnvConfig(),
-        ["fake/model", "fake/model", "fake/model", "mortal"],
+        ["fake/model", "mortal", "mortal", "mortal"],
         0,
+        actual,
     )
-    assert header["weights"] == "auto"
-    assert header["weights_sha256"] == digest
-    assert header["weights_use_policy"] is True
+    assert header["reviewer_checkpoint"] == identity
+
+
+def test_control_policy_is_explicit_and_forwarded(monkeypatch) -> None:
+    from riichi_hanchan_v1 import env as env_module
+
+    identity = {
+        "path": "/cache/phoenix.pth",
+        "sha256": "b" * 64,
+        "source": "auto",
+        "use_policy": True,
+    }
+    resolved = SimpleNamespace(path=Path(identity["path"]), as_dict=lambda: identity)
+    resolved_modes = []
+
+    def resolve(weights, *, use_policy):
+        resolved_modes.append(use_policy)
+        return resolved
+
+    engines_made = []
+
+    def make_engine(name, engine, **kwargs):
+        engines_made.append((name, engine, kwargs))
+        return SimpleNamespace(name=name, totals={"fallbacks": 0, "calls_declined": 0})
+
+    summary = SimpleNamespace(
+        names=list(SEATS),
+        scores=[40000, 30000, 20000, 10000],
+        placements={name: index + 1 for index, name in enumerate(SEATS)},
+    )
+    monkeypatch.setattr(env_module.weights_module, "resolve_mortal_checkpoint", resolve)
+    monkeypatch.setattr(env_module.engines, "make_engine", make_engine)
+    monkeypatch.setattr(
+        env_module.arena, "run_games", lambda *args, **kwargs: [summary]
+    )
+
+    config = RiichiHanchanEnvConfig(
+        evaluated_agent=None,
+        control_use_policy=True,
+        seat0=vf.AgentConfig(harness={"id": "null"}, model="mortal"),
+    )
+    env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
+    env.config = config
+    task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
+    asyncio.run(_run_env(env, task, FakeAgents(config=config)))
+
+    assert resolved_modes == [True]
+    assert [name for name, _, _ in engines_made] == list(SEATS)
+    assert all(engine == "mortal" for _, engine, _ in engines_made)
+    assert all(kwargs["weights"] is resolved for _, _, kwargs in engines_made)
+    assert all(kwargs["use_policy"] is True for _, _, kwargs in engines_made)
+    header = env_module._journal_header(7, config, list(SEATS), 0, identity)
+    assert header["control_use_policy"] is True
+    assert header["reviewer_checkpoint"] == identity
+
+
+def test_v010_control_factory_bypasses_ambient_policy_default(monkeypatch) -> None:
+    from riichi_hanchan_v1 import env as env_module
+
+    from jongbench import evaluate, positions
+
+    reviewer = SimpleNamespace(use_policy=True)
+    monkeypatch.delattr(env_module.weights_module, "ResolvedCheckpoint")
+    monkeypatch.setenv("JONGBENCH_WEIGHTS_USE_POLICY", "invalid")
+    monkeypatch.setattr(
+        evaluate,
+        "load_engine",
+        lambda checkpoint, *, use_policy: (
+            reviewer
+            if (checkpoint, use_policy) == ("/cache/phoenix.pth", True)
+            else pytest.fail("unexpected legacy load")
+        ),
+    )
+    monkeypatch.setattr(
+        positions,
+        "MortalArenaEngine",
+        lambda name, engine: SimpleNamespace(name=name, reviewer=engine),
+    )
+    monkeypatch.setattr(
+        env_module.engines,
+        "make_engine",
+        lambda *args, **kwargs: pytest.fail("legacy core factory must be bypassed"),
+    )
+
+    control = env_module._make_control_engine(
+        "seat1", "/cache/phoenix.pth", use_policy=True
+    )
+    assert control.name == "seat1"
+    assert control.reviewer is reviewer
 
 
 def test_journal_read_trims_and_guards(tmp_path) -> None:
@@ -591,10 +877,10 @@ def resumed(played, episode_dir, tmp_path_factory):
     )
 
     env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
-    env.config = RiichiHanchanEnvConfig(log_dir=str(resume_root))
-    agents = FakeAgents()
+    env.config = _four_live_config(log_dir=str(resume_root), seat_rotation=False)
+    agents = FakeAgents(config=env.config)
     task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
-    asyncio.run(env.run(task, agents))
+    asyncio.run(_run_env(env, task, agents))
     return agents, resume_root, len(hands_recorded) - 1
 
 
@@ -623,7 +909,7 @@ def test_resume_replays_the_journal_and_goes_live(played, resumed) -> None:
 def test_resume_artifacts_cover_the_whole_hanchan(played, resumed) -> None:
     import json
 
-    agents, resume_root, _ = resumed
+    _, resume_root, _ = resumed
     for name, orig in zip(SEATS, played.seats, strict=True):
         lines = (
             (resume_root / "hanchan-00000" / "decisions" / f"{name}.jsonl")
@@ -648,10 +934,10 @@ def test_finished_journal_replays_the_episode_for_free(
     )
 
     env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
-    env.config = RiichiHanchanEnvConfig(log_dir=str(replay_root))
-    agents = FakeAgents()
+    env.config = _four_live_config(log_dir=str(replay_root), seat_rotation=False)
+    agents = FakeAgents(config=env.config)
     task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
-    asyncio.run(env.run(task, agents))
+    asyncio.run(_run_env(env, task, agents))
 
     assert all(seat.interactions == [] for seat in agents.seats)
     original = json.loads((source / "config.json").read_text(encoding="utf-8"))
@@ -660,10 +946,11 @@ def test_finished_journal_replays_the_episode_for_free(
 
 
 def _mortal_config(log_dir: Path) -> RiichiHanchanEnvConfig:
-    return RiichiHanchanEnvConfig(
+    return _four_live_config(
         seat3=vf.AgentConfig(harness={"id": "null"}, model="mortal"),
         log_dir=str(log_dir),
         weights="auto",
+        seat_rotation=False,
     )
 
 
@@ -674,7 +961,7 @@ def played_mortal(tmp_path_factory):
     env.config = _mortal_config(root)
     agents = FakeAgents(config=env.config)
     task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
-    asyncio.run(env.run(task, agents))
+    asyncio.run(_run_env(env, task, agents))
     return agents, root / "hanchan-00000"
 
 
@@ -682,14 +969,22 @@ def test_mortal_control_seat_opens_no_interactions(played_mortal) -> None:
     agents, _ = played_mortal
     assert agents.seat3.interactions == []
     steps = (0.0, 1 / 3, 2 / 3, 1.0)
-    rewards = []
+    returns = []
     for seat in agents.seats[:3]:
         assert len(seat.prompts) > 50
-        per_kyoku = {inter.trace.rewards["placement"] for inter in seat.interactions}
+        per_kyoku = {
+            inter.trace.rewards["placement_return"].score for inter in seat.interactions
+        }
         assert len(per_kyoku) == 1
-        rewards.append(per_kyoku.pop())
-    assert len(set(rewards)) == 3
-    assert all(any(r == pytest.approx(s) for s in steps) for r in rewards)
+        returns.append(per_kyoku.pop())
+    assert len(set(returns)) == 3
+    assert all(any(value == pytest.approx(step) for step in steps) for value in returns)
+    assert [
+        inter.trace
+        for seat in agents.seats[:3]
+        for inter in seat.interactions
+        if inter.trace.agent.trainable
+    ] == [agents.seat0.interactions[-1].trace]
 
 
 def test_mortal_seat_leaves_no_decisions_or_journal_rows(played_mortal) -> None:
@@ -724,7 +1019,7 @@ def test_mortal_seat_replays_deterministically(played_mortal, tmp_path_factory) 
     env.config = _mortal_config(replay_root)
     agents = FakeAgents(config=env.config)
     task = next(iter(RiichiHanchanTaskset(RiichiHanchanConfig()).load()))
-    asyncio.run(env.run(task, agents))
+    asyncio.run(_run_env(env, task, agents))
 
     assert all(seat.interactions == [] for seat in agents.seats)
     original = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
@@ -739,11 +1034,11 @@ def test_seat_rotation_moves_the_table_without_moving_attribution(
 
     root = tmp_path_factory.mktemp("hanchan-rotation")
     env = RiichiHanchanEnv.__new__(RiichiHanchanEnv)
-    env.config = RiichiHanchanEnvConfig(log_dir=str(root), seat_rotation=True)
-    agents = FakeAgents()
+    env.config = _four_live_config(log_dir=str(root), seat_rotation=True)
+    agents = FakeAgents(config=env.config)
     loaded = RiichiHanchanTaskset(RiichiHanchanConfig()).load()
     tasks = [t for t, _ in zip(loaded, range(2), strict=False)]
-    asyncio.run(env.run(tasks[1], agents))
+    asyncio.run(_run_env(env, tasks[1], agents))
 
     run_dir = root / "hanchan-00001"
     config = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))

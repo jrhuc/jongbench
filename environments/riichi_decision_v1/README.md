@@ -8,7 +8,8 @@ Reward is Mortal's normalised Q-advantage for the option chosen: 1.0 for Mortal'
 choice, 0.0 for its worst, linear between. This is the per-decision term of the rating
 jongbench reports for a full game, so this taskset and a played hanchan measure the
 same quantity. The difference is that here every model sees byte-identical prompts on
-identical boards, at one call per graded decision instead of about 1,000 per hanchan.
+identical boards, with a dense score per call instead of roughly 1,000 calls for the
+standard four-hanchan outcome batch.
 
 ## Tasks
 
@@ -49,7 +50,11 @@ $ jongbench positions --out bank.jsonl --games 4          # ~600 positions per g
 $ jongbench positions --out bank.jsonl --from-log runs/<stamp>/logs/g0.json.gz
 ```
 
-Rendering and grading happen when the bank is built. Evaluation needs neither
+Rendering and grading happen when the bank is built. Schema v2 starts with a
+manifest naming the generator, reward normalization, reviewer checkpoint digest and
+source-log provenance. Every following position has a content-addressed ID, and the
+standalone loader rejects malformed fields, duplicate IDs, non-finite/out-of-range
+rewards, or a `best_index` that is not an argmax. Evaluation needs neither
 `jongbench`, a native runtime, Torch, nor the Mortal checkpoint.
 
 ## Run

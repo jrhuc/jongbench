@@ -10,14 +10,19 @@ import torch
 
 from jongbench.selfplay import DUPLICATE_PTS, DuelResult, duel
 from jongbench.train import PolicyRLConfig, train_policy_rl
-from jongbench.weights import AUTO_MORTAL_WEIGHTS, resolve_mortal_weights
+from jongbench.weights import (
+    AUTO_MORTAL_WEIGHTS,
+    CheckpointInput,
+    ResolvedCheckpoint,
+    resolve_mortal_checkpoint,
+)
 
 
 @dataclass
 class ImproveConfig:
-    init: str
+    init: CheckpointInput
     out_dir: str
-    control: str | None = AUTO_MORTAL_WEIGHTS
+    control: CheckpointInput | None = AUTO_MORTAL_WEIGHTS
     rounds: int = 4
     rollout_games: int = 256
     updates: int = 128
@@ -60,17 +65,19 @@ def improve_policy(cfg: ImproveConfig) -> dict[str, Any]:
         raise ValueError("duel_games must be a multiple of 4 and at least 8")
     if cfg.promotion_z < 0:
         raise ValueError("promotion_z must be non-negative")
-    initial = Path(cfg.init)
-    if not initial.is_file():
-        raise FileNotFoundError(f"initial checkpoint does not exist: {initial}")
-    control = None if cfg.control is None else str(resolve_mortal_weights(cfg.control))
+    initial_checkpoint = resolve_mortal_checkpoint(cfg.init, use_policy=True)
+    control_checkpoint = (
+        None
+        if cfg.control is None
+        else resolve_mortal_checkpoint(cfg.control, use_policy=False)
+    )
 
     out = Path(cfg.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     if any(out.glob("round-*")) or (out / "league.json").exists():
         raise FileExistsError(f"league output already contains a run: {out}")
 
-    champion = initial
+    champion: ResolvedCheckpoint = initial_checkpoint
     rounds: list[dict[str, Any]] = []
     for round_index in range(1, cfg.rounds + 1):
         round_dir = out / f"round-{round_index:02d}"
@@ -81,10 +88,10 @@ def improve_policy(cfg: ImproveConfig) -> dict[str, Any]:
         rollout_seed = cfg.seed + (round_index - 1) * 1_000_000
         duel_seed = rollout_seed + cfg.rollout_games + 10_000
 
-        print(f"round {round_index}/{cfg.rounds}: rollout from {champion}")
+        print(f"round {round_index}/{cfg.rounds}: rollout from {champion.path}")
         rollout = duel(
-            challenger_weights=str(champion),
-            champion_weights=str(champion),
+            challenger_weights=str(champion.path),
+            champion_weights=str(champion.path),
             games=cfg.rollout_games,
             seed=rollout_seed,
             device=cfg.device,
@@ -100,8 +107,8 @@ def improve_policy(cfg: ImproveConfig) -> dict[str, Any]:
         training = train_policy_rl(
             PolicyRLConfig(
                 logs=str(logs_dir),
-                init=str(champion),
-                anchor=str(initial),
+                init=champion,
+                anchor=initial_checkpoint,
                 out=str(candidate),
                 steps=cfg.updates,
                 batch_size=cfg.batch_size,
@@ -117,11 +124,12 @@ def improve_policy(cfg: ImproveConfig) -> dict[str, Any]:
                 seed=cfg.seed + round_index,
             )
         )
+        candidate_checkpoint = resolve_mortal_checkpoint(candidate, use_policy=True)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         result = duel(
-            challenger_weights=str(candidate),
-            champion_weights=str(champion),
+            challenger_weights=str(candidate_checkpoint.path),
+            champion_weights=str(champion.path),
             games=cfg.duel_games,
             seed=duel_seed,
             device=cfg.device,
@@ -135,13 +143,13 @@ def improve_policy(cfg: ImproveConfig) -> dict[str, Any]:
         promoted = promotion_score > cfg.promotion_margin
         previous = champion
         if promoted:
-            champion = candidate
+            champion = candidate_checkpoint
         record = {
             "round": round_index,
             "rollout_seed": rollout_seed,
             "duel_seed": duel_seed,
-            "source": str(previous),
-            "candidate": str(candidate),
+            "source": previous.as_dict(),
+            "candidate": candidate_checkpoint.as_dict(),
             "rollout": rollout.as_dict(),
             "training": training,
             "duel": result.as_dict(),
@@ -157,15 +165,18 @@ def improve_policy(cfg: ImproveConfig) -> dict[str, Any]:
         )
 
     champion_out = out / "champion.pth"
-    if champion.resolve() != champion_out.resolve():
-        shutil.copy2(champion, champion_out)
+    if champion.path.resolve() != champion_out.resolve():
+        shutil.copy2(champion.path, champion_out)
+    champion_output_checkpoint = resolve_mortal_checkpoint(
+        champion_out, use_policy=True
+    )
 
     final_evaluations: dict[str, Any] = {}
     final_seed = cfg.seed + cfg.rounds * 1_000_000 + 100_000
-    if champion.resolve() != initial.resolve():
+    if champion.path.resolve() != initial_checkpoint.path.resolve():
         initial_result = duel(
             challenger_weights=str(champion_out),
-            champion_weights=str(initial),
+            champion_weights=str(initial_checkpoint.path),
             games=cfg.duel_games,
             seed=final_seed,
             device=cfg.device,
@@ -177,10 +188,10 @@ def improve_policy(cfg: ImproveConfig) -> dict[str, Any]:
         )
         final_evaluations["initial_policy"] = initial_result.as_dict()
         final_seed += cfg.duel_games // 4
-    if control is not None:
+    if control_checkpoint is not None:
         control_result = duel(
             challenger_weights=str(champion_out),
-            champion_weights=control,
+            champion_weights=str(control_checkpoint.path),
             games=cfg.duel_games,
             seed=final_seed,
             device=cfg.device,
@@ -192,11 +203,16 @@ def improve_policy(cfg: ImproveConfig) -> dict[str, Any]:
         )
         final_evaluations["control_q"] = control_result.as_dict()
 
+    manifest_config = asdict(cfg)
+    manifest_config["init"] = initial_checkpoint.as_dict()
+    manifest_config["control"] = (
+        None if control_checkpoint is None else control_checkpoint.as_dict()
+    )
     manifest = {
         "format": 1,
-        "config": asdict(cfg),
-        "initial": str(initial),
-        "champion": str(champion_out),
+        "config": manifest_config,
+        "initial": initial_checkpoint.as_dict(),
+        "champion": champion_output_checkpoint.as_dict(),
         "promotions": sum(int(record["promoted"]) for record in rounds),
         "rounds": rounds,
         "final_evaluations": final_evaluations,

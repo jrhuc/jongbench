@@ -1,7 +1,7 @@
 [project]
 name = "riichi-hanchan-v1"
-version = "0.1.0rc3"
-description = "Four models play a full riichi mahjong hanchan against each other"
+version = "0.1.0rc4"
+description = "Evaluate one model through a full riichi hanchan against fixed Mortal controls"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 license = "AGPL-3.0-or-later"
@@ -9,15 +9,16 @@ license-files = ["LICENSE"]
 tags = ["riichi", "mahjong", "multi-agent", "long-horizon", "eval", "v1"]
 dependencies = [
     "verifiers>=0.3.0,<0.4",
-    "jongbench @ https://github.com/jrhuc/jongbench/releases/download/jongbench-v0.1.0/jongbench-0.1.0-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=995c55ea95e77be0ff94898882e39ed27f5ad79aa51781b868af3aaab90f79a6 ; python_version == '3.12'",
-    "jongbench @ https://github.com/jrhuc/jongbench/releases/download/jongbench-v0.1.0/jongbench-0.1.0-cp313-cp313-manylinux_2_28_x86_64.whl#sha256=ae140ce2541a2ddc0ebccf4475aabbb0454db9ec7bd93d9af487d288c873cf09 ; python_version == '3.13'",
+    "jongbench[mortal]>=0.1.1 ; sys_platform != 'linux' or platform_machine != 'x86_64'",
+    "jongbench[mortal] @ https://github.com/jrhuc/jongbench/releases/download/jongbench-v0.1.0/jongbench-0.1.0-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=995c55ea95e77be0ff94898882e39ed27f5ad79aa51781b868af3aaab90f79a6 ; python_version == '3.12' and sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "jongbench[mortal] @ https://github.com/jrhuc/jongbench/releases/download/jongbench-v0.1.0/jongbench-0.1.0-cp313-cp313-manylinux_2_28_x86_64.whl#sha256=ae140ce2541a2ddc0ebccf4475aabbb0454db9ec7bd93d9af487d288c873cf09 ; python_version == '3.13' and sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
 [project.urls]
 Repository = "https://github.com/jrhuc/jongbench"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.metadata]
@@ -27,5 +28,5 @@ allow-direct-references = true
 packages = ["riichi_hanchan_v1"]
 
 [tool.verifiers.eval]
-num_examples = 1
+num_examples = 4
 rollouts_per_example = 1

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -16,6 +17,7 @@ if str(ROOT) not in sys.path:
 import jongbench  # noqa: F401
 import libriichi
 from jongbench.evaluate import load_engine, load_mjai_log, review_game, review_player
+from jongbench.mortal_model import DQN, Brain
 
 
 class TsumogiriEngine:
@@ -61,7 +63,25 @@ class TsumogiriEngine:
         pass
 
 
-def test_mortal_review() -> None:
+def _write_test_checkpoint(path: Path) -> Path:
+    torch.manual_seed(7)
+    brain = Brain(version=4, num_blocks=0, conv_channels=4)
+    dqn = DQN(version=4)
+    torch.save(
+        {
+            "config": {
+                "control": {"version": 4},
+                "resnet": {"num_blocks": 0, "conv_channels": 4},
+            },
+            "mortal": brain.state_dict(),
+            "current_dqn": dqn.state_dict(),
+        },
+        path,
+    )
+    return path
+
+
+def test_mortal_review(tmp_path: Path) -> None:
     started = time.perf_counter()
     with tempfile.TemporaryDirectory() as tempdir:
         arena = libriichi.arena.FourEngines(
@@ -79,7 +99,9 @@ def test_mortal_review() -> None:
     )
     events = events[: end_kyoku_idx + 1] + [{"type": "end_game"}]
 
-    engine = load_engine("auto")
+    checkpoint = _write_test_checkpoint(tmp_path / "mortal-test.pth")
+    engine = load_engine(checkpoint, device="cpu", use_policy=False)
+    assert engine.checkpoint.path == checkpoint
     review = review_player(events, 0, engine)
 
     assert review["total_reviewed"] > 0
@@ -104,7 +126,3 @@ def test_mortal_review() -> None:
         f"elapsed={elapsed:.3f}s"
     )
     print("OK")
-
-
-if __name__ == "__main__":
-    test_mortal_review()

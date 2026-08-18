@@ -1,19 +1,22 @@
 from __future__ import annotations
 
-import gzip
 import json
 import math
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
 
 import libriichi
+from jongbench.artifacts import load_mjai_log as load_mjai_log
 from jongbench.mortal_engine import MortalEngine
 from jongbench.mortal_model import DQN, AuxNet, Brain, ConfidenceHead, PolicyHead
-from jongbench.weights import resolve_mortal_weights
+from jongbench.weights import (
+    CheckpointInput,
+    ResolvedCheckpoint,
+    resolve_mortal_checkpoint,
+)
 
 TILES = [
     "1m",
@@ -68,10 +71,15 @@ def resolve_device(name: str | torch.device | None = "cpu") -> torch.device:
 
 
 def load_checkpoint(
-    weights_path: str | Path, map_location: str | torch.device = "cpu"
+    weights_path: CheckpointInput,
+    map_location: str | torch.device = "cpu",
 ) -> dict[str, Any]:
-    path = resolve_mortal_weights(weights_path)
-    return torch.load(path, weights_only=True, map_location=map_location)
+    checkpoint = (
+        weights_path
+        if isinstance(weights_path, ResolvedCheckpoint)
+        else resolve_mortal_checkpoint(weights_path, use_policy=False)
+    )
+    return torch.load(checkpoint.path, weights_only=True, map_location=map_location)
 
 
 def networks_from_checkpoint(
@@ -121,10 +129,10 @@ def networks_from_checkpoint(
 
 
 def load_engine(
-    weights_path: str,
+    weights_path: CheckpointInput,
     *,
     device: str | torch.device | None = None,
-    use_policy: bool = False,
+    use_policy: bool | None = None,
     enable_quick_eval: bool = False,
     enable_amp: bool | None = None,
     enable_rule_based_agari_guard: bool = True,
@@ -134,14 +142,19 @@ def load_engine(
 ) -> MortalEngine:
     # Single-position Mortal inference regresses above two intra-op CPU threads.
     torch.set_num_threads(min(torch.get_num_threads(), 2))
-    ckpt = load_checkpoint(weights_path, map_location="cpu")
+    checkpoint = (
+        weights_path
+        if isinstance(weights_path, ResolvedCheckpoint) and use_policy is None
+        else resolve_mortal_checkpoint(weights_path, use_policy=use_policy)
+    )
+    ckpt = load_checkpoint(checkpoint, map_location="cpu")
     default_device = "auto" if "policy" in ckpt else "cpu"
     device_t = resolve_device(default_device if device is None else device)
     brain, dqn, policy, aux_net, confidence, version = networks_from_checkpoint(ckpt)
     if enable_amp is None:
         enable_amp = device_t.type == "cuda"
 
-    return MortalEngine(
+    engine = MortalEngine(
         brain,
         dqn,
         is_oracle=False,
@@ -154,10 +167,12 @@ def load_engine(
         policy=policy,
         aux_net=aux_net,
         confidence=confidence,
-        use_policy=use_policy,
+        use_policy=checkpoint.use_policy,
         boltzmann_epsilon=boltzmann_epsilon,
         boltzmann_temp=boltzmann_temp,
     )
+    engine.checkpoint = checkpoint
+    return engine
 
 
 def review_player(
@@ -539,25 +554,6 @@ def aggregates(review: dict[str, Any]) -> dict[str, Any]:
         "worst": worst,
         "by_kind": by_kind,
     }
-
-
-def load_mjai_log(path: str) -> list[dict[str, Any]]:
-    path_obj = Path(path)
-    if path_obj.suffix == ".gz":
-        with gzip.open(path_obj, "rt", encoding="utf-8") as f:
-            text = f.read()
-    else:
-        text = path_obj.read_text(encoding="utf-8")
-
-    stripped = text.strip()
-    if not stripped:
-        return []
-    if stripped[0] == "[":
-        loaded = json.loads(stripped)
-        if not isinstance(loaded, list):
-            raise ValueError("expected a JSON array log")
-        return loaded
-    return [json.loads(line) for line in stripped.splitlines() if line.strip()]
 
 
 def _new_kyoku_review() -> dict[str, Any]:

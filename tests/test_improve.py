@@ -5,6 +5,7 @@ from pathlib import Path
 
 from jongbench.improve import ImproveConfig, improve_policy
 from jongbench.selfplay import DuelResult
+from jongbench.weights import ResolvedCheckpoint
 
 
 def _result(avg_pt: float, standard_error: float) -> DuelResult:
@@ -39,7 +40,7 @@ def test_improve_policy_promotes_only_candidate_above_bound(
     duel_calls = []
 
     def fake_train(config):
-        Path(config.out).write_bytes(Path(config.init).read_bytes() + b"+candidate")
+        Path(config.out).write_bytes(config.init.path.read_bytes() + b"+candidate")
         assert config.duplicate_challenger_only
         return {"updates": float(config.steps)}
 
@@ -71,6 +72,14 @@ def test_improve_policy_promotes_only_candidate_above_bound(
     assert "challenger_boltzmann_epsilon" not in duel_calls[1]
     assert (out / "champion.pth").read_bytes() == b"initial+candidate"
     persisted = json.loads((out / "league.json").read_text(encoding="utf-8"))
+    assert persisted["config"]["init"]["path"] == str(initial)
+    assert persisted["config"]["init"]["use_policy"] is True
+    assert persisted["config"]["control"]["path"] == str(control)
+    assert persisted["config"]["control"]["use_policy"] is False
+    assert persisted["initial"] == persisted["config"]["init"]
+    assert persisted["champion"]["path"] == str(out / "champion.pth")
+    assert persisted["rounds"][0]["source"]["path"] == str(initial)
+    assert persisted["rounds"][0]["candidate"]["path"].endswith("candidate.pth")
     assert persisted["final_evaluations"].keys() == {
         "initial_policy",
         "control_q",
@@ -94,10 +103,21 @@ def test_improve_policy_resolves_auto_control(tmp_path: Path, monkeypatch) -> No
 
     monkeypatch.setattr("jongbench.improve.train_policy_rl", fake_train)
     monkeypatch.setattr("jongbench.improve.duel", fake_duel)
-    monkeypatch.setattr(
-        "jongbench.improve.resolve_mortal_weights",
-        lambda value: control if value == "auto" else Path(value),
-    )
+    from jongbench import improve as improve_module
+
+    resolve = improve_module.resolve_mortal_checkpoint
+
+    def fake_resolve(value, *, use_policy=None):
+        if value == "auto":
+            return ResolvedCheckpoint(
+                path=control,
+                sha256="0" * 64,
+                source="https://example.test/control.pth",
+                use_policy=bool(use_policy),
+            )
+        return resolve(value, use_policy=use_policy)
+
+    monkeypatch.setattr(improve_module, "resolve_mortal_checkpoint", fake_resolve)
     out = tmp_path / "league"
     manifest = improve_policy(
         ImproveConfig(
@@ -114,3 +134,10 @@ def test_improve_policy_resolves_auto_control(tmp_path: Path, monkeypatch) -> No
 
     assert manifest["promotions"] == 0
     assert duel_calls[-1]["champion_weights"] == str(control)
+    assert manifest["config"]["control"] == {
+        "path": str(control),
+        "sha256": "0" * 64,
+        "source": "https://example.test/control.pth",
+        "use_policy": False,
+    }
+    assert manifest["config"]["control"] != "auto"

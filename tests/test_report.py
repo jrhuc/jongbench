@@ -48,7 +48,12 @@ def test_report_generation() -> None:
             encoding="utf-8",
         )
         _write_game(run, [7000, 3], NAMES, [42000, 30000, 18000, 10000])
-        _write_game(run, [7001, 3], ["modelB", "modelC", "modelD", "modelA"], [35000, 31000, 22000, 12000])
+        _write_game(
+            run,
+            [7001, 3],
+            ["modelB", "modelC", "modelD", "modelA"],
+            [35000, 31000, 22000, 12000],
+        )
         _write_decisions(run)
 
         summary = summarize(str(run))
@@ -63,7 +68,10 @@ def test_report_generation() -> None:
         assert "data-theme" in text
         assert "Mistakes only" in text
         assert len(summary_json["engines"]) == 4
-        assert all(isinstance(engine["mean_rating"], float) for engine in summary_json["engines"].values())
+        assert all(
+            isinstance(engine["mean_rating"], float)
+            for engine in summary_json["engines"].values()
+        )
         assert "{{" not in text
         assert report_path.stat().st_size < 2_500_000
         assert set(summary["engines"]) == set(NAMES)
@@ -77,16 +85,43 @@ def test_leaderboard_pools_a_batch_by_spec() -> None:
         batch = Path(tempdir)
         # The same four specs under different engine names in each episode: pooling has to
         # follow the spec, not the name.
-        _write_episode(batch, "hanchan-00000", [8000, 1], NAMES, specs, [42000, 30000, 18000, 10000], graded=True)
-        _write_episode(batch, "hanchan-00001", [8001, 1], ["a", "b", "c", "d"], specs, [12000, 22000, 31000, 35000], graded=True)
-        _write_episode(batch, "hanchan-00002", [8002, 1], ["w", "x", "y", "z"], specs, [40000, 30000, 20000, 10000], graded=False)
+        _write_episode(
+            batch,
+            "hanchan-00000",
+            [8000, 1],
+            NAMES,
+            specs,
+            [42000, 30000, 18000, 10000],
+            graded=True,
+        )
+        _write_episode(
+            batch,
+            "hanchan-00001",
+            [8001, 1],
+            ["a", "b", "c", "d"],
+            specs,
+            [12000, 22000, 31000, 35000],
+            graded=True,
+        )
+        _write_episode(
+            batch,
+            "hanchan-00002",
+            [8002, 1],
+            ["w", "x", "y", "z"],
+            specs,
+            [40000, 30000, 20000, 10000],
+            graded=False,
+        )
 
         board = leaderboard(str(batch))
         engines = board["engines"]
 
         assert board["episode_count"] == 3
         assert board["reviewed_count"] == 2
-        assert json.loads((batch / "leaderboard.json").read_text(encoding="utf-8")) == board
+        assert (
+            json.loads((batch / "leaderboard.json").read_text(encoding="utf-8"))
+            == board
+        )
         assert set(engines) == set(specs)
         assert all(engine["episodes"] == 3 for engine in engines.values())
         assert engines["specA"]["names"] == ["a", "modelA", "w"]
@@ -105,8 +140,24 @@ def test_leaderboard_pools_metered_cost_across_episodes() -> None:
     specs = ["specA", "specB", "specC", "specD"]
     with tempfile.TemporaryDirectory(prefix="jongbench-cost-") as tempdir:
         batch = Path(tempdir)
-        _write_episode(batch, "hanchan-00000", [8000, 1], NAMES, specs, [40000, 30000, 20000, 10000], graded=False)
-        _write_episode(batch, "hanchan-00001", [8001, 1], ["a", "b", "c", "d"], specs, [40000, 30000, 20000, 10000], graded=False)
+        _write_episode(
+            batch,
+            "hanchan-00000",
+            [8000, 1],
+            NAMES,
+            specs,
+            [40000, 30000, 20000, 10000],
+            graded=False,
+        )
+        _write_episode(
+            batch,
+            "hanchan-00001",
+            [8001, 1],
+            ["a", "b", "c", "d"],
+            specs,
+            [40000, 30000, 20000, 10000],
+            graded=False,
+        )
         # specA is metered under a different engine name in each episode; specB is a
         # local seat that never reports a cost.
         _write_decision_log(batch / "hanchan-00000", "modelA", [0.01, 0.002])
@@ -148,7 +199,9 @@ def _write_episode(
     (run / "decisions").mkdir()
     placements = {
         name: index + 1
-        for index, name in enumerate(name for _, name in sorted(zip(scores, names), reverse=True))
+        for index, name in enumerate(
+            name for _, name in sorted(zip(scores, names), reverse=True)
+        )
     }
     (run / "config.json").write_text(
         json.dumps(
@@ -169,8 +222,15 @@ def _write_episode(
         _write_game(run, seed, names, scores)
 
 
-def _write_game(run: Path, seed: list[int], names: list[str], scores: list[int]) -> None:
-    placements = {name: index + 1 for index, name in enumerate(name for _, name in sorted(zip(scores, names), reverse=True))}
+def _write_game(
+    run: Path, seed: list[int], names: list[str], scores: list[int]
+) -> None:
+    placements = {
+        name: index + 1
+        for index, name in enumerate(
+            name for _, name in sorted(zip(scores, names), reverse=True)
+        )
+    }
     players = {}
     for seat, name in enumerate(names):
         rating = 0.58 + seat * 0.04 + (0.04 if name == "modelA" else 0.0)
@@ -204,8 +264,16 @@ def _review(seat: int, rating: float) -> dict[str, Any]:
             actual={"type": "dahai", "actor": seat, "pai": "5m", "tsumogiri": True},
             expected={"type": "dahai", "actor": seat, "pai": "5m", "tsumogiri": True},
             alternatives=[
-                ({"type": "dahai", "actor": seat, "pai": "5m", "tsumogiri": True}, 1.4, 0.62),
-                ({"type": "dahai", "actor": seat, "pai": "8p", "tsumogiri": False}, 0.8, 0.38),
+                (
+                    {"type": "dahai", "actor": seat, "pai": "5m", "tsumogiri": True},
+                    1.4,
+                    0.62,
+                ),
+                (
+                    {"type": "dahai", "actor": seat, "pai": "8p", "tsumogiri": False},
+                    0.8,
+                    0.38,
+                ),
             ],
             actual_index=0,
             is_equal=True,
@@ -217,8 +285,16 @@ def _review(seat: int, rating: float) -> dict[str, Any]:
             actual={"type": "dahai", "actor": seat, "pai": "2m", "tsumogiri": False},
             expected={"type": "dahai", "actor": seat, "pai": "3p", "tsumogiri": True},
             alternatives=[
-                ({"type": "dahai", "actor": seat, "pai": "3p", "tsumogiri": True}, 2.1, 0.72),
-                ({"type": "dahai", "actor": seat, "pai": "2m", "tsumogiri": False}, 0.4, 0.18),
+                (
+                    {"type": "dahai", "actor": seat, "pai": "3p", "tsumogiri": True},
+                    2.1,
+                    0.72,
+                ),
+                (
+                    {"type": "dahai", "actor": seat, "pai": "2m", "tsumogiri": False},
+                    0.4,
+                    0.18,
+                ),
                 ({"type": "none"}, 0.1, 0.10),
             ],
             actual_index=1,
@@ -228,11 +304,31 @@ def _review(seat: int, rating: float) -> dict[str, Any]:
             kyoku=5,
             junme=11,
             tile="5mr",
-            actual={"type": "ankan", "actor": seat, "consumed": ["5m", "5m", "5m", "5mr"]},
-            expected={"type": "ankan", "actor": seat, "consumed": ["5m", "5m", "5m", "5mr"]},
+            actual={
+                "type": "ankan",
+                "actor": seat,
+                "consumed": ["5m", "5m", "5m", "5mr"],
+            },
+            expected={
+                "type": "ankan",
+                "actor": seat,
+                "consumed": ["5m", "5m", "5m", "5mr"],
+            },
             alternatives=[
-                ({"type": "ankan", "actor": seat, "consumed": ["5m", "5m", "5m", "5mr"]}, 1.2, 0.55),
-                ({"type": "dahai", "actor": seat, "pai": "9s", "tsumogiri": False}, 0.7, 0.45),
+                (
+                    {
+                        "type": "ankan",
+                        "actor": seat,
+                        "consumed": ["5m", "5m", "5m", "5mr"],
+                    },
+                    1.2,
+                    0.55,
+                ),
+                (
+                    {"type": "dahai", "actor": seat, "pai": "9s", "tsumogiri": False},
+                    0.7,
+                    0.45,
+                ),
             ],
             actual_index=0,
             is_equal=True,
@@ -301,7 +397,9 @@ def _aggregates(review: dict[str, Any]) -> dict[str, Any]:
             "expected": entry["expected"],
             "loss": loss,
         }
-        for entry, loss in sorted(zip(entries, losses, strict=True), key=lambda item: item[1], reverse=True)[:10]
+        for entry, loss in sorted(
+            zip(entries, losses, strict=True), key=lambda item: item[1], reverse=True
+        )[:10]
     ]
     return {
         "match_rate": review["total_matches"] / review["total_reviewed"],
@@ -324,8 +422,16 @@ def _kind(event: dict[str, Any]) -> str:
 
 def _write_decisions(run: Path) -> None:
     records = [
-        {"usage": {"input_tokens": 120, "output_tokens": 30}, "fallback": False, "latency_ms": 950},
-        {"usage": {"input_tokens": 100, "output_tokens": 25}, "fallback": True, "latency_ms": 1250},
+        {
+            "usage": {"input_tokens": 120, "output_tokens": 30},
+            "fallback": False,
+            "latency_ms": 950,
+        },
+        {
+            "usage": {"input_tokens": 100, "output_tokens": 25},
+            "fallback": True,
+            "latency_ms": 1250,
+        },
     ]
     (run / "decisions" / "modelA.jsonl").write_text(
         "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records),

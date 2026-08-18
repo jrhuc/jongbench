@@ -3,18 +3,33 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import re
 import sys
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import arena, providers, report
+from . import arena, console, providers, report
 from .arena import GameSummary
-from .artifacts import decision_filename
+from .artifacts import decision_filename, file_sha256, load_mjai_log
 from .engines import RandomEngine, TerminalHumanIO, make_engine
+from .run_artifacts import (
+    build_replay_bundle,
+    create_run_dir,
+    engine_names,
+    log_sort_key,
+    reconstruct_summary,
+    record_gameplay_checkpoints,
+    record_reviewer_checkpoint,
+    review_log,
+    reviews_missing,
+    run_log_paths,
+    seed_from_events_or_path,
+    seed_label,
+    summary_by_seed,
+    write_review,
+    write_run_config,
+)
 from .spectator import Spectator, TerminalRenderer
 from .weights import AUTO_MORTAL_WEIGHTS
 
@@ -31,33 +46,6 @@ def _mortal_evaluate():
     return evaluate
 
 
-def _new_run_dir(runs_root: str | Path, label: str) -> Path:
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", label.strip()).strip("-._")
-    safe = safe or "run"
-    root = Path(runs_root)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    candidate = root / f"{stamp}-{safe}"
-    if not candidate.exists():
-        return candidate
-    suffix = 2
-    while True:
-        candidate = root / f"{stamp}-{safe}-{suffix}"
-        if not candidate.exists():
-            return candidate
-        suffix += 1
-
-
-def _engine_names(specs: Sequence[str]) -> list[str]:
-    counts: dict[str, int] = {}
-    names = []
-    for spec in specs:
-        parsed = providers.parse_spec(spec)
-        base = parsed.display_name
-        counts[base] = counts.get(base, 0) + 1
-        names.append(base if counts[base] == 1 else f"{base}#{counts[base]}")
-    return names
-
-
 def _decision_sink(path: str | Path) -> Callable[[dict[str, Any]], None]:
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -65,37 +53,10 @@ def _decision_sink(path: str | Path) -> Callable[[dict[str, Any]], None]:
 
     def sink(record: dict[str, Any]) -> None:
         line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
-        with lock:
-            with output.open("a", encoding="utf-8") as handle:
-                handle.write(line + "\n")
+        with lock, output.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
 
     return sink
-
-
-def _write_config(
-    run_dir: str | Path,
-    label: str,
-    specs: Sequence[str],
-    names: Sequence[str],
-    games: int,
-    seed_start: tuple[int, int],
-    state_hints: bool,
-) -> None:
-    run = Path(run_dir)
-    run.mkdir(parents=True, exist_ok=True)
-    data = {
-        "label": label,
-        "created": datetime.now(timezone.utc).isoformat(),
-        "models": list(specs),
-        "names": list(names),
-        "games": int(games),
-        "seed_start": [int(seed_start[0]), int(seed_start[1])],
-        "state_hints": bool(state_hints),
-    }
-    (run / "config.json").write_text(
-        json.dumps(data, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
 
 
 def _evaluate_run(
@@ -109,49 +70,37 @@ def _evaluate_run(
 ) -> None:
     evaluate = _mortal_evaluate()
     run = Path(run_dir)
-    log_paths = sorted((run / "logs").glob("*.json.gz"), key=_log_sort_key)
+    log_paths = run_log_paths(run)
     if not log_paths:
         raise ValueError(f"no logs found in {run / 'logs'}")
 
-    summary_by_seed = _summary_by_seed(summaries)
-    mortal = evaluate.load_engine(str(weights))
-    review_dir = run / "review"
-    review_dir.mkdir(parents=True, exist_ok=True)
+    summaries_by_seed = summary_by_seed(summaries)
+    mortal = evaluate.load_engine(str(weights), use_policy=False)
+    checkpoint = getattr(mortal, "checkpoint", None)
+    if checkpoint is not None:
+        record_reviewer_checkpoint(run, checkpoint)
 
     for log_path in log_paths:
-        events = evaluate.load_mjai_log(str(log_path))
-        seed = _seed_from_events_or_path(events, log_path)
-        game_summary = summary_by_seed.get(seed) or _reconstruct_summary(
+        events = load_mjai_log(log_path)
+        seed = seed_from_events_or_path(events, log_path)
+        game_summary = summaries_by_seed.get(seed) or reconstruct_summary(
             events, log_path
         )
-        reviews = evaluate.review_game(events, mortal, temperature=temperature)
-        players: dict[str, dict[str, Any]] = {}
-
-        for player_id in range(4):
-            player_review = reviews[player_id]
-            players[str(player_id)] = {
-                "name": game_summary.names[player_id],
-                "review": player_review,
-                "aggregates": evaluate.aggregates(player_review),
-            }
-            if progress:
+        payload = review_log(
+            log_path,
+            game_summary,
+            mortal,
+            temperature=temperature,
+        )
+        if progress:
+            for player_id in range(4):
+                player_review = payload["players"][str(player_id)]["review"]
                 rating = float(player_review.get("rating") or 0.0) * 100.0
                 print(
-                    f"review {_seed_label(seed)} P{player_id} "
+                    f"review {seed_label(seed)} P{player_id} "
                     f"{game_summary.names[player_id]} rating {rating:.2f}"
                 )
-
-        payload = {
-            "seed": [seed[0], seed[1]],
-            "names": list(game_summary.names),
-            "scores": list(game_summary.scores),
-            "placements": dict(game_summary.placements),
-            "players": players,
-        }
-        (review_dir / f"{_seed_label(seed)}.json").write_text(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-            encoding="utf-8",
-        )
+        write_review(run, payload)
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
@@ -159,17 +108,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if any(_is_human_spec(spec) for spec in specs):
         raise ValueError("run does not support human seats")
 
-    run_dir = _new_run_dir(args.runs_root, args.label)
-    _prepare_run_dir(run_dir)
-    names = _engine_names(specs)
-    _write_config(
+    run_dir = create_run_dir(args.runs_root, args.label)
+    names = engine_names(specs)
+    write_run_config(
         run_dir,
-        args.label,
-        specs,
-        names,
-        int(args.games),
-        (int(args.seed), 1),
-        bool(args.state_hints),
+        label=args.label,
+        models=specs,
+        names=names,
+        games=int(args.games),
+        seed_start=(int(args.seed), 1),
+        state_hints=bool(args.state_hints),
     )
 
     engines = [
@@ -187,6 +135,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
         for name, spec in zip(names, specs, strict=True)
     ]
+    record_gameplay_checkpoints(run_dir, engines)
     summaries = arena.run_games(
         engines,
         int(args.games),
@@ -202,7 +151,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     _evaluate_run(run_dir, args.weights, summaries=summaries)
     summary = report.summarize(str(run_dir))
     report_path = report.write_report(str(run_dir), summary)
-    _print_summary(summary)
+    console.print_summary(summary)
     print(f"report: {report_path}")
     return 0
 
@@ -233,17 +182,18 @@ def _cmd_watch(args: argparse.Namespace) -> int:
         raise ValueError("watch supports at most one human seat")
     human_seat = human_seats[0] if human_seats else 0
 
-    run_dir = _new_run_dir(args.runs_root, args.label)
-    _prepare_run_dir(run_dir)
-    names = _engine_names(specs)
-    _write_config(
+    run_dir = create_run_dir(args.runs_root, args.label)
+    names = engine_names(specs)
+    write_run_config(
         run_dir,
-        args.label,
-        specs,
-        names,
-        1,
-        (int(args.seed), 1),
-        bool(args.state_hints),
+        label=args.label,
+        models=specs,
+        names=names,
+        games=1,
+        seed_start=(int(args.seed), 1),
+        state_hints=bool(args.state_hints),
+        human_seat=human_seat,
+        no_eval=bool(args.no_eval),
     )
 
     renderer = TerminalRenderer(
@@ -267,6 +217,7 @@ def _cmd_watch(args: argparse.Namespace) -> int:
             )
         engines.append(make_engine(name, spec, **kwargs))
 
+    record_gameplay_checkpoints(run_dir, engines)
     summaries = arena.run_games(
         engines,
         1,
@@ -285,8 +236,8 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     _evaluate_run(run_dir, args.weights, summaries=summaries)
     summary = report.summarize(str(run_dir))
     report_path = report.write_report(str(run_dir), summary)
-    _print_summary(summary)
-    _print_seat_ratings(run_dir)
+    console.print_summary(summary)
+    console.print_seat_ratings(run_dir)
     print(f"report: {report_path}")
     return 0
 
@@ -315,11 +266,11 @@ def _cmd_review(args: argparse.Namespace) -> int:
     if args.force:
         for path in (run_dir / "review").glob("*.json"):
             path.unlink()
-    if args.force or _reviews_missing(run_dir):
+    if args.force or reviews_missing(run_dir):
         _evaluate_run(run_dir, args.weights)
     summary = report.summarize(str(run_dir))
     report_path = report.write_report(str(run_dir), summary)
-    _print_summary(summary)
+    console.print_summary(summary)
     print(f"report: {report_path}")
     return 0
 
@@ -337,12 +288,12 @@ def _cmd_leaderboard(args: argparse.Namespace) -> int:
 
     if args.review:
         for run in runs:
-            if _reviews_missing(run):
+            if reviews_missing(run):
                 print(f"reviewing {run.name}")
                 _evaluate_run(run, args.weights, progress=False)
 
     board = report.leaderboard(str(batch_dir))
-    _print_leaderboard(board)
+    console.print_leaderboard(board)
     print(f"leaderboard: {batch_dir / 'leaderboard.json'}")
     return 0
 
@@ -351,7 +302,7 @@ def _cmd_reasoning(args: argparse.Namespace) -> int:
     from jongbench import reasoning as reasoning_module
 
     run_dir = Path(args.run_dir)
-    review_paths = sorted((run_dir / "review").glob("*.json"), key=_log_sort_key)
+    review_paths = sorted((run_dir / "review").glob("*.json"), key=log_sort_key)
     if not review_paths:
         print(f"no reviews in {run_dir / 'review'}; run `jongbench review` first")
         return 1
@@ -413,20 +364,31 @@ def _cmd_reasoning(args: argparse.Namespace) -> int:
 
 def _cmd_positions(args: argparse.Namespace) -> int:
     import gzip
+    import io
     import tempfile
 
     from jongbench import evaluate as evaluate_module
     from jongbench import positions as positions_module
 
-    engine = evaluate_module.load_engine(args.weights)
+    engine = evaluate_module.load_engine(args.weights, use_policy=False)
+    checkpoint = engine.checkpoint
 
-    logs: list[list[dict]] = []
-    for path in args.from_log:
-        opener = gzip.open if str(path).endswith(".gz") else open
-        with opener(path, "rt") as handle:
-            logs.append([json.loads(line) for line in handle if line.strip()])
+    logs: list[list[dict[str, Any]]] = []
+    artifacts: list[positions_module.SourceArtifact] = []
+    for value in args.from_log:
+        path = Path(value)
+        logs.append(load_mjai_log(path))
+        artifacts.append({"name": str(path), "sha256": file_sha256(path)})
 
-    if not logs:
+    if logs:
+        source: positions_module.SourceProvenance = {
+            "kind": "mjai_logs",
+            "description": "User-provided completed MJAI logs",
+            "games": len(logs),
+            "artifacts": artifacts,
+        }
+        source_label = "logs"
+    else:
         with tempfile.TemporaryDirectory() as tempdir:
             if args.source == "mortal":
                 seats = [
@@ -441,24 +403,55 @@ def _cmd_positions(args: argparse.Namespace) -> int:
                 seats, args.games, seed_start=(args.seed, 1), log_dir=tempdir
             )
             for path in sorted(Path(tempdir).glob("*.json.gz")):
-                with gzip.open(path, "rt") as handle:
-                    logs.append([json.loads(line) for line in handle if line.strip()])
+                logs.append(load_mjai_log(path))
+                artifacts.append({"name": path.name, "sha256": file_sha256(path)})
+        source = {
+            "kind": f"{args.source}_self_play",
+            "description": f"Games generated by four {args.source} seats",
+            "seed": int(args.seed),
+            "games": len(logs),
+            "artifacts": artifacts,
+        }
+        source_label = args.source
+
+    extracted = [
+        position
+        for events in logs
+        for position in positions_module.extract_positions(
+            events,
+            engine,
+            temperature=float(args.temperature),
+        )
+    ]
+    rows = [position.to_task_dict() for position in extracted]
+    manifest = positions_module.bank_manifest(
+        reviewer_checkpoint=checkpoint.source,
+        reviewer_checkpoint_sha256=checkpoint.sha256,
+        reviewer_temperature=float(args.temperature),
+        source=source,
+    )
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    extracted: list[Any] = []
-    with out.open("w") as handle:
-        for events in logs:
-            for position in positions_module.extract_positions(events, engine):
-                handle.write(
-                    json.dumps(position.to_task_dict(), separators=(",", ":")) + "\n"
-                )
-                extracted.append(position)
+    temporary = out.with_name(f".{out.name}.tmp")
+    try:
+        if out.suffix == ".gz":
+            with (
+                temporary.open("wb") as raw,
+                gzip.GzipFile(
+                    filename="", mode="wb", fileobj=raw, mtime=0
+                ) as compressed,
+                io.TextIOWrapper(compressed, encoding="utf-8") as handle,
+            ):
+                count = positions_module.dump_bank(handle, manifest, rows)
+        else:
+            with temporary.open("w", encoding="utf-8") as handle:
+                count = positions_module.dump_bank(handle, manifest, rows)
+        temporary.replace(out)
+    finally:
+        temporary.unlink(missing_ok=True)
 
-    source = "logs" if args.from_log else args.source
-    print(
-        f"wrote {len(extracted)} positions from {len(logs)} game(s) ({source}) to {out}"
-    )
+    print(f"wrote {count} positions from {len(logs)} game(s) ({source_label}) to {out}")
     for line in _bank_baselines(extracted):
         print(line)
     return 0
@@ -483,15 +476,23 @@ def _bank_baselines(extracted: Sequence[Any]) -> list[str]:
 
 
 def _cmd_selfcheck(args: argparse.Namespace) -> int:
-    run_dir = _new_run_dir(args.runs_root, "selfcheck")
-    _prepare_run_dir(run_dir)
+    run_dir = create_run_dir(args.runs_root, "selfcheck")
     specs = ["random", "random", "random", "random"]
-    names = _engine_names(specs)
-    _write_config(run_dir, "selfcheck", specs, names, 1, (777, 1), False)
+    names = engine_names(specs)
+    write_run_config(
+        run_dir,
+        label="selfcheck",
+        models=specs,
+        names=names,
+        games=1,
+        seed_start=(777, 1),
+        state_hints=False,
+    )
     engines = [
         RandomEngine(name, seed=seed)
         for name, seed in zip(names, [1, 2, 3, 4], strict=True)
     ]
+    record_gameplay_checkpoints(run_dir, engines)
     summaries = arena.run_games(
         engines,
         1,
@@ -502,7 +503,7 @@ def _cmd_selfcheck(args: argparse.Namespace) -> int:
     _evaluate_run(run_dir, args.weights, summaries=summaries)
     summary = report.summarize(str(run_dir))
     report_path = report.write_report(str(run_dir), summary)
-    _print_summary(summary)
+    console.print_summary(summary)
     print(f"report: {report_path}")
     print("SELFCHECK OK")
     return 0
@@ -723,6 +724,7 @@ def _build_parser() -> argparse.ArgumentParser:
     positions_cmd.add_argument("--games", type=int, default=1)
     positions_cmd.add_argument("--seed", type=int, default=20260101)
     positions_cmd.add_argument("--weights", default=AUTO_MORTAL_WEIGHTS)
+    positions_cmd.add_argument("--temperature", type=_nonnegative_float, default=0.1)
     positions_cmd.add_argument(
         "--from-log",
         action="append",
@@ -867,293 +869,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
 
-def _prepare_run_dir(run_dir: Path) -> None:
-    for name in ("logs", "decisions", "review"):
-        (run_dir / name).mkdir(parents=True, exist_ok=True)
-
-
 def _is_human_spec(spec: str) -> bool:
     return providers.parse_spec(spec).provider == "human"
-
-
-def _summary_by_seed(
-    summaries: Sequence[GameSummary] | Mapping[tuple[int, int], GameSummary] | None,
-) -> dict[tuple[int, int], GameSummary]:
-    if summaries is None:
-        return {}
-    if isinstance(summaries, Mapping):
-        return {tuple(key): value for key, value in summaries.items()}
-    return {tuple(summary.seed): summary for summary in summaries}
-
-
-def _reconstruct_summary(events: list[dict[str, Any]], path: Path) -> GameSummary:
-    seed = _seed_from_events_or_path(events, path)
-    start_game = next(
-        (event for event in events if event.get("type") == "start_game"), {}
-    )
-    names = [str(name) for name in start_game.get("names") or []]
-    if len(names) != 4:
-        names = [f"P{seat}" for seat in range(4)]
-
-    last_scores = [25000, 25000, 25000, 25000]
-    last_start_index = -1
-    for index, event in enumerate(events):
-        if event.get("type") != "start_kyoku":
-            continue
-        scores = event.get("scores")
-        if isinstance(scores, list) and len(scores) == 4:
-            last_scores = [int(score) for score in scores]
-            last_start_index = index
-
-    scores = list(last_scores)
-    for event in events[last_start_index + 1 :]:
-        event_type = event.get("type")
-        if event_type == "reach_accepted":
-            actor = event.get("actor")
-            if isinstance(actor, int) and 0 <= actor < 4:
-                scores[actor] -= 1000
-            continue
-        if event_type not in {"hora", "ryukyoku"}:
-            continue
-        deltas = event.get("deltas")
-        if isinstance(deltas, list) and len(deltas) == 4:
-            scores = [
-                score + int(delta) for score, delta in zip(scores, deltas, strict=True)
-            ]
-
-    if any(event.get("type") == "end_game" for event in events):
-        outstanding_kyotaku = 100000 - sum(scores)
-        if outstanding_kyotaku > 0:
-            leader = min(range(4), key=lambda seat: (-scores[seat], seat))
-            scores[leader] += outstanding_kyotaku
-
-    return GameSummary(
-        seed=seed, names=names, scores=scores, placements=_placements(names, scores)
-    )
-
-
-def _placements(names: Sequence[str], scores: Sequence[int]) -> dict[str, int]:
-    order = sorted(range(4), key=lambda seat: (-int(scores[seat]), seat))
-    return {str(names[seat]): rank + 1 for rank, seat in enumerate(order)}
-
-
-def _reviews_missing(run_dir: Path) -> bool:
-    logs = sorted((run_dir / "logs").glob("*.json.gz"), key=_log_sort_key)
-    if not logs:
-        raise ValueError(f"no logs found in {run_dir / 'logs'}")
-    for log_path in logs:
-        seed = _seed_from_path(log_path)
-        if not (run_dir / "review" / f"{_seed_label(seed)}.json").exists():
-            return True
-    return False
-
-
-def _seed_from_events_or_path(
-    events: list[dict[str, Any]],
-    path: Path,
-) -> tuple[int, int]:
-    for event in events:
-        if event.get("type") != "start_game":
-            continue
-        seed = event.get("seed")
-        if isinstance(seed, list | tuple) and len(seed) >= 2:
-            return int(seed[0]), int(seed[1])
-    return _seed_from_path(path)
-
-
-def _seed_from_path(path: Path) -> tuple[int, int]:
-    name = path.name
-    if name.endswith(".json.gz"):
-        stem = name[:-8]
-    elif name.endswith(".json"):
-        stem = name[:-5]
-    else:
-        stem = path.stem
-    parts = stem.split("_")
-    if len(parts) >= 2:
-        return int(parts[0]), int(parts[1])
-    raise ValueError(f"cannot parse seed from {path.name}")
-
-
-def _seed_label(seed: tuple[int, int]) -> str:
-    return f"{int(seed[0])}_{int(seed[1])}"
-
-
-def _log_sort_key(path: Path) -> tuple[int, int, str]:
-    try:
-        seed = _seed_from_path(path)
-    except ValueError:
-        return 0, 0, path.name
-    return seed[0], seed[1], path.name
-
-
-def _select_log(run_dir: Path, game: str | None) -> Path:
-    logs = sorted((run_dir / "logs").glob("*.json.gz"), key=_log_sort_key)
-    if not logs:
-        raise ValueError(f"no logs found in {run_dir / 'logs'}")
-    if game is None:
-        return logs[0]
-    target = game[:-8] if game.endswith(".json.gz") else game
-    target = target[:-5] if target.endswith(".json") else target
-    for path in logs:
-        if _seed_label(_seed_from_path(path)) == target:
-            return path
-    raise ValueError(f"game not found: {game}")
-
-
-def build_replay_bundle(run_dir: Path, game: str | None = None) -> dict[str, Any]:
-    """One game as the web replay viewer wants it: every mjai event paired with the
-    table snapshot after it, plus standings and the Mortal review when present."""
-    from .spectator import TableState
-
-    evaluate = _mortal_evaluate()
-
-    log_path = _select_log(run_dir, game)
-    events = evaluate.load_mjai_log(str(log_path))
-    seed = _seed_from_events_or_path(events, log_path)
-    review_path = run_dir / "review" / f"{_seed_label(seed)}.json"
-    review_data = _read_json(review_path) if review_path.exists() else None
-
-    table = TableState()
-    frames = []
-    for seq, event in enumerate(events, start=1):
-        table.apply(event)
-        frames.append({"seq": seq, "event": event, "snapshot": table.snapshot()})
-
-    if isinstance(review_data, dict):
-        names = [str(name) for name in review_data.get("names") or []]
-        scores = [int(score) for score in review_data.get("scores") or []]
-        placements = dict(review_data.get("placements") or {})
-    else:
-        summary = _reconstruct_summary(events, log_path)
-        names, scores, placements = summary.names, summary.scores, summary.placements
-
-    bundle: dict[str, Any] = {
-        "game": _seed_label(seed),
-        "seed": [seed[0], seed[1]],
-        "names": names,
-        "scores": scores,
-        "placements": placements,
-        "frames": frames,
-    }
-    if isinstance(review_data, dict):
-        bundle["review"] = review_data
-    return bundle
-
-
-def _print_summary(summary: dict[str, Any]) -> None:
-    engines = list(summary.get("leaderboard") or [])
-    headers = [
-        "engine",
-        "games",
-        "place",
-        "score",
-        "rating",
-        "match",
-        "fallbacks",
-        "cost",
-    ]
-    rows = []
-    for engine in engines:
-        fallback_rate = engine.get("fallback_rate")
-        if fallback_rate is None:
-            fallbacks = "n/a"
-        else:
-            fallbacks = f"{float(fallback_rate) * 100:.1f}% ({int(engine.get('fallback_count') or 0)})"
-        rows.append(
-            [
-                str(engine.get("name") or ""),
-                str(int(engine.get("games") or 0)),
-                f"{float(engine.get('avg_placement') or 0.0):.2f}",
-                f"{float(engine.get('avg_score') or 0.0):.0f}",
-                f"{float(engine.get('mean_rating') or 0.0) * 100:.2f}",
-                f"{float(engine.get('match_rate') or 0.0) * 100:.1f}%",
-                fallbacks,
-                _cost(engine.get("cost")),
-            ]
-        )
-
-    _print_table(headers, rows)
-
-
-def _print_table(headers: list[str], rows: list[list[str]]) -> None:
-    widths = [
-        max(len(headers[index]), *(len(row[index]) for row in rows))
-        if rows
-        else len(headers[index])
-        for index in range(len(headers))
-    ]
-    print(
-        "  ".join(header.ljust(widths[index]) for index, header in enumerate(headers))
-    )
-    for row in rows:
-        print("  ".join(cell.ljust(widths[index]) for index, cell in enumerate(row)))
-
-
-def _print_leaderboard(board: dict[str, Any]) -> None:
-    print(
-        f"{board['episode_count']} episode(s), {board['reviewed_count']} reviewed"
-        f" -> {board['batch_dir']}"
-    )
-    headers = [
-        "#",
-        "spec",
-        "eps",
-        "place",
-        "1/2/3/4",
-        "score",
-        "rating",
-        "match",
-        "fallbacks",
-        "cost",
-    ]
-    rows = []
-    for engine in board.get("leaderboard") or []:
-        fallback_rate = engine.get("fallback_rate")
-        fallbacks = (
-            "n/a"
-            if fallback_rate is None
-            else f"{float(fallback_rate) * 100:.1f}% ({int(engine.get('fallback_count') or 0)})"
-        )
-        reviewed = int(engine.get("total_reviewed") or 0)
-        rows.append(
-            [
-                str(engine.get("rank") or ""),
-                str(engine.get("spec") or ""),
-                str(int(engine.get("episodes") or 0)),
-                f"{float(engine.get('avg_placement') or 0.0):.2f}",
-                "/".join(str(count) for count in engine.get("placement_counts") or []),
-                f"{float(engine.get('avg_score') or 0.0):.0f}",
-                f"{float(engine.get('mean_rating') or 0.0) * 100:.2f}"
-                if reviewed
-                else "n/a",
-                f"{float(engine.get('match_rate') or 0.0) * 100:.1f}%"
-                if reviewed
-                else "n/a",
-                fallbacks,
-                _cost(engine.get("cost")),
-            ]
-        )
-    _print_table(headers, rows)
-
-
-def _cost(value: Any) -> str:
-    # Only metering providers report a cost; a local or unmetered seat has none.
-    return "n/a" if value is None else f"${float(value):.4f}"
-
-
-def _print_seat_ratings(run_dir: Path) -> None:
-    paths = sorted((run_dir / "review").glob("*.json"), key=_log_sort_key)
-    if not paths:
-        return
-    data = _read_json(paths[0])
-    players = data.get("players") or {}
-    print("seat ratings")
-    for seat in range(4):
-        player = players.get(str(seat)) or players.get(seat) or {}
-        review_data = player.get("review") or {}
-        rating = float(review_data.get("rating") or 0.0) * 100.0
-        print(f"P{seat} {str(player.get('name') or f'P{seat}'):<24} {rating:6.2f}")
 
 
 def _read_json(path: Path) -> Any:

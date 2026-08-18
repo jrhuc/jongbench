@@ -1,6 +1,17 @@
+include build_backend.py
+include build-constraints.txt
+include build-requirements.in
+include jongbench/webui_page.html
 include libriichi/Cargo.lock
 include libriichi/Cargo.toml
 include libriichi/build.rs
 recursive-include libriichi/benches *.rs
 recursive-include libriichi/src *
+include webui/build.ts
+include webui/bun.lock
+include webui/package.json
+recursive-include webui/src *
+include assets/dela.woff2
+include assets/dseg7.woff2
+include assets/pai.svg
 global-exclude .DS_Store

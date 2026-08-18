@@ -52,8 +52,22 @@ async function build(): Promise<void> {
 </body>
 </html>
 `;
+  if (process.argv.includes("--check")) {
+    const output = Bun.file(OUT_PATH);
+    if (!(await output.exists()) || (await output.text()) !== html) {
+      throw new Error(
+        "jongbench/webui_page.html is missing or stale; run `bun run build` and commit it",
+      );
+    }
+    console.log(`verified ${OUT_PATH} (${(html.length / 1024).toFixed(0)} KiB)`);
+    return;
+  }
   await Bun.write(OUT_PATH, html);
   console.log(`built ${OUT_PATH} (${(html.length / 1024).toFixed(0)} KiB)`);
+}
+
+if (process.argv.includes("--check") && process.argv.includes("--watch")) {
+  throw new Error("--check and --watch cannot be used together");
 }
 
 await build();

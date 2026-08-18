@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from jongbench import arena, evaluate, webui  # noqa: E402
+from jongbench import arena, evaluate, providers, webui  # noqa: E402
 from jongbench.engines import GameAborted  # noqa: E402
 
 
@@ -125,6 +125,7 @@ def test_evaluation_stops_during_batched_review_after_abort() -> None:
         (run_dir / "logs" / "game.json").write_text("{}\n", encoding="utf-8")
         cancel = threading.Event()
         calls = 0
+        load_calls = []
         originals = (
             evaluate.load_mjai_log,
             evaluate.load_engine,
@@ -138,8 +139,12 @@ def test_evaluation_stops_during_batched_review_after_abort() -> None:
             cancel.set()
             check_cancelled()
 
+        def load_engine(weights, *, use_policy):
+            load_calls.append((weights, use_policy))
+            return object()
+
         evaluate.load_mjai_log = lambda path: []
-        evaluate.load_engine = lambda weights: object()
+        evaluate.load_engine = load_engine
         evaluate.review_game = review_game
         try:
             try:
@@ -165,6 +170,7 @@ def test_evaluation_stops_during_batched_review_after_abort() -> None:
                 evaluate.review_game,
             ) = originals
         assert calls == 1
+        assert load_calls == [("unused", False)]
 
     successful = _session()
     successful.set_status("running")
@@ -211,15 +217,14 @@ def test_pending_option_metadata() -> None:
 
 
 def test_engine_names_carry_spec_reasoning_and_dedupe() -> None:
-    from jongbench.providers import parse_spec
-
-    parsed = [
-        parse_spec("openai/gpt-5.2#high"),
-        parse_spec("openai/gpt-5.2"),
-        parse_spec("openai/gpt-5.2"),
-        parse_spec("human"),
-    ]
-    assert webui._engine_names(parsed) == [
+    assert webui.engine_names(
+        [
+            "openai/gpt-5.2#high",
+            "openai/gpt-5.2",
+            "openai/gpt-5.2",
+            "human",
+        ]
+    ) == [
         "gpt-5.2-high",
         "gpt-5.2",
         "gpt-5.2-2",
@@ -515,3 +520,28 @@ if __name__ == "__main__":
     test_pending_option_metadata()
     test_error_diagnostic_file()
     test_watch_server_workflow()
+
+
+def test_web_mortal_engine_receives_custom_gameplay_weights(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = []
+
+    def make_engine(name, spec, **kwargs):
+        calls.append((name, spec, kwargs))
+        return object()
+
+    monkeypatch.setattr(webui, "make_engine", make_engine)
+    webui._make_engine(
+        name="seat0:mortal",
+        spec_str="mortal",
+        spec=providers.parse_spec("mortal"),
+        seat=0,
+        seed=(1, 1),
+        spectator=object(),
+        human_io=webui.WebHumanIO(),
+        decisions_dir=tmp_path,
+        state_hints=False,
+        weights="/cache/custom.pth",
+    )
+    assert calls[0][2]["weights"] == "/cache/custom.pth"

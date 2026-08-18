@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.request import Request, urlopen
+
+from .artifacts import file_sha256
 
 AUTO_MORTAL_WEIGHTS = "auto"
 MORTAL_WEIGHTS_URL = (
@@ -17,6 +20,28 @@ MORTAL_WEIGHTS_FILENAME = f"mortal-298k-{MORTAL_WEIGHTS_SHA256[:12]}.pth"
 WEIGHTS_URL_ENV = "JONGBENCH_WEIGHTS_URL"
 WEIGHTS_SHA256_ENV = "JONGBENCH_WEIGHTS_SHA256"
 WEIGHTS_USE_POLICY_ENV = "JONGBENCH_WEIGHTS_USE_POLICY"
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedCheckpoint:
+    """The immutable checkpoint and inference mode selected for one operation."""
+
+    path: Path
+    sha256: str
+    source: str
+    use_policy: bool
+
+    def as_dict(self) -> dict[str, str | bool]:
+        return {
+            "path": str(self.path),
+            "sha256": self.sha256,
+            "source": self.source,
+            "use_policy": self.use_policy,
+        }
+
+
+type CheckpointSpec = str | Path
+type CheckpointInput = CheckpointSpec | ResolvedCheckpoint
 
 
 def auto_weights_use_policy() -> bool:
@@ -49,30 +74,18 @@ def auto_weights_sha256() -> str:
     return _auto_source()[1]
 
 
-def mortal_weights_cache_path() -> Path:
+def _cache_root() -> Path:
     cache = os.environ.get("JONGBENCH_CACHE_DIR") or os.environ.get("XDG_CACHE_HOME")
-    root = Path(cache).expanduser() if cache else Path.home() / ".cache"
-    return root / "jongbench" / _auto_source()[2]
+    return Path(cache).expanduser() if cache else Path.home() / ".cache"
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def mortal_weights_cache_path() -> Path:
+    return _cache_root() / "jongbench" / _auto_source()[2]
 
 
-def resolve_mortal_weights(weights: str | Path = AUTO_MORTAL_WEIGHTS) -> Path:
-    if str(weights) != AUTO_MORTAL_WEIGHTS:
-        path = Path(weights).expanduser()
-        if not path.is_file():
-            raise FileNotFoundError(f"Mortal checkpoint not found: {path}")
-        return path
-
-    url, expected_sha256, _ = _auto_source()
-    path = mortal_weights_cache_path()
-    if path.is_file() and _sha256(path) == expected_sha256:
+def _resolve_auto_weights(url: str, expected_sha256: str, filename: str) -> Path:
+    path = _cache_root() / "jongbench" / filename
+    if path.is_file() and file_sha256(path) == expected_sha256:
         return path
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -93,3 +106,53 @@ def resolve_mortal_weights(weights: str | Path = AUTO_MORTAL_WEIGHTS) -> Path:
     finally:
         temporary.unlink(missing_ok=True)
     return path
+
+
+def resolve_mortal_checkpoint(
+    weights: CheckpointInput = AUTO_MORTAL_WEIGHTS,
+    *,
+    use_policy: bool | None = None,
+) -> ResolvedCheckpoint:
+    """Resolve path, provenance, digest, and policy selection exactly once.
+
+    An explicit ``use_policy`` takes precedence over ambient configuration. Passing an
+    existing identity never reads the environment or re-resolves its path.
+    """
+
+    if isinstance(weights, ResolvedCheckpoint):
+        if use_policy is None or weights.use_policy == bool(use_policy):
+            return weights
+        return replace(weights, use_policy=bool(use_policy))
+
+    resolved_use_policy = (
+        auto_weights_use_policy() if use_policy is None else bool(use_policy)
+    )
+    if str(weights) != AUTO_MORTAL_WEIGHTS:
+        path = Path(weights).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(f"Mortal checkpoint not found: {path}")
+        return ResolvedCheckpoint(
+            path=path,
+            sha256=file_sha256(path),
+            source=str(weights),
+            use_policy=resolved_use_policy,
+        )
+
+    url, expected_sha256, filename = _auto_source()
+    path = _resolve_auto_weights(url, expected_sha256, filename)
+    return ResolvedCheckpoint(
+        path=path,
+        sha256=expected_sha256,
+        source=url,
+        use_policy=resolved_use_policy,
+    )
+
+
+def resolve_mortal_weights(
+    weights: CheckpointInput = AUTO_MORTAL_WEIGHTS,
+) -> Path:
+    """Return a checkpoint path (compatibility wrapper for the original API)."""
+
+    if isinstance(weights, ResolvedCheckpoint):
+        return weights.path
+    return resolve_mortal_checkpoint(weights, use_policy=False).path

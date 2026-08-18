@@ -25,10 +25,15 @@ from jongbench.evaluate import (
     networks_from_checkpoint,
     review_player,
 )
-from jongbench.mortal_model import ACTION_SPACE, DQN, ConfidenceHead, PolicyHead
+from jongbench.mortal_model import (
+    ACTION_SPACE,
+    DQN,
+    Brain,
+    ConfidenceHead,
+    PolicyHead,
+)
 from jongbench.selfplay import DUPLICATE_PTS, duel
 from jongbench.train import PolicyRLConfig, TrainConfig, train, train_policy_rl
-from jongbench.weights import resolve_mortal_weights
 
 
 class TsumogiriEngine:
@@ -231,8 +236,23 @@ def test_discover_logs_includes_plain_json(tmp_path: Path) -> None:
 
 
 @pytest.fixture(scope="module")
-def mortal_weights() -> Path:
-    return resolve_mortal_weights()
+def mortal_weights(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    path = tmp_path_factory.mktemp("weights") / "mortal-test.pth"
+    torch.manual_seed(11)
+    brain = Brain(version=4, num_blocks=0, conv_channels=4)
+    dqn = DQN(version=4)
+    torch.save(
+        {
+            "config": {
+                "control": {"version": 4},
+                "resnet": {"num_blocks": 0, "conv_channels": 4},
+            },
+            "mortal": brain.state_dict(),
+            "current_dqn": dqn.state_dict(),
+        },
+        path,
+    )
+    return path
 
 
 def test_load_engine_accepts_device_and_missing_policy(
@@ -269,6 +289,11 @@ def test_train_two_steps_on_tsumogiri_log(tmp_path: Path, mortal_weights: Path) 
     )
     ckpt = torch.load(out, weights_only=True, map_location="cpu")
     assert "policy" in ckpt
+    source = ckpt["config"]["reviewer"]["source_checkpoint"]
+    assert source["path"] == str(mortal_weights)
+    assert source["source"] == str(mortal_weights)
+    assert source["use_policy"] is False
+    assert ckpt["config"]["reviewer"]["training"]["init"] == source
     init_ckpt = load_checkpoint(str(mortal_weights))
     _, initial_dqn, _, _, _, _ = networks_from_checkpoint(init_ckpt)
     initial_policy = PolicyHead.from_dqn(initial_dqn, temperature=0.1)
@@ -313,4 +338,26 @@ def test_train_two_steps_on_tsumogiri_log(tmp_path: Path, mortal_weights: Path) 
         torch.testing.assert_close(rl_ckpt["mortal"][key], value)
     for key, value in ckpt["current_dqn"].items():
         torch.testing.assert_close(rl_ckpt["current_dqn"][key], value)
-    assert rl_ckpt["config"]["reviewer"]["policy_rl"]["total_updates"] == 2
+    policy_rl = rl_ckpt["config"]["reviewer"]["policy_rl"]
+    assert policy_rl["total_updates"] == 2
+    latest = policy_rl["history"][-1]
+    assert latest["source_checkpoint"]["path"] == str(out)
+    assert latest["source_checkpoint"]["use_policy"] is True
+    assert latest["anchor_checkpoint"] == latest["training"]["anchor"]
+    assert latest["source_checkpoint"] == latest["training"]["init"]
+
+
+def test_training_data_identity_requires_a_digest_pair(tmp_path: Path) -> None:
+    base = dict(logs=str(tmp_path), init="unused", out=str(tmp_path / "out.pth"))
+    with pytest.raises(ValueError, match="provided together"):
+        train(TrainConfig(**base, data_provenance="dataset-v1"))
+    with pytest.raises(ValueError, match="non-empty string"):
+        train(TrainConfig(**base, data_provenance=" ", data_sha256="a" * 64))
+    with pytest.raises(ValueError, match="64 lowercase hexadecimal"):
+        train(
+            TrainConfig(
+                **base,
+                data_provenance="dataset-v1",
+                data_sha256="banana",
+            )
+        )

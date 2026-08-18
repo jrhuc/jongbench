@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import random
+import re
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -18,12 +19,17 @@ from torch.utils.data import DataLoader
 from jongbench.dataset import DEFAULT_PTS, GameplayIterable, discover_logs
 from jongbench.evaluate import load_checkpoint, networks_from_checkpoint, resolve_device
 from jongbench.mortal_model import AuxNet, ConfidenceHead, PolicyHead
+from jongbench.weights import (
+    CheckpointInput,
+    ResolvedCheckpoint,
+    resolve_mortal_checkpoint,
+)
 
 
 @dataclass
 class TrainConfig:
     logs: str
-    init: str
+    init: CheckpointInput
     out: str
     steps: int = 4000
     batch_size: int = 256
@@ -53,9 +59,9 @@ class TrainConfig:
 @dataclass
 class PolicyRLConfig:
     logs: str
-    init: str
+    init: CheckpointInput
     out: str
-    anchor: str | None = None
+    anchor: CheckpointInput | None = None
     steps: int = 128
     batch_size: int = 512
     device: str = "auto"
@@ -251,7 +257,22 @@ def evaluate_policy(
     return {key: value / count for key, value in totals.items()}
 
 
+def _validate_data_identity(cfg: TrainConfig) -> None:
+    provenance_present = cfg.data_provenance is not None
+    digest_present = cfg.data_sha256 is not None
+    if provenance_present != digest_present:
+        raise ValueError("data_provenance and data_sha256 must be provided together")
+    if cfg.data_provenance is not None and not cfg.data_provenance.strip():
+        raise ValueError("data_provenance must be a non-empty string")
+    if (
+        cfg.data_sha256 is not None
+        and re.fullmatch(r"[0-9a-f]{64}", cfg.data_sha256) is None
+    ):
+        raise ValueError("data_sha256 must be 64 lowercase hexadecimal characters")
+
+
 def train(cfg: TrainConfig) -> dict[str, Any]:
+    _validate_data_identity(cfg)
     if cfg.steps <= 0:
         raise ValueError("steps must be positive")
     if cfg.teacher_temperature <= 0:
@@ -264,7 +285,8 @@ def train(cfg: TrainConfig) -> dict[str, Any]:
         raise ValueError(f"no gameplay logs under {cfg.logs}")
     train_files, validation_files = split_train_validation(files, cfg.validation_ratio)
 
-    ckpt = load_checkpoint(cfg.init, map_location="cpu")
+    init_checkpoint = resolve_mortal_checkpoint(cfg.init, use_policy=False)
+    ckpt = load_checkpoint(init_checkpoint, map_location="cpu")
     brain, dqn, policy, aux_net, confidence, version = networks_from_checkpoint(ckpt)
     if version != 4:
         raise ValueError(f"reviewer training requires Mortal version 4, got {version}")
@@ -442,6 +464,7 @@ def train(cfg: TrainConfig) -> dict[str, Any]:
                 confidence=confidence,
                 steps=step,
                 train_cfg=cfg,
+                init_checkpoint=init_checkpoint,
                 train_files=len(train_files),
                 validation_files=len(validation_files),
                 metrics={"baseline": baseline_metrics},
@@ -479,6 +502,7 @@ def train(cfg: TrainConfig) -> dict[str, Any]:
         confidence=confidence,
         steps=cfg.steps,
         train_cfg=cfg,
+        init_checkpoint=init_checkpoint,
         train_files=len(train_files),
         validation_files=len(validation_files),
         metrics={
@@ -511,15 +535,20 @@ def train_policy_rl(cfg: PolicyRLConfig) -> dict[str, float]:
     if not files:
         raise ValueError(f"no gameplay logs under {cfg.logs}")
 
-    ckpt = load_checkpoint(cfg.init, map_location="cpu")
+    init_checkpoint = resolve_mortal_checkpoint(cfg.init, use_policy=True)
+    ckpt = load_checkpoint(init_checkpoint, map_location="cpu")
     brain, dqn, policy, _, _, version = networks_from_checkpoint(ckpt)
     if version != 4:
         raise ValueError(f"policy RL requires Mortal version 4, got {version}")
     if policy is None:
         policy = PolicyHead.from_dqn(dqn)
 
-    anchor_path = cfg.anchor or cfg.init
-    anchor_ckpt = load_checkpoint(anchor_path, map_location="cpu")
+    anchor_checkpoint = (
+        init_checkpoint
+        if cfg.anchor is None
+        else resolve_mortal_checkpoint(cfg.anchor, use_policy=True)
+    )
+    anchor_ckpt = load_checkpoint(anchor_checkpoint, map_location="cpu")
     anchor_brain, anchor_dqn, anchor_policy, _, _, anchor_version = (
         networks_from_checkpoint(anchor_ckpt)
     )
@@ -685,6 +714,8 @@ def train_policy_rl(cfg: PolicyRLConfig) -> dict[str, float]:
         ckpt,
         policy=policy,
         train_cfg=cfg,
+        init_checkpoint=init_checkpoint,
+        anchor_checkpoint=anchor_checkpoint,
         files=len(files),
         updates=updates,
         metrics=last_stats,
@@ -693,12 +724,29 @@ def train_policy_rl(cfg: PolicyRLConfig) -> dict[str, float]:
     return last_stats
 
 
+def _resolved_training_config(
+    train_cfg: TrainConfig | PolicyRLConfig,
+    *,
+    init_checkpoint: ResolvedCheckpoint,
+    anchor_checkpoint: ResolvedCheckpoint | None = None,
+) -> dict[str, Any]:
+    config = asdict(train_cfg)
+    config["init"] = init_checkpoint.as_dict()
+    if isinstance(train_cfg, PolicyRLConfig):
+        if anchor_checkpoint is None:
+            raise ValueError("resolved policy RL config requires an anchor checkpoint")
+        config["anchor"] = anchor_checkpoint.as_dict()
+    return config
+
+
 def _save_policy_rl_checkpoint(
     path: str | Path,
     init_ckpt: dict[str, Any],
     *,
     policy: nn.Module,
     train_cfg: PolicyRLConfig,
+    init_checkpoint: ResolvedCheckpoint,
+    anchor_checkpoint: ResolvedCheckpoint,
     files: int,
     updates: int,
     metrics: dict[str, float],
@@ -712,11 +760,15 @@ def _save_policy_rl_checkpoint(
     history = list(prior.get("history", [])) if isinstance(prior, dict) else []
     history.append(
         {
-            "source_checkpoint": train_cfg.init,
-            "anchor_checkpoint": train_cfg.anchor or train_cfg.init,
+            "source_checkpoint": init_checkpoint.as_dict(),
+            "anchor_checkpoint": anchor_checkpoint.as_dict(),
             "files": files,
             "updates": updates,
-            "training": asdict(train_cfg),
+            "training": _resolved_training_config(
+                train_cfg,
+                init_checkpoint=init_checkpoint,
+                anchor_checkpoint=anchor_checkpoint,
+            ),
             "metrics": dict(metrics),
         }
     )
@@ -749,6 +801,7 @@ def _save_checkpoint(
     confidence,
     steps: int,
     train_cfg: TrainConfig,
+    init_checkpoint: ResolvedCheckpoint,
     train_files: int,
     validation_files: int,
     metrics: dict[str, Any],
@@ -764,12 +817,14 @@ def _save_checkpoint(
             "has_aux": True,
             "has_confidence": True,
             "steps": steps,
-            "source_checkpoint": train_cfg.init,
+            "source_checkpoint": init_checkpoint.as_dict(),
             "data_provenance": train_cfg.data_provenance,
             "train_files": train_files,
             "data_sha256": train_cfg.data_sha256,
             "validation_files": validation_files,
-            "training": asdict(train_cfg),
+            "training": _resolved_training_config(
+                train_cfg, init_checkpoint=init_checkpoint
+            ),
             "metrics": metrics,
         }
     )
